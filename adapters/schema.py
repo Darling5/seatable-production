@@ -10,9 +10,10 @@ metadata，这里的定义是本地模式的“兜底真相”。
 约束，模型负责把原始值翻译成中文标签；本地模式里存的就是文本，无需翻译。
 """
 
-# 14 张表（顺序即业务主从关系）
+# 15 张表（顺序即业务主从关系）
 TABLES = [
     "项目",
+    "项目阶段",
     "生产计划",
     "发货清单",
     "维修记录",
@@ -28,9 +29,11 @@ TABLES = [
     "成品采购记录",
 ]
 
-# 15 条语义关联（本地模式用内部 link_id；SeaTable 模式由 metadata 解析真实 link_id）
+# 17 条语义关联（本地模式用内部 link_id；SeaTable 模式由 metadata 解析真实 link_id）
 # id: 语义关联标识；table/other: 两张表；table_col/other_col: 各自关联列名
 LINKS = [
+    {"id": "project-stage", "table": "项目", "table_col": "项目阶段", "other": "项目阶段", "other_col": "关联项目"},
+    {"id": "stage-production-plan", "table": "项目阶段", "table_col": "关联生产计划", "other": "生产计划", "other_col": "关联项目阶段"},
     {"id": "1T1Q", "table": "生产计划", "table_col": "贴片生产记录", "other": "贴片生产记录", "other_col": "生产计划"},
     {"id": "320W", "table": "生产计划", "table_col": "成品采购记录", "other": "成品采购记录", "other_col": "生产计划"},
     {"id": "3Fld", "table": "生产计划", "table_col": "项目", "other": "项目", "other_col": "生产计划"},
@@ -51,6 +54,7 @@ LINKS = [
 # 各表的默认值（模型未提取到时由适配器自动套用）
 # "__TODAY__" 占位符在写入时解析为当天 YYYY-MM-DD（Asia/Shanghai）
 TABLE_DEFAULTS = {
+    "项目阶段":   {"状态": "未开始", "阶段类型": "立项"},
     "生产计划":   {"状态": "计划中", "阶段": "库存核对", "立项日期": "__TODAY__"},
     "项目":       {"状态": "计划中"},
     "外壳采购记录": {"供应商": "华宸振凯", "采购时间": "__TODAY__"},
@@ -64,6 +68,50 @@ TABLE_DEFAULTS = {
 
 # 列名里含这些字样的，视为「自动编号列」，本地模式自动递增填充（模拟 auto-number）
 AUTO_NUMBER_HINT = "编号"
+
+
+# 解耦版的领域结构。LocalAdapter 用它在空表时返回可靠 metadata；
+# SeaTable 迁移脚本也以同一结构为准，避免文档、local 与线上 Base 漂移。
+TABLE_COLUMNS = {
+    "项目阶段": [
+        {"name": "阶段名称", "type": "text"},
+        {"name": "关联项目", "type": "link", "other_table": "项目"},
+        {"name": "阶段类型", "type": "single-select",
+         "options": ["立项", "方案设计", "工程样机", "PCB打样", "开模", "试产", "认证", "量产", "结项"]},
+        {"name": "阶段轮次", "type": "text"},
+        {"name": "状态", "type": "single-select",
+         "options": ["未开始", "进行中", "阻塞", "待评审", "已完成", "已取消"]},
+        {"name": "计划开始", "type": "date"},
+        {"name": "计划完成", "type": "date"},
+        {"name": "实际开始", "type": "date"},
+        {"name": "实际完成", "type": "date"},
+        {"name": "负责人", "type": "collaborator"},
+        {"name": "前置阶段", "type": "link", "other_table": "项目阶段"},
+        {"name": "关联生产计划", "type": "link", "other_table": "生产计划",
+         "managed_by_reciprocal": True},
+        {"name": "交付物", "type": "long-text"},
+        {"name": "评审结论", "type": "single-select",
+         "options": ["未评审", "通过", "有条件通过", "不通过"]},
+        {"name": "问题与风险", "type": "long-text"},
+        {"name": "下一步动作", "type": "long-text"},
+        {"name": "下一步截止日", "type": "date"},
+    ],
+    "生产计划": [
+        {"name": "生产类型", "type": "single-select",
+         "options": ["工程样机", "PCB打样", "试产", "小批量", "量产", "返工"]},
+        {"name": "试产阶段", "type": "single-select",
+         "options": ["EVT", "DVT", "PVT", "首批量产", "不适用"]},
+        {"name": "批次号", "type": "text"},
+        {"name": "版本号", "type": "text"},
+        {"name": "关联项目阶段", "type": "link", "other_table": "项目阶段"},
+        {"name": "计划开始日期", "type": "date"},
+        {"name": "计划完成日期", "type": "date"},
+        {"name": "实际完成日期", "type": "date"},
+        {"name": "批次目标", "type": "long-text"},
+        {"name": "放行状态", "type": "single-select",
+         "options": ["待评审", "允许进入下一阶段", "禁止放行"]},
+    ],
+}
 
 
 def link_id_for(table: str, other: str):

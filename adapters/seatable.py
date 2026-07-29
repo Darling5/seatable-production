@@ -104,15 +104,32 @@ class SeaTableAdapter(BaseAdapter):
         self._ensure_meta()
         t1 = self._table(table)
         t2 = self._table(other)
-        for ln in self._meta.get("links", []):
-            if {ln.get("table1_id"), ln.get("table2_id")} == {t1["_id"], t2["_id"]}:
-                return ln["link_id"]
+        matches = []
+        for column in t1["columns"]:
+            if column.get("type") != "link":
+                continue
+            data = column.get("data") or {}
+            linked_tables = {data.get("table_id"), data.get("other_table_id")}
+            if linked_tables == {t1["_id"], t2["_id"]} and data.get("link_id"):
+                matches.append((column["name"], data["link_id"]))
+        if len(matches) == 1:
+            return matches[0][1]
+        if len(matches) > 1:
+            link_ids = {link_id for _, link_id in matches}
+            if len(link_ids) == 1:
+                return next(iter(link_ids))
+            names = "、".join(name for name, _ in matches)
+            raise KeyError(
+                f"{table} ↔ {other} 存在多个关联列（{names}），"
+                "请使用唯一语义关联，避免按表名误连。"
+            )
         raise KeyError(f"未在 Base 中找到 {table} ↔ {other} 的关联列，请先在两表间建立 link")
 
     def link(self, table: str, other_table: str, link_id: str,
              row_id: str, other_row_ids: list) -> None:
-        # 优先用调用方传入的 link_id；为空则按表名解析
-        lid = link_id or self._resolve_link_id(table, other_table)
+        # schema.py 的 link_id 只服务 local 后端；SeaTable 的真实 link_id
+        # 由 Base 在建列时生成，必须从当前 metadata 动态解析。
+        lid = self._resolve_link_id(table, other_table)
         for direction in ((table, other_table), (other_table, table)):
             src, dst = direction
             r = requests.put(self._base() + "/links/", headers={**self._h, "Content-Type": "application/json"},

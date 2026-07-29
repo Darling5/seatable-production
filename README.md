@@ -1,6 +1,6 @@
 # 生产交付协同助手（解耦版）
 
-一套「生产立项 → 计划 → 采购 → 执行 → 库存 → 发货 → 维修 → 分析」全流程的自然语言协同技能。
+一套「立项 → 样机/打样 → 开模 → 试产 → 量产 → 采购 → 执行 → 库存 → 发货 → 维修 → 分析」全流程的自然语言协同技能。
 **最大特点：开箱零配置，任何人都能用——不需要 SeaTable 账号，也不需要 PartDB。**
 
 > 本文档由 **混元3**（腾讯混元大模型）辅助撰写。
@@ -52,26 +52,29 @@ git clone https://github.com/Darling5/seatable-production.git \
 
 ---
 
-## 0.2 表格怎么用（op.py 操作 14 张表）
+## 0.2 表格怎么用（op.py 操作 15 张表）
 
 所有对表的操作都走统一入口 `op.py`，**不用关心底层是本地 CSV 还是 SeaTable**。
 通用格式：`python3 op.py <子命令> <表名> [参数]`（Windows 用 `py op.py` 或 `python op.py`；`<表名>` 用中文，如 `生产计划`）。
 
-### 14 张表一览（按业务主从关系）
+### 15 张表一览（按业务主从关系）
 1. 项目
-2. 生产计划
-3. 发货清单
-4. 维修记录
-5. 生产工序
-6. 库存核对记录
-7. PCB下单记录
-8. 外壳采购记录
-9. IC采购记录
-10. 贴片生产记录
-11. PCBA半成品采购记录
-12. 组装料采购记录
-13. 组装记录
-14. 成品采购记录
+2. 项目阶段
+3. 生产计划
+4. 发货清单
+5. 维修记录
+6. 生产工序
+7. 库存核对记录
+8. PCB下单记录
+9. 外壳采购记录
+10. IC采购记录
+11. 贴片生产记录
+12. PCBA半成品采购记录
+13. 组装料采购记录
+14. 组装记录
+15. 成品采购记录
+
+`项目阶段` 保存立项、方案设计、工程样机、PCB打样、开模、EVT/DVT/PVT、认证、量产和结项的历史；`生产计划.阶段` 继续表示库存核对、采购、贴片、组装、测试、出货等生产执行位置。
 
 > 表名就是 `op.py` 里要填的 `table` 参数，中文、不带空格。
 
@@ -87,6 +90,13 @@ git clone https://github.com/Darling5/seatable-production.git \
 | `linked <表> <行ID>` | 看某行关联了谁 | `python3 op.py linked 生产计划 row_3` |
 | `meta <表>` | 看表结构/列 | `python3 op.py meta 生产计划` |
 | `export-excel [文件]` | 全部表导出 Excel | `python3 op.py export-excel 生产数据.xlsx` |
+
+首次升级已有 SeaTable Base 时，先预览再执行幂等迁移：
+
+```bash
+python3 scripts/migrate_project_lifecycle.py
+python3 scripts/migrate_project_lifecycle.py --apply
+```
 
 ### 一条完整工作流示例
 ```bash
@@ -318,7 +328,7 @@ seatable-production/
 │   ├── seatable.py     # SeaTable（配置驱动）
 │   ├── partdb.py       # PartDB（可选）
 │   ├── factory.py      # 适配器工厂（按 config 选后端）
-│   └── schema.py       # 14 表结构 + 15 条语义关联 + 默认值
+│   └── schema.py       # 15 表结构 + 17 条语义关联 + 默认值
 ├── references/          # 长文档（业务流程 / 分析公式）
 ├── scripts/             # 配置驱动的辅助脚本
 ├── data/               # 本地数据（自动生成，可加入 .gitignore）

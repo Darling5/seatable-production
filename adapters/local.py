@@ -111,14 +111,16 @@ class LocalAdapter(BaseAdapter):
 
     def get_metadata(self, table: str) -> Dict[str, Any]:
         rows = self._read_all(table)
-        cols = []
+        cols = [dict(c) for c in schema.TABLE_COLUMNS.get(table, [])]
+        known = {c["name"] for c in cols}
         for r in rows:
             for k in r.keys():
-                if k != "__row_id__" and k not in cols:
-                    cols.append(k)
+                if k != "__row_id__" and k not in known:
+                    cols.append({"name": k, "type": "text"})
+                    known.add(k)
         return {
             "table_name": table,
-            "columns": [{"name": c, "type": "text"} for c in cols],
+            "columns": cols,
         }
 
     # ── 写 ─────────────────────────────────────────────
