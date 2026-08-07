@@ -61,6 +61,7 @@ def main():
     sp = sub.add_parser("export-excel"); sp.add_argument("out", nargs="?", default="生产数据.xlsx")
     sp = sub.add_parser("partdb-search"); sp.add_argument("keyword"); sp.add_argument("limit", nargs="?", type=int, default=20)
     sp = sub.add_parser("partdb-shortage"); sp.add_argument("project_id", type=int); sp.add_argument("qty", type=int)
+    sp = sub.add_parser("apply-wizard"); sp.add_argument("file"); sp.add_argument("--out", nargs="?", default=None)
 
     args = p.parse_args()
     cfg = load_config(args.config)
@@ -127,6 +128,44 @@ def main():
             return
         for s in pd.shortage(args.project_id, args.qty):
             print(f"缺料: {s['name']} 料号:{s['ipn']} 需{s['need']} 现有{s['stock']} 缺口{s['gap']}")
+    elif args.cmd == "apply-wizard":
+        import datetime as _dt
+        with open(args.file, encoding="utf-8") as _f:
+            data = json.load(_f)
+        if data.get("_wizard") != "new-project":
+            print("该文件不是向导生成的「新建生产项目.json」（缺少 _wizard 标记），已跳过。")
+            sys.exit(1)
+        prod = str(data.get("产品", "")).strip()
+        qty = int(data.get("数量", 0) or 0)
+        if not prod or not qty:
+            print("产品名称或数量缺失，无法写入。")
+            sys.exit(1)
+        days = int(data.get("交期天数", 0) or 0)
+        due = data.get("预计完工") or (_dt.date.today() + _dt.timedelta(days=days)).isoformat()
+        today = _dt.date.today().isoformat()
+        row = {
+            "生产产品": prod,
+            "数量": qty,
+            "关联项目": prod + " 项目",
+            "状态": "进行中",
+            "阶段": "库存核对",
+            "立项日期": today,
+            "合同交期": due,
+            "完货日期": "",
+            "负责人": str(data.get("负责人", "") or ""),
+            "优先级": str(data.get("优先级", "中") or "中"),
+            "备注": str(data.get("备注", "") or ""),
+        }
+        rid = adapter.append_row("生产计划", row)
+        print(f"OK 已写入「生产计划」 row_id={rid}")
+        try:
+            import subprocess
+            cockpit = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cockpit.py")
+            out = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), "项目管理驾驶舱.html")
+            subprocess.run([sys.executable, cockpit, out], check=False)
+            print(f"OK 驾驶舱已刷新：{out}")
+        except Exception as e:
+            print(f"[warn] 驾驶舱自动刷新失败（手动跑 python cockpit.py 即可）：{e}")
 
 
 if __name__ == "__main__":
