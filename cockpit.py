@@ -1367,20 +1367,21 @@ function render(m){
   /* 新建生产项目向导：纯表单采集，提交导出 JSON；写入由 op.py apply-wizard 完成（网页不持有任何账号/口令） */
   const secWZ=el(`<section id="sec-WZ" class="sec"><div class="sec-title">__IC_ADD__ 新建生产项目（向导）</div>
     <div class="card">
-      <p class="note">填完点「生成并下载」，浏览器会下载一个 <b>新建生产项目.json</b>。在本机跑一条命令即可写入数据（本地 CSV 或 SeaTable，取决于你的配置）：</p>
+      <p class="note">填完点「复制并打开 WorkBuddy」：会把下面这些信息整理成一段文字<b>自动复制到剪贴板</b>，并唤起 WorkBuddy。你只需在 WorkBuddy 里<b>粘贴并发送</b>，剩下的我来写库、算缺料、刷新驾驶舱。</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:680px">
         <label>产品名称 *<input id="wz-product" type="text" placeholder="如 4G小卡二代" style="width:100%"></label>
         <label>数量 *<input id="wz-qty" type="number" min="1" placeholder="100" style="width:100%"></label>
-        <label>交期天数（天数）<input id="wz-days" type="number" min="1" placeholder="30" style="width:100%"></label>
+        <label>交期天数（天）<input id="wz-days" type="number" min="1" placeholder="30" style="width:100%"></label>
         <label>优先级<select id="wz-prio" style="width:100%"><option>高</option><option selected>中</option><option>低</option></select></label>
         <label>负责人<input id="wz-owner" type="text" placeholder="选填" style="width:100%"></label>
         <label>备注<input id="wz-note" type="text" placeholder="选填" style="width:100%"></label>
       </div>
       <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <button class="btn-primary" onclick="submitWizard()">__IC_DOWNLOAD__ 生成并下载 JSON</button>
-        <code id="wz-cmd" style="background:#f3f4f6;padding:6px 10px;border-radius:8px;font-size:13px">python op.py apply-wizard 新建生产项目.json</code>
+        <button class="btn-primary" onclick="submitWizardCopy()">__IC_COPY__ 复制并打开 WorkBuddy</button>
+        <button class="btn-ghost" onclick="submitWizardDownload()">__IC_DOWNLOAD__ 下载 JSON（备用）</button>
       </div>
-      <p class="note" style="margin-top:10px">💡 写入后重新生成驾驶舱即可看到新项目；若配置了 PartDB，缺料预警会自动计算。<b>网页本身不存任何账号/口令</b>，数据始终由本机 Python 管道落库，安全合规。</p>
+      <textarea id="wz-text" readonly style="display:none;width:100%;max-width:680px;height:130px;margin-top:12px;font-size:13px;padding:8px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit"></textarea>
+      <p class="note" style="margin-top:10px">💡 网页不持有任何账号/口令；数据最终由本机 Python 落库，安全合规。</p>
     </div></section>`);
   if(ROLES[role].sections.includes("WZ")) app.appendChild(secWZ);
 
@@ -1408,22 +1409,60 @@ function toast(msg){
   clearTimeout(t._timer);
   t._timer=setTimeout(()=>t.classList.remove("show"), 3200);
 }
-/* 新建项目向导：采集 → 生成 JSON → 浏览器下载（不触碰任何后端/口令） */
-function submitWizard(){
+/* 新建项目向导：采集 → 复制成纯文本 → 唤起 WorkBuddy（用户粘贴发送，AI 落库） */
+function collectWizard(){
   const 产品=document.getElementById('wz-product').value.trim();
   const 数量=parseInt(document.getElementById('wz-qty').value)||0;
   const 天数=parseInt(document.getElementById('wz-days').value)||0;
   const 优先级=document.getElementById('wz-prio').value;
   const 负责人=document.getElementById('wz-owner').value.trim();
   const 备注=document.getElementById('wz-note').value.trim();
-  if(!产品||!数量){ toast('请填写产品名称和数量'); return; }
-  const due=new Date(Date.now()+天数*86400000).toISOString().slice(0,10);
-  const obj={_wizard:"new-project",产品,数量,交期天数:天数,预计完工:due,优先级,负责人,备注,生成时间:new Date().toISOString()};
+  if(!产品||!数量){ toast('请填写产品名称和数量'); return null; }
+  const 交期=new Date(Date.now()+天数*86400000).toISOString().slice(0,10);
+  return {产品,数量,天数,交期,优先级,负责人,备注};
+}
+function wizardToText(d){
+  const lines=["【新建生产项目】","产品："+d.产品,"数量："+d.数量,"交期天数："+d.天数,"预计完工："+d.交期,"优先级："+d.优先级];
+  if(d.负责人) lines.push("负责人："+d.负责人);
+  if(d.备注) lines.push("备注："+d.备注);
+  lines.push("（由生产驾驶舱「新建项目」向导生成，请帮我写入数据并刷新驾驶舱）");
+  return lines.join("\n");
+}
+function copyText(txt){
+  if(navigator.clipboard && window.isSecureContext){
+    return navigator.clipboard.writeText(txt).then(()=>true).catch(()=>null);
+  }
+  try{
+    const ta=document.createElement('textarea');
+    ta.value=txt; ta.style.position='fixed'; ta.style.top='-1000px'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok=document.execCommand('copy'); document.body.removeChild(ta);
+    return Promise.resolve(ok?true:null);
+  }catch(e){ return Promise.resolve(null); }
+}
+function openWorkBuddy(){
+  try{
+    const w=window.open('workbuddy://new-chat','_blank');
+    if(!w){ window.open('https://workbuddy.link','_blank'); }
+  }catch(e){ /* 忽略：toast 已提示用户手动处理 */ }
+}
+function submitWizardCopy(){
+  const d=collectWizard(); if(!d) return;
+  const txt=wizardToText(d);
+  const box=document.getElementById('wz-text'); box.value=txt; box.style.display='block';
+  copyText(txt).then(ok=>{
+    openWorkBuddy();
+    if(ok) toast('已复制新建指令 ✅ 去 WorkBuddy 粘贴发送即可');
+    else { box.focus(); box.select(); toast('已生成文本，请手动复制后到 WorkBuddy 发送'); }
+  });
+}
+function submitWizardDownload(){
+  const d=collectWizard(); if(!d) return;
+  const obj={_wizard:"new-project",产品:d.产品,数量:d.数量,交期天数:d.天数,预计完工:d.交期,优先级:d.优先级,负责人:d.负责人,备注:d.备注,生成时间:new Date().toISOString()};
   const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='新建生产项目.json'; a.click();
   URL.revokeObjectURL(a.href);
-  document.getElementById('wz-cmd').textContent='python op.py apply-wizard 新建生产项目.json';
-  toast('已下载 新建生产项目.json ✅ 运行命令即可写入');
+  toast('已下载 新建生产项目.json（备用）');
 }
 /* 分享角色视图：复制带 #role 锚点 + 口令的微信文案，直接发微信给对应人 */
 function shareRole(role){
