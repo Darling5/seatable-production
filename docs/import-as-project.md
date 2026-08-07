@@ -8,12 +8,15 @@
 
 1. 复制本仓库地址：`https://github.com/Darling5/seatable-production`
 2. 在 WorkBuddy「我的项目」中粘贴链接 → 新建项目。
-3. 项目创建后自动挂载 `seatable-production` 技能（仓库根的 `SKILL.md` 会被识别）。
-4. 在项目中运行 `python cockpit.py`，生成 `项目管理驾驶舱.html` 工作台。
+3. 项目创建后自动识别并可选挂载本仓库的 `seatable-production` 技能（根 `SKILL.md`）
+   与 `production-cockpit` 专家（`expert/production-cockpit/plugin.json`）。
+4. 在项目中运行 `python cockpit.py`（或专家对话框说「生成最新的生产项目管理驾驶舱」），
+   生成 `项目管理驾驶舱.html` 工作台。
 5. 项目创建者在 UI 中设置管理员 / 成员；把不同 `#role` 分享链接发给对应成员。
 
-> 若导入器需要特定清单文件，见仓库根 `workbuddy.project.yaml`
-> （当前为拟定格式，按 WorkBuddy 官方导入规范校正即可）。
+> 注：WorkBuddy 从 GitHub 导入项目**不需要**任何额外清单文件——导入时自动扫描仓库，
+> 识别 `SKILL.md`（技能）与 `plugin.json`（专家）即可建项目。本仓库已满足「导入即建项目」。
+> （仓库根原有的 `workbuddy.project.yaml` 已移除，因其非官方识别格式。）
 
 ## 方式二：手动搭建
 
