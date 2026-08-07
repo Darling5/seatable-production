@@ -1,0 +1,41 @@
+# ============================================================
+# WorkBuddy 项目模板清单（PROPOSED — 待按实际导入规范校正）
+# ------------------------------------------------------------
+# 目标：在 WorkBuddy「我的项目」中粘贴本仓库 GitHub 链接时，
+#       据此自动创建「生产交付协同」项目，并挂载 seatable-production
+#       技能与「项目管理驾驶舱」工作台。
+#
+# ⚠️ 以下字段名为本次按通用约定拟定的最佳猜测。
+#    若 WorkBuddy 的 GitHub 链接导入器要求特定字段名/结构，
+#    请以官方规范为准，并把正确格式反馈给我校正本文件即可。
+# ============================================================
+
+project:
+  name: 生产交付协同
+  slug: production-delivery
+  description: >-
+    SeaTable + PartDB 驱动的生产交付协同工作台：覆盖立项 → 计划 → 采购 → 生产
+    → 库存核对 → 发货 → 维修售后的完整周期，并内置单文件 HTML 项目管理驾驶舱
+    （5 角色视图、分角色口令、快速导航/分页/横滑、一键分享）。
+  category: "10-ProjectQuality"   # 项目管理分类
+
+  # 挂载的技能：本仓库根目录即 seatable-production 技能（含 SKILL.md）
+  skills:
+    - name: seatable-production
+      path: ./
+
+  # 工作台：由 cockpit.py 生成单文件 HTML（读取本地 data/ 与 config.yaml）
+  workbenches:
+    - name: 项目管理驾驶舱
+      type: html
+      entry: 项目管理驾驶舱.html
+      generate: "python cockpit.py"
+      deploy_hint: >-
+        生成后可用 workbuddy_cloudstudio_deploy 部署为在线工作台；
+        或把 HTML 作为项目资源直接打开。
+
+  # 成员/管理员：导入后由项目创建者在 WorkBuddy UI 中设置。
+  # 项目天然含管理员与成员角色；驾驶舱的 5 个角色视图
+  # （boss/warehouse/purchase/production/sales）对应不同成员视角。
+  members:
+    admin: "@creator"   # 创建者默认管理员
