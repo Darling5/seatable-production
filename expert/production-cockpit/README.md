@@ -1,34 +1,35 @@
-# Production Cockpit
+# Production Cockpit（生产驾驶舱专家）
 
-[TODO: 一句话描述]
+一句话生成「生产项目管理驾驶舱」网页的 AI 专家：把 SeaTable + PartDB 的业务数据，汇总成老板 / 销售 / 仓库 / 采购 / 生产经理各自视图，按角色口令分发，一键部署分享。
 
 ## 类型
 
-Agent 型（单个 AI 专家）
+Agent 型（单个 AI 专家），预加载 `seatable-production` 技能。
 
 ## 功能
 
-[TODO: 详细功能说明]
+1. **对话即生成驾驶舱**：对专家说「生成最新的生产项目管理驾驶舱」，它运行 `cockpit.py` 读取本地 / 云端数据快照，产出一张单文件 HTML（内联 CSS/JS/SVG，零外部依赖，离线可用）。
+2. **角色视图与权限**：内置 5 个角色视图（老板 / 仓库 / 采购 / 生产经理 / 销售），每角色独立口令（base64 混淆）；管理员主口令可切全部视图并做口令管理与轮换；非管理员进入后视图被锁定，改网址也进不去。
+3. **云端部署与分享**：生成后用 CloudStudio 部署到公网，得到稳定链接；老板 / 销售视图带一键分享按钮，可直接复制带角色锚点 + 口令的微信文案转发。
+4. **顺带管数据**：预加载的 `seatable-production` 技能支持用大白话增删改生产数据（项目 / 生产计划 / 采购 / 发货 / 维修…），不用你懂那 14 张表。
+5. **每日自动更新**：每日 9:00 自动重建并重新部署，链接稳定、数据每日刷新。
 
 ## 使用示例
 
-- [TODO: 示例提示词1]
-- [TODO: 示例提示词2]
-- [TODO: 示例提示词3]
+- 「生成最新的生产项目管理驾驶舱」
+- 「帮我建个生产计划：产品 4G 小卡，数量 100，交期 30 个工作日」
+- 「把老板视图的链接复制成微信分享文案发我」
 
 ## 头像
 
-头像已自动生成在 `avatars/` 目录下。如需替换为自定义头像，要求：
-- 格式：PNG（推荐）或 JPG
-- 尺寸：512×512 px
-- 大小：单张不超过 500KB
+头像已自动生成在 `avatars/` 目录下。如需替换：PNG（推荐）或 JPG，512×512 px，不超过 500KB。
 
 ## 安装
 
 将专家包目录放到专家目录下：
 
 ```
-C:\Users\11430\.workbuddy\plugins\marketplaces\my-experts\plugins/production-cockpit/
+C:\Users\11430\.workbuddy\plugins\marketplaces\my-experts\plugins\production-cockpit/
 ```
 
 然后运行注册命令使其可见：
@@ -36,6 +37,8 @@ C:\Users\11430\.workbuddy\plugins\marketplaces\my-experts\plugins/production-coc
 ```bash
 python3 scripts/register_expert.py <expert-dir>
 ```
+
+> 更省事的方式：直接把本仓库的 GitHub 链接粘贴进 WorkBuddy「我的项目 → 新建项目」，项目会自动带上技能与专家，无需手动注册。
 
 ## 打包分享
 
