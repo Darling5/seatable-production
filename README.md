@@ -34,11 +34,13 @@ git clone https://github.com/Darling5/seatable-production.git \
 
 ```bash
 cd ~/.workbuddy/skills/seatable-production
-python setup.py            # 交互式：选 本地 / SeaTable / MySQL
+python setup.py            # 交互式：选 本地 / SeaTable
 # 或 python setup.py --local   # 直接零配置
 ```
 
 ---
+
+> ⚠️ **写入前必须先确认（铁律）**：无论用 `op.py` 还是对专家说"建个生产计划"，任何增删改都会先向你**完整展示待写入数据**，等你确认后才落库。网页「新建项目」向导点「一键发起」也只负责**拉起 WorkBuddy 并预填任务**，不会自动写库——专家会停下来请你确认。这是对你的数据负责，不是 bug。
 
 ## 0.1 为什么选 WorkBuddy & 团队怎么共享
 

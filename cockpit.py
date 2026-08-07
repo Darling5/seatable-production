@@ -1367,7 +1367,7 @@ function render(m){
   /* 新建生产项目向导：纯表单采集，提交导出 JSON；写入由 op.py apply-wizard 完成（网页不持有任何账号/口令） */
   const secWZ=el(`<section id="sec-WZ" class="sec"><div class="sec-title">__IC_ADD__ 新建生产项目（向导）</div>
     <div class="card">
-      <p class="note">填完点「🚀 一键提交到 WorkBuddy」：会把信息整理成文字、<b>复制到剪贴板</b>，并<b>拉起本地 WorkBuddy 自动写库、算缺料、刷新驾驶舱</b>——全程一键完成，无需手动粘贴。没装桌面端时点「🌐 网页版提交」手动发送。</p>
+      <p class="note">填完点「🚀 一键发起 → WorkBuddy 预填待确认」：会把信息整理成文字、<b>复制到剪贴板</b>，并<b>拉起本地 WorkBuddy、自动预填任务并开始执行</b>。注意：按技能铁律「任何增删改必须先向你确认」，专家会先列出完整数据<b>等你点头</b>，确认后才写库、算缺料、刷新驾驶舱——所以<b>不是全自动落库</b>，但仍省去手动复制粘贴。没装桌面端时点「🌐 网页版提交」手动发送。</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:680px">
         <label>产品名称 *<input id="wz-product" type="text" placeholder="如 4G小卡二代" style="width:100%"></label>
         <label>数量 *<input id="wz-qty" type="number" min="1" placeholder="100" style="width:100%"></label>
@@ -1377,12 +1377,12 @@ function render(m){
         <label>备注<input id="wz-note" type="text" placeholder="选填" style="width:100%"></label>
       </div>
       <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <button class="btn-primary" onclick="submitWizardCopy()">__IC_ADD__ 一键提交到 WorkBuddy（自动处理）</button>
+        <button class="btn-primary" onclick="submitWizardCopy()">__IC_ADD__ 一键发起 → WorkBuddy 预填待确认</button>
         <button class="btn-ghost" onclick="window.open('https://www.workbuddy.cn/','_blank')">🌐 网页版提交（workbuddy.cn）</button>
         <button class="btn-ghost" onclick="submitWizardDownload()">__IC_DOWNLOAD__ 下载 JSON（备用）</button>
       </div>
       <textarea id="wz-text" readonly style="display:none;width:100%;max-width:680px;height:130px;margin-top:12px;font-size:13px;padding:8px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit"></textarea>
-      <p class="note" style="margin-top:10px">💡 一键提交需要 WorkBuddy 桌面端已安装，并在 <b>Claw设置 → 协议注册</b> 启用 <code>workbuddy://</code> 绑定（和百度云/夸克拉起本地客户端同理）。启用后点按钮即自动处理；未启用则点「🌐 网页版提交」在 workbuddy.cn 手动粘贴。网页不持有任何账号/口令，数据由本机 Python 落库。</p>
+      <p class="note" style="margin-top:10px">💡 「一键发起」需要 WorkBuddy 桌面端已安装，并在 <b>Claw设置 → 协议注册</b> 启用 <code>workbuddy://</code> 绑定（和百度云/夸克拉起本地客户端同理）。启用后点按钮即拉起本地客户端并预填任务；专家会<b>请你确认后再写库</b>。未启用则点「🌐 网页版提交」在 workbuddy.cn 手动粘贴（网页版需先登录）。网页不持有任何账号/口令，数据由本机 Python 落库。</p>
     </div></section>`);
   if(ROLES[role].sections.includes("WZ")) app.appendChild(secWZ);
 
@@ -1442,7 +1442,8 @@ function copyText(txt){
   }catch(e){ return Promise.resolve(null); }
 }
 function invokeWorkBuddyAuto(txt){
-  // 云盘式一键：workbuddy://task?action=start 自动执行任务；skills= 自动加载 seatable-production 技能
+  // 云盘式一键发起：workbuddy://task?action=start 自动开始执行任务、skills= 自动加载 seatable-production 技能
+  // 但技能铁律要求写入前必须经用户确认，故专家会先列出数据等待确认，不会直接落库
   // 用隐藏 iframe 触发系统协议处理，不离开当前页面（类似百度云网页拉起本地客户端下载）
   const url='workbuddy://task?action=start&prompt='+encodeURIComponent(txt)+'&skills=seatable-production';
   try{
@@ -1458,7 +1459,7 @@ function submitWizardCopy(){
   const box=document.getElementById('wz-text'); box.value=txt; box.style.display='block';
   copyText(txt).then(ok=>{
     invokeWorkBuddyAuto(txt);
-    toast('已拉起 WorkBuddy 并自动提交 ✅ 本地客户端将自动写库并刷新驾驶舱');
+    toast('已拉起 WorkBuddy 并预填任务 ✅ 专家会列出数据，请你确认后再写库');
   });
 }
 function submitWizardDownload(){
