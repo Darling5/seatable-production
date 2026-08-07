@@ -64,7 +64,7 @@
     <div class="step"><b>最省事：用 WorkBuddy 对话</b><br>把本仓库链接 <code>https://github.com/Darling5/seatable-production</code> 粘贴到 WorkBuddy「我的项目 → 新建项目」，项目会自动带上技能与「生产驾驶舱」专家。然后直接对专家说：<br>「<b>生成演示版驾驶舱</b>」→ 它用内置示例数据给你一张完整网页；<br>「<b>帮我建个生产计划：产品 4G 小卡，数量 100，交期 30 个工作日</b>」→ 它自动填表，你不用懂那 14 张表。</div>
     <div class="step"><b>想自己跑（会一点命令行）</b><br><code>git clone 本仓库</code> → <code>python setup.py --local</code> → <code>python seed_demo.py</code> → <code>python cockpit.py</code> → 打开生成的 <code>项目管理驾驶舱.html</code>。</div>
     <div class="okbox">✅ 本地模式 / 演示数据完全不涉及任何真实业务，可放心试玩。等你真要接自己公司的数据，再按技能说明填 SeaTable / PartDB 凭证即可（那一步才是可选的）。</div>
-    <div class="okbox">🌙 <b>自动夜间模式</b>：驾驶舱会跟随你系统的深色 / 浅色设置自动切换（macOS / Windows / 手机都支持），不用手动切。深夜看板不再刺眼；想强制亮色，在系统里关掉深色模式即可。</div>
+    <div class="okbox">🌙 <b>夜间模式（三态）</b>：默认跟随你系统的深色 / 浅色设置自动切换（macOS / Windows / 手机都支持）。如果自动没生效，或想单独让驾驶舱变暗而系统仍是亮色——点顶部工具栏的 <b>「主题」按钮</b> 即可在「自动 → 暗色 → 亮色」之间循环切换，选择会记在浏览器本地（localStorage），下次打开自动生效。</div>
   </section>
 
   <!-- 架构 -->

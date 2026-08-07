@@ -530,6 +530,7 @@ ICONS = {
     "IC_SHARE": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l7.8 4"/><path d="M15.4 6.5l-7.8 4"/></svg>',
     "IC_KEY": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M14 7a4 4 0 1 0-3.6 5.9L7 17v3H4v-3l5.4-5.4A4 4 0 0 0 14 7zm-1.6 2.4a2 2 0 1 1-2.8 2.8 2 2 0 0 1 2.8-2.8z"/></svg>',
     "IC_ADD": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
+    "IC_THEME": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
 }
 
 # ===== 访问口令（客户端校验，写进 HTML 源码；已 base64 混淆，开发者选项里不再一眼看到明文）=====
@@ -572,6 +573,11 @@ HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>生产·项目管理驾驶舱</title>
+<script>
+/* 防闪烁：在 body 渲染前先应用已保存的手动主题（暗/亮），避免亮→暗闪一下 */
+(function(){try{var t=localStorage.getItem('cockpit_theme');var r=document.documentElement;
+if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.add('theme-light');}}catch(e){}})();
+</script>
 <style>
   :root{
     --bg:#f4f6fb; --card:#ffffff; --ink:#1f2733; --sub:#6b7686; --line:#e6eaf2;
@@ -581,46 +587,88 @@ HTML = r"""<!DOCTYPE html>
     --subbg:#f8f9fc; --subbg2:#eef1f7; --subbg3:#f1f3f8; --selbg:#eef2ff;
     --bd:#d8dce3; --txt:#1f2733; --inputbg:#fbfcfe;
   }
-  /* === 自动夜间模式：跟随系统的 prefers-color-scheme（与系统深色模式一致，无需手动切换） === */
+  /* === 夜间模式（三态）===
+     auto  ：跟随系统 prefers-color-scheme（系统深色且未强制亮 → 暗）
+     dark  ：手动强制暗，无视系统设置
+     light ：手动强制亮，覆盖下面的系统媒体查询（:not(.theme-light) 已排除）
+  */
   @media (prefers-color-scheme: dark){
-    :root{
+    :root:not(.theme-light){
       --bg:#0f1420; --card:#19202e; --ink:#e7ecf3; --sub:#9aa6b6; --line:#2a3445;
       --shadow:0 1px 3px rgba(0,0,0,.5),0 8px 24px rgba(0,0,0,.5);
       --subbg:#1c2433; --subbg2:#222c3d; --subbg3:#1e2737; --selbg:#28324a;
       --bd:#2f3a4d; --txt:#e7ecf3; --inputbg:#141b27;
       --green:#51cf66; --red:#ff6b6b; --amber:#ffa94d; --blue:#4dabf7; --teal:#20c997; --purple:#9775fa;
     }
-    header.top{background:linear-gradient(135deg,#2b3f9e,#3b5bdb)}
-    .sec-nav{background:var(--bg);border-bottom-color:var(--line)}
-    .hscroll::-webkit-scrollbar-thumb,.sec-nav::-webkit-scrollbar-thumb{background:#3a465c}
-    .bar-track{background:var(--subbg2)}
-    .cf .cell{background:var(--subbg)}
-    .gantt-track{background:var(--subbg3)}
-    .bf-btn.ghost,.btn-ghost{background:var(--subbg2)}
-    .bf-table th{background:var(--subbg)}
-    .bf-table input,.bf-table select,.pw-note textarea.pw-out{background:var(--inputbg);color:var(--txt);border-color:var(--bd)}
-    .sec-nav-item.active{background:var(--selbg)}
-    .modal-card,.modal,.lock-card{background:var(--card)}
-    .modal-x{background:var(--subbg2);color:var(--sub)}
-    .role-bar{background:var(--card);border-color:var(--bd)}
-    .role-tab{background:var(--subbg);color:var(--txt)}
-    .role-tab.active{background:var(--primary);color:#fff}
-    .role-key,.pw-cp{background:var(--card);color:var(--txt);border-color:var(--bd)}
-    .pw-val{background:var(--subbg);color:var(--txt);border-color:var(--bd)}
-    .lock-card h2{color:var(--ink)} .lock-card p{color:var(--sub)}
-    .lock-input{background:var(--inputbg);color:var(--txt);border-color:var(--bd)}
-    .pw-note{background:#241f0c;border-color:#4a3d12;color:#ffd43b}
-    .st-进行中{background:#15324a;color:#74c0fc}
-    .st-计划中{background:#3a2a12;color:#ffa94d}
-    .st-已完成{background:#14331f;color:#69db7c}
-    .tag-red{background:#3a1820;color:#ff8787}
-    .tag-green{background:#14331f;color:#69db7c}
-    .tag-amber{background:#3a2a12;color:#ffa94d}
-    .pri-高{background:#3a1820;color:#ff8787}
-    .pri-中{background:#3a2a12;color:#ffa94d}
-    .pri-提示{background:#15324a;color:#74c0fc}
-    .note,.empty,.pg,.bf-count{color:var(--sub)}
+    :root:not(.theme-light) header.top{background:linear-gradient(135deg,#2b3f9e,#3b5bdb)}
+    :root:not(.theme-light) .sec-nav{background:var(--bg);border-bottom-color:var(--line)}
+    :root:not(.theme-light) .hscroll::-webkit-scrollbar-thumb,:root:not(.theme-light) .sec-nav::-webkit-scrollbar-thumb{background:#3a465c}
+    :root:not(.theme-light) .bar-track{background:var(--subbg2)}
+    :root:not(.theme-light) .cf .cell{background:var(--subbg)}
+    :root:not(.theme-light) .gantt-track{background:var(--subbg3)}
+    :root:not(.theme-light) .bf-btn.ghost,:root:not(.theme-light) .btn-ghost{background:var(--subbg2)}
+    :root:not(.theme-light) .bf-table th{background:var(--subbg)}
+    :root:not(.theme-light) .bf-table input,:root:not(.theme-light) .bf-table select,:root:not(.theme-light) .pw-note textarea.pw-out{background:var(--inputbg);color:var(--txt);border-color:var(--bd)}
+    :root:not(.theme-light) .sec-nav-item.active{background:var(--selbg)}
+    :root:not(.theme-light) .modal-card,:root:not(.theme-light) .modal,:root:not(.theme-light) .lock-card{background:var(--card)}
+    :root:not(.theme-light) .modal-x{background:var(--subbg2);color:var(--sub)}
+    :root:not(.theme-light) .role-bar{background:var(--card);border-color:var(--bd)}
+    :root:not(.theme-light) .role-tab{background:var(--subbg);color:var(--txt)}
+    :root:not(.theme-light) .role-tab.active{background:var(--primary);color:#fff}
+    :root:not(.theme-light) .role-key,:root:not(.theme-light) .pw-cp{background:var(--card);color:var(--txt);border-color:var(--bd)}
+    :root:not(.theme-light) .pw-val{background:var(--subbg);color:var(--txt);border-color:var(--bd)}
+    :root:not(.theme-light) .lock-card h2{color:var(--ink)} :root:not(.theme-light) .lock-card p{color:var(--sub)}
+    :root:not(.theme-light) .lock-input{background:var(--inputbg);color:var(--txt);border-color:var(--bd)}
+    :root:not(.theme-light) .pw-note{background:#241f0c;border-color:#4a3d12;color:#ffd43b}
+    :root:not(.theme-light) .st-进行中{background:#15324a;color:#74c0fc}
+    :root:not(.theme-light) .st-计划中{background:#3a2a12;color:#ffa94d}
+    :root:not(.theme-light) .st-已完成{background:#14331f;color:#69db7c}
+    :root:not(.theme-light) .tag-red{background:#3a1820;color:#ff8787}
+    :root:not(.theme-light) .tag-green{background:#14331f;color:#69db7c}
+    :root:not(.theme-light) .tag-amber{background:#3a2a12;color:#ffa94d}
+    :root:not(.theme-light) .pri-高{background:#3a1820;color:#ff8787}
+    :root:not(.theme-light) .pri-中{background:#3a2a12;color:#ffa94d}
+    :root:not(.theme-light) .pri-提示{background:#15324a;color:#74c0fc}
+    :root:not(.theme-light) .note,:root:not(.theme-light) .empty,:root:not(.theme-light) .pg,:root:not(.theme-light) .bf-count{color:var(--sub)}
   }
+  /* 手动强制暗：与上面媒体查询内容一致，但无视系统设置 */
+  :root.theme-dark{
+    --bg:#0f1420; --card:#19202e; --ink:#e7ecf3; --sub:#9aa6b6; --line:#2a3445;
+    --shadow:0 1px 3px rgba(0,0,0,.5),0 8px 24px rgba(0,0,0,.5);
+    --subbg:#1c2433; --subbg2:#222c3d; --subbg3:#1e2737; --selbg:#28324a;
+    --bd:#2f3a4d; --txt:#e7ecf3; --inputbg:#141b27;
+    --green:#51cf66; --red:#ff6b6b; --amber:#ffa94d; --blue:#4dabf7; --teal:#20c997; --purple:#9775fa;
+  }
+  :root.theme-dark header.top{background:linear-gradient(135deg,#2b3f9e,#3b5bdb)}
+  :root.theme-dark .sec-nav{background:var(--bg);border-bottom-color:var(--line)}
+  :root.theme-dark .hscroll::-webkit-scrollbar-thumb,:root.theme-dark .sec-nav::-webkit-scrollbar-thumb{background:#3a465c}
+  :root.theme-dark .bar-track{background:var(--subbg2)}
+  :root.theme-dark .cf .cell{background:var(--subbg)}
+  :root.theme-dark .gantt-track{background:var(--subbg3)}
+  :root.theme-dark .bf-btn.ghost,:root.theme-dark .btn-ghost{background:var(--subbg2)}
+  :root.theme-dark .bf-table th{background:var(--subbg)}
+  :root.theme-dark .bf-table input,:root.theme-dark .bf-table select,:root.theme-dark .pw-note textarea.pw-out{background:var(--inputbg);color:var(--txt);border-color:var(--bd)}
+  :root.theme-dark .sec-nav-item.active{background:var(--selbg)}
+  :root.theme-dark .modal-card,:root.theme-dark .modal,:root.theme-dark .lock-card{background:var(--card)}
+  :root.theme-dark .modal-x{background:var(--subbg2);color:var(--sub)}
+  :root.theme-dark .role-bar{background:var(--card);border-color:var(--bd)}
+  :root.theme-dark .role-tab{background:var(--subbg);color:var(--txt)}
+  :root.theme-dark .role-tab.active{background:var(--primary);color:#fff}
+  :root.theme-dark .role-key,:root.theme-dark .pw-cp{background:var(--card);color:var(--txt);border-color:var(--bd)}
+  :root.theme-dark .pw-val{background:var(--subbg);color:var(--txt);border-color:var(--bd)}
+  :root.theme-dark .lock-card h2{color:var(--ink)} :root.theme-dark .lock-card p{color:var(--sub)}
+  :root.theme-dark .lock-input{background:var(--inputbg);color:var(--txt);border-color:var(--bd)}
+  :root.theme-dark .pw-note{background:#241f0c;border-color:#4a3d12;color:#ffd43b}
+  :root.theme-dark .st-进行中{background:#15324a;color:#74c0fc}
+  :root.theme-dark .st-计划中{background:#3a2a12;color:#ffa94d}
+  :root.theme-dark .st-已完成{background:#14331f;color:#69db7c}
+  :root.theme-dark .tag-red{background:#3a1820;color:#ff8787}
+  :root.theme-dark .tag-green{background:#14331f;color:#69db7c}
+  :root.theme-dark .tag-amber{background:#3a2a12;color:#ffa94d}
+  :root.theme-dark .pri-高{background:#3a1820;color:#ff8787}
+  :root.theme-dark .pri-中{background:#3a2a12;color:#ffa94d}
+  :root.theme-dark .pri-提示{background:#15324a;color:#74c0fc}
+  :root.theme-dark .note,:root.theme-dark .empty,:root.theme-dark .pg,:root.theme-dark .bf-count{color:var(--sub)}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
     background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5;-webkit-text-size-adjust:100%}
@@ -852,6 +900,7 @@ HTML = r"""<!DOCTYPE html>
     <h1>__TITLE_ICON__ 生产 · 项目管理驾驶舱</h1>
     <div class="meta" id="metaLine"></div>
     <div class="toolbar">
+      <button class="btn" id="btnTheme" title="切换主题：自动 / 暗色 / 亮色">__IC_THEME__ 主题：自动</button>
       <button class="btn" id="btnExport">__IC_DOWNLOAD__ 导出分析JSON</button>
       <button class="btn" id="btnImport">__IC_UPLOAD__ 导入数据快照</button>
       <button class="btn" id="btnAnalyze" style="background:rgba(255,255,255,.32)">__IC_ANALYZE__ 分析数据（复制发我）</button>
@@ -884,6 +933,35 @@ function fmt(n){ if(n===null||n===undefined||isNaN(n)) return "0";
 function yuan(n){ return "¥"+fmt(n); }
 function pct(n){ return (n==null?"—":n+"%"); }
 function el(html){ const t=document.createElement("template"); t.innerHTML=html.trim(); return t.content.firstChild; }
+
+/* ---------- 主题切换：自动 / 暗色 / 亮色（三态，localStorage 持久化） ---------- */
+const THEME_KEY = "cockpit_theme";
+const THEME_LABEL = {auto:"主题：自动", dark:"主题：暗色", light:"主题：亮色"};
+function _currentTheme(){
+  const r=document.documentElement;
+  if(r.classList.contains("theme-dark")) return "dark";
+  if(r.classList.contains("theme-light")) return "light";
+  return "auto";
+}
+function applyTheme(t){
+  const r=document.documentElement;
+  r.classList.toggle("theme-dark", t==="dark");
+  r.classList.toggle("theme-light", t==="light");
+  const b=document.getElementById("btnTheme");
+  if(b){ const svg=(b.querySelector("svg")?b.innerHTML.split("</svg>")[0]+"</svg> ":"") ; b.innerHTML=svg+THEME_LABEL[t]; }
+}
+(function(){
+  let saved;
+  try{ saved=localStorage.getItem(THEME_KEY); }catch(e){ saved=null; }
+  const cur = (saved==="dark"||saved==="light") ? saved : "auto";
+  applyTheme(cur);
+  const btn=document.getElementById("btnTheme");
+  if(btn){ btn.onclick=function(){
+    const next = _currentTheme()==="auto" ? "dark" : _currentTheme()==="dark" ? "light" : "auto";
+    try{ if(next==="auto") localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY,next); }catch(e){}
+    applyTheme(next);
+  }; }
+})();
 
 /* ---------- SVG 图表 ---------- */
 function donut(pctv, color, size=120){
