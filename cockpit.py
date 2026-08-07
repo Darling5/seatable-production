@@ -529,6 +529,7 @@ ICONS = {
     "IC_BOX": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/><path d="M12 11v10"/></svg>',
     "IC_SHARE": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l7.8 4"/><path d="M15.4 6.5l-7.8 4"/></svg>',
     "IC_KEY": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M14 7a4 4 0 1 0-3.6 5.9L7 17v3H4v-3l5.4-5.4A4 4 0 0 0 14 7zm-1.6 2.4a2 2 0 1 1-2.8 2.8 2 2 0 0 1 2.8-2.8z"/></svg>',
+    "IC_ADD": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
 }
 
 # ===== 访问口令（客户端校验，写进 HTML 源码；已 base64 混淆，开发者选项里不再一眼看到明文）=====
@@ -989,11 +990,11 @@ function renderGantt(g, todayStr){
 }
 /* ---------- 角色视图（单文件 + 角色切换 + #role 书签）---------- */
 const ROLES={
-  boss:      {name:"老板",     sections:["K","A","BF","PW","G","T","C","Q","P","Sup","Inv"], actions:null},
-  warehouse: {name:"仓库",     sections:["K","A","Inv","P"],                       actions:["warehouse"]},
-  purchase:  {name:"采购",     sections:["K","A","Sup"],                          actions:["purchase"]},
-  production:{name:"生产经理", sections:["K","A","G","T","Q","P","Inv"],           actions:["production","warehouse","delivery"]},
-  sales:     {name:"销售",     sections:["K","A","PW","G"],                       actions:["sales","delivery"]},
+  boss:      {name:"老板",     sections:["K","A","WZ","BF","PW","G","T","C","Q","P","Sup","Inv"], actions:null},
+  warehouse: {name:"仓库",     sections:["K","A","WZ","Inv","P"],                       actions:["warehouse"]},
+  purchase:  {name:"采购",     sections:["K","A","WZ","Sup"],                          actions:["purchase"]},
+  production:{name:"生产经理", sections:["K","A","WZ","G","T","Q","P","Inv"],           actions:["production","warehouse","delivery"]},
+  sales:     {name:"销售",     sections:["K","A","WZ","PW","G"],                       actions:["sales","delivery"]},
 };
 const ROLE_ORDER=["boss","warehouse","purchase","production","sales"];
 function currentRole(){
@@ -1363,8 +1364,28 @@ function render(m){
   if(ROLES[role].sections.includes("Sup")) app.appendChild(secSup);
   if(ROLES[role].sections.includes("Inv")) app.appendChild(secInv);
 
+  /* 新建生产项目向导：纯表单采集，提交导出 JSON；写入由 op.py apply-wizard 完成（网页不持有任何账号/口令） */
+  const secWZ=el(`<section id="sec-WZ" class="sec"><div class="sec-title">__IC_ADD__ 新建生产项目（向导）</div>
+    <div class="card">
+      <p class="note">填完点「生成并下载」，浏览器会下载一个 <b>新建生产项目.json</b>。在本机跑一条命令即可写入数据（本地 CSV 或 SeaTable，取决于你的配置）：</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:680px">
+        <label>产品名称 *<input id="wz-product" type="text" placeholder="如 4G小卡二代" style="width:100%"></label>
+        <label>数量 *<input id="wz-qty" type="number" min="1" placeholder="100" style="width:100%"></label>
+        <label>交期天数（天数）<input id="wz-days" type="number" min="1" placeholder="30" style="width:100%"></label>
+        <label>优先级<select id="wz-prio" style="width:100%"><option>高</option><option selected>中</option><option>低</option></select></label>
+        <label>负责人<input id="wz-owner" type="text" placeholder="选填" style="width:100%"></label>
+        <label>备注<input id="wz-note" type="text" placeholder="选填" style="width:100%"></label>
+      </div>
+      <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button class="btn-primary" onclick="submitWizard()">__IC_DOWNLOAD__ 生成并下载 JSON</button>
+        <code id="wz-cmd" style="background:#f3f4f6;padding:6px 10px;border-radius:8px;font-size:13px">python op.py apply-wizard 新建生产项目.json</code>
+      </div>
+      <p class="note" style="margin-top:10px">💡 写入后重新生成驾驶舱即可看到新项目；若配置了 PartDB，缺料预警会自动计算。<b>网页本身不存任何账号/口令</b>，数据始终由本机 Python 管道落库，安全合规。</p>
+    </div></section>`);
+  if(ROLES[role].sections.includes("WZ")) app.appendChild(secWZ);
+
   /* 快速导航条：列出当前角色可见模块，点击平滑跳转，滚动自动高亮 */
-  const SEC_NAV={K:['核心指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],BF:['补录数据','__IC_EDIT__'],
+  const SEC_NAV={K:['核心指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],WZ:['新建项目','__IC_ADD__'],BF:['补录数据','__IC_EDIT__'],
     PW:['项目&在制','__IC_PROJ__'],G:['甘特图','__IC_GANT__'],T:['工时','__IC_TIME__'],
     C:['成本','__IC_COST__'],Q:['质量','__IC_QUAL__'],P:['产线流转','__IC_PROJ__'],
     Sup:['供应链','__IC_SUP__'],Inv:['库存预警','__IC_BOX__']};
@@ -1386,6 +1407,23 @@ function toast(msg){
   t.textContent=msg; t.classList.add("show");
   clearTimeout(t._timer);
   t._timer=setTimeout(()=>t.classList.remove("show"), 3200);
+}
+/* 新建项目向导：采集 → 生成 JSON → 浏览器下载（不触碰任何后端/口令） */
+function submitWizard(){
+  const 产品=document.getElementById('wz-product').value.trim();
+  const 数量=parseInt(document.getElementById('wz-qty').value)||0;
+  const 天数=parseInt(document.getElementById('wz-days').value)||0;
+  const 优先级=document.getElementById('wz-prio').value;
+  const 负责人=document.getElementById('wz-owner').value.trim();
+  const 备注=document.getElementById('wz-note').value.trim();
+  if(!产品||!数量){ toast('请填写产品名称和数量'); return; }
+  const due=new Date(Date.now()+天数*86400000).toISOString().slice(0,10);
+  const obj={_wizard:"new-project",产品,数量,交期天数:天数,预计完工:due,优先级,负责人,备注,生成时间:new Date().toISOString()};
+  const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='新建生产项目.json'; a.click();
+  URL.revokeObjectURL(a.href);
+  document.getElementById('wz-cmd').textContent='python op.py apply-wizard 新建生产项目.json';
+  toast('已下载 新建生产项目.json ✅ 运行命令即可写入');
 }
 /* 分享角色视图：复制带 #role 锚点 + 口令的微信文案，直接发微信给对应人 */
 function shareRole(role){
