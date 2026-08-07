@@ -1,0 +1,15 @@
+# 用户运行时数据（含业务数据，勿提交）
+data/
+
+# 真实配置（含个人 token，勿提交；只提交 config.yaml.example）
+config.yaml
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 编辑器/系统
+.DS_Store
+.vscode/
+.idea/

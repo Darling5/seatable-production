@@ -1,0 +1,44 @@
+{
+  "name": "production-cockpit",
+  "version": "1.0.0",
+  "description": "Production delivery cockpit expert that generates a single-file HTML dashboard from SeaTable+PartDB data, with role-based views, access control and one-click cloud deploy.",
+  "author": {
+    "name": "WorkBuddy User",
+    "email": "user@workbuddy.local"
+  },
+  "agents": ["./agents/production-cockpit.md"],
+  "skills": ["./skills/seatable-production"],
+
+  "expertType": "agent",
+  "agentName": "production-cockpit",
+
+  "displayName": {
+    "en": "Production Cockpit",
+    "zh": "生产驾驶舱"
+  },
+  "profession": {
+    "en": "Production Delivery Cockpit Expert",
+    "zh": "生产交付驾驶舱专家"
+  },
+  "displayDescription": {
+    "en": "Generates a production delivery cockpit HTML from SeaTable+PartDB, covering projects, cost, quality, inventory and role-based views with access control.",
+    "zh": "基于 SeaTable+PartDB 实时生成生产驾驶舱，覆盖项目、成本、质量、库存与多角色视图"
+  },
+  "avatar": "avatars/production-cockpit.png",
+  "categoryId": "10-ProjectQuality",
+  "defaultInitPrompt": {
+    "zh": "生成最新的生产项目管理驾驶舱",
+    "en": "Generate the latest production cockpit"
+  },
+  "plugin": "production-cockpit",
+  "tags": [
+    { "en": "Production Dashboard", "zh": "生产看板" },
+    { "en": "Project Management", "zh": "项目管理" },
+    { "en": "Data Cockpit", "zh": "数据驾驶舱" }
+  ],
+  "quickPrompts": [
+    { "en": "Generate the latest production cockpit", "zh": "生成最新的生产项目管理驾驶舱" },
+    { "en": "Refresh cockpit data and redeploy to cloud", "zh": "刷新驾驶舱数据并重新部署到云端" },
+    { "en": "Export 5-role share links and passwords", "zh": "导出 5 个角色的分享链接和口令清单" }
+  ]
+}
