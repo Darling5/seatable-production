@@ -1378,10 +1378,11 @@ function render(m){
       </div>
       <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <button class="btn-primary" onclick="submitWizardCopy()">__IC_COPY__ 复制并打开 WorkBuddy</button>
+        <button class="btn-ghost" onclick="window.open('https://www.workbuddy.cn/','_blank')">🌐 网页版提交（workbuddy.cn）</button>
         <button class="btn-ghost" onclick="submitWizardDownload()">__IC_DOWNLOAD__ 下载 JSON（备用）</button>
       </div>
       <textarea id="wz-text" readonly style="display:none;width:100%;max-width:680px;height:130px;margin-top:12px;font-size:13px;padding:8px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit"></textarea>
-      <p class="note" style="margin-top:10px">💡 网页不持有任何账号/口令；数据最终由本机 Python 落库，安全合规。</p>
+      <p class="note" style="margin-top:10px">💡 想让「复制并打开」一键唤起桌面客户端，请在 WorkBuddy 桌面端 <b>Claw设置 → 协议注册</b> 启用 <code>workbuddy://</code> 绑定；若没弹出，点上面的「🌐 网页版提交」在浏览器里粘贴发送即可。网页不持有任何账号/口令，数据最终由本机 Python 落库，安全合规。</p>
     </div></section>`);
   if(ROLES[role].sections.includes("WZ")) app.appendChild(secWZ);
 
@@ -1441,10 +1442,10 @@ function copyText(txt){
   }catch(e){ return Promise.resolve(null); }
 }
 function openWorkBuddy(){
-  try{
-    const w=window.open('workbuddy://new-chat','_blank');
-    if(!w){ window.open('https://workbuddy.link','_blank'); }
-  }catch(e){ /* 忽略：toast 已提示用户手动处理 */ }
+  // 真实 scheme（取自本机安装的 WorkBuddy 安装包）：workbuddy://chat 仅打开对话、不自动执行
+  // 需 WorkBuddy 桌面端「Claw设置 → 协议注册」启用 workbuddy:// 绑定，深链才会接管；
+  // 否则浏览器不响应，用户改用表单里的「🌐 网页版提交」按钮即可。
+  try{ window.location.href='workbuddy://chat'; }catch(e){ /* 忽略 */ }
 }
 function submitWizardCopy(){
   const d=collectWizard(); if(!d) return;
