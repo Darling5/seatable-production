@@ -1367,7 +1367,7 @@ function render(m){
   /* 新建生产项目向导：纯表单采集，提交导出 JSON；写入由 op.py apply-wizard 完成（网页不持有任何账号/口令） */
   const secWZ=el(`<section id="sec-WZ" class="sec"><div class="sec-title">__IC_ADD__ 新建生产项目（向导）</div>
     <div class="card">
-      <p class="note">填完点「复制并打开 WorkBuddy」：会把下面这些信息整理成一段文字<b>自动复制到剪贴板</b>，并唤起 WorkBuddy。你只需在 WorkBuddy 里<b>粘贴并发送</b>，剩下的我来写库、算缺料、刷新驾驶舱。</p>
+      <p class="note">填完点「🚀 一键提交到 WorkBuddy」：会把信息整理成文字、<b>复制到剪贴板</b>，并<b>拉起本地 WorkBuddy 自动写库、算缺料、刷新驾驶舱</b>——全程一键完成，无需手动粘贴。没装桌面端时点「🌐 网页版提交」手动发送。</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:680px">
         <label>产品名称 *<input id="wz-product" type="text" placeholder="如 4G小卡二代" style="width:100%"></label>
         <label>数量 *<input id="wz-qty" type="number" min="1" placeholder="100" style="width:100%"></label>
@@ -1377,12 +1377,12 @@ function render(m){
         <label>备注<input id="wz-note" type="text" placeholder="选填" style="width:100%"></label>
       </div>
       <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <button class="btn-primary" onclick="submitWizardCopy()">__IC_COPY__ 复制并打开 WorkBuddy</button>
+        <button class="btn-primary" onclick="submitWizardCopy()">__IC_ADD__ 一键提交到 WorkBuddy（自动处理）</button>
         <button class="btn-ghost" onclick="window.open('https://www.workbuddy.cn/','_blank')">🌐 网页版提交（workbuddy.cn）</button>
         <button class="btn-ghost" onclick="submitWizardDownload()">__IC_DOWNLOAD__ 下载 JSON（备用）</button>
       </div>
       <textarea id="wz-text" readonly style="display:none;width:100%;max-width:680px;height:130px;margin-top:12px;font-size:13px;padding:8px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit"></textarea>
-      <p class="note" style="margin-top:10px">💡 想让「复制并打开」一键唤起桌面客户端，请在 WorkBuddy 桌面端 <b>Claw设置 → 协议注册</b> 启用 <code>workbuddy://</code> 绑定；若没弹出，点上面的「🌐 网页版提交」在浏览器里粘贴发送即可。网页不持有任何账号/口令，数据最终由本机 Python 落库，安全合规。</p>
+      <p class="note" style="margin-top:10px">💡 一键提交需要 WorkBuddy 桌面端已安装，并在 <b>Claw设置 → 协议注册</b> 启用 <code>workbuddy://</code> 绑定（和百度云/夸克拉起本地客户端同理）。启用后点按钮即自动处理；未启用则点「🌐 网页版提交」在 workbuddy.cn 手动粘贴。网页不持有任何账号/口令，数据由本机 Python 落库。</p>
     </div></section>`);
   if(ROLES[role].sections.includes("WZ")) app.appendChild(secWZ);
 
@@ -1426,7 +1426,7 @@ function wizardToText(d){
   const lines=["【新建生产项目】","产品："+d.产品,"数量："+d.数量,"交期天数："+d.天数,"预计完工："+d.交期,"优先级："+d.优先级];
   if(d.负责人) lines.push("负责人："+d.负责人);
   if(d.备注) lines.push("备注："+d.备注);
-  lines.push("（由生产驾驶舱「新建项目」向导生成，请帮我写入数据并刷新驾驶舱）");
+  lines.push("（由生产驾驶舱「新建项目」向导生成。请在已加载 seatable-production 技能的项目中运行 op.py apply-text 处理此指令：写入数据并刷新驾驶舱。）");
   return lines.join("\n");
 }
 function copyText(txt){
@@ -1441,20 +1441,24 @@ function copyText(txt){
     return Promise.resolve(ok?true:null);
   }catch(e){ return Promise.resolve(null); }
 }
-function openWorkBuddy(){
-  // 真实 scheme（取自本机安装的 WorkBuddy 安装包）：workbuddy://chat 仅打开对话、不自动执行
-  // 需 WorkBuddy 桌面端「Claw设置 → 协议注册」启用 workbuddy:// 绑定，深链才会接管；
-  // 否则浏览器不响应，用户改用表单里的「🌐 网页版提交」按钮即可。
-  try{ window.location.href='workbuddy://chat'; }catch(e){ /* 忽略 */ }
+function invokeWorkBuddyAuto(txt){
+  // 云盘式一键：workbuddy://task?action=start 自动执行任务；skills= 自动加载 seatable-production 技能
+  // 用隐藏 iframe 触发系统协议处理，不离开当前页面（类似百度云网页拉起本地客户端下载）
+  const url='workbuddy://task?action=start&prompt='+encodeURIComponent(txt)+'&skills=seatable-production';
+  try{
+    const iframe=document.createElement('iframe');
+    iframe.style.display='none'; iframe.src=url;
+    document.body.appendChild(iframe);
+    setTimeout(()=>{ try{document.body.removeChild(iframe);}catch(e){} }, 2000);
+  }catch(e){ /* 忽略：交给 toast / 网页版按钮兜底 */ }
 }
 function submitWizardCopy(){
   const d=collectWizard(); if(!d) return;
   const txt=wizardToText(d);
   const box=document.getElementById('wz-text'); box.value=txt; box.style.display='block';
   copyText(txt).then(ok=>{
-    openWorkBuddy();
-    if(ok) toast('已复制新建指令 ✅ 去 WorkBuddy 粘贴发送即可');
-    else { box.focus(); box.select(); toast('已生成文本，请手动复制后到 WorkBuddy 发送'); }
+    invokeWorkBuddyAuto(txt);
+    toast('已拉起 WorkBuddy 并自动提交 ✅ 本地客户端将自动写库并刷新驾驶舱');
   });
 }
 function submitWizardDownload(){
