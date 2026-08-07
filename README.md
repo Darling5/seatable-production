@@ -30,6 +30,14 @@ git clone https://github.com/Darling5/seatable-production.git \
 > 装好后**重启 WorkBuddy**，对话里说「帮我建个生产计划」「出一张发货清单」就会触发。
 > 默认零配置即用（本地 CSV 存储）；想接自己的 SeaTable / PartDB，见第 3、4 节。
 
+**首次运行建议先跑引导式安装向导**（会问你要用哪种后端、有没有 token，避免手动改配置）：
+
+```bash
+cd ~/.workbuddy/skills/seatable-production
+python setup.py            # 交互式：选 本地 / SeaTable / MySQL
+# 或 python setup.py --local   # 直接零配置
+```
+
 ---
 
 ## 0.1 为什么选 WorkBuddy & 团队怎么共享

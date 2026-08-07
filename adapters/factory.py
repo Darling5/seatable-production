@@ -62,6 +62,9 @@ def load_config(path: str = None) -> dict:
         path = os.path.join(_SKILL_DIR, "config.yaml")
     if not os.path.exists(path):
         # 没有配置文件 → 退回最安全的 local 默认
+        if not getattr(load_config, "_hinted", False):
+            load_config._hinted = True
+            print("[提示] 未发现 config.yaml，使用本地零配置；运行 `python setup.py` 可初始化或切换后端", file=sys.stderr)
         return {"backend": "local", "local": {"data_dir": "data", "format": "csv"}}
     try:
         import yaml  # type: ignore
@@ -88,6 +91,8 @@ def get_adapter(config: dict = None):
                 print(f"[warn] SeaTable 初始化失败，退回 local：{e}", file=sys.stderr)
         else:
             print("[warn] 未配置 seatable.api_token/base_uuid，退回 local 模式", file=sys.stderr)
+    if backend == "mysql":
+        print("[warn] MySQL 适配器尚未实现，退回 local 模式（如需实现请告知）", file=sys.stderr)
     # 默认 / 兜底：本地
     lc = config.get("local") or {}
     data_dir = lc.get("data_dir") or "data"
