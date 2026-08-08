@@ -31,7 +31,13 @@ flowchart LR
 **▶ 想直接点开看交互效果？** 已托管在线，浏览器打开即玩（无需安装）：
 
 - 🖥️ **[交互式使用指南（HTML，强烈推荐先看）](https://darling5.github.io/seatable-production/usage-guide.html)** —— 图文 + 可点的角色视图、深链发起、夜间模式演示，等于一份会动的产品说明书。
-- 🎬 **演示视频（即将上线）**：最快的方式是把一段 60 秒录屏（OBS / 手机）存为 `docs/demo.mp4` 提交，GitHub Pages 会自动以 `https://darling5.github.io/seatable-production/demo.mp4` 发布，本页链接随即可点；也可用 WorkBuddy 浏览器自动化录制。
+- 🎬 **演示视频（已上线）**：下面这段 60 秒实录，前半段是本地 `驾驶舱预览.html`（KPI / 图表 / 表格滚动），后半段是在线交互式使用指南。GitHub Pages 自动托管，直接播放：
+
+<br>
+
+<video src="https://darling5.github.io/seatable-production/demo.mp4" controls autoplay muted loop playsinline width="100%" style="max-width:960px;border:1px solid #e5e7eb;border-radius:12px;"></video>
+
+> 视频源文件在仓库 `docs/demo.mp4`，由本机 Chrome 无头录制 + ffmpeg 转码生成；想自己重录，跑 `node record_demo.js`（脚本在 node 工作区）即可。
 
 > 示意图与演示页均为**公开模板数据**，不含任何真实业务信息与口令，可放心公开。
 
