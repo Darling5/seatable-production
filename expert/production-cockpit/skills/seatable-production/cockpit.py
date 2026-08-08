@@ -1145,11 +1145,11 @@ const ROLES={
   // 销售：立项职责 → 新建项目（写「项目」表，对应销售立项表单）
   sales:     {name:"销售",     sections:["K","A","WZ","PW","G"],                       actions:["sales","delivery"]},
 };
-const ROLE_ORDER=["boss","warehouse","purchase","production","sales"];
+const ROLE_ORDER=["boss","production","purchase","warehouse","sales"];
 function currentRole(){
   const m=/role=([a-z]+)/.exec(location.hash||"");
   const r=m?m[1]:"";
-  return ROLES[r]?r:"boss";
+  return ROLES[r]?r:"production";
 }
 function buildRoleBar(role, unlock){
   const isAdmin = unlock && unlock.level==="admin";
