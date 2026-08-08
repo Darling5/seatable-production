@@ -244,13 +244,15 @@ def compute(adapter, today):
     ontime_rate = (ontime / dated * 100) if dated else None
     avg_cycle = round(sum(c["days"] for c in cycles) / len(cycles), 1) if cycles else 0
 
-    # 产线实时流转：生产工序表的「当前流程」分布（每个在产计划当前卡在哪个工序）
-    flow_rows = adapter.list_rows("生产工序")
+    # 产线实时流转：在产计划（状态≠已交付）当前所处工序（生产计划.阶段）的分布
+    # 注意：绝不能用「生产工序」主表的「当前流程」计数——该表是工序目录（每工序仅一行），
+    # 计数恒为 1，无法表达“卡在哪个工序”。正确口径是按在产计划的实际阶段聚合。
     flow_dist = {}
-    for r in flow_rows:
-        fl = (r.get("当前流程") or "").strip()
-        if fl:
-            flow_dist[fl] = flow_dist.get(fl, 0) + 1
+    for r in plans:
+        if (r.get("状态") or "").strip() == "已交付":
+            continue
+        st = (r.get("阶段") or "未定义").strip() or "未定义"
+        flow_dist[st] = flow_dist.get(st, 0) + 1
 
     # ── 质量 ──
     shipped = sum(_num(s.get("发货数量")) for s in shipments) or len(shipments)
@@ -1433,7 +1435,7 @@ function render(m){
   const secP=el(`<section id="sec-P" class="sec"><div class="sec-title">__IC_PROJ__ 生产进度 & 产线流转</div>
     <div class="grid g2">
       <div class="card"><h3>产线实时流转（在产计划当前工序）</h3>${flowHTML}
-        <div class="note">基于生产工序表「当前流程」：每个在产计划当前所处环节，用于定位产能瓶颈。共 ${flowEntries.length} 个工序环节在流转。</div></div>
+        <div class="note">基于生产计划表「阶段」（在产 = 状态≠已交付）：每个在产计划当前所处工序，用于定位产能瓶颈。共 ${flowEntries.length} 个工序环节在流转。</div></div>
       <div class="card"><h3>生产计划阶段分布</h3>${bars(stageItems2)}
         <div class="note">基于生产计划表「阶段」：整体进度分布（已交付/备料中/组装等）。</div></div>
     </div></section>`);
