@@ -580,12 +580,20 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
 </script>
 <style>
   :root{
-    --bg:#f4f6fb; --card:#ffffff; --ink:#1f2733; --sub:#6b7686; --line:#e6eaf2;
-    --primary:#3b5bdb; --green:#2f9e44; --red:#e03131; --amber:#f08c00; --purple:#7048e8;
-    --blue:#1c7ed6; --teal:#0ca678; --shadow:0 1px 3px rgba(16,24,40,.06),0 8px 24px rgba(16,24,40,.06);
-    /* 暗色模式扩展变量：亮色下保持浅灰子背景；系统切深色时整体替换 */
-    --subbg:#f8f9fc; --subbg2:#eef1f7; --subbg3:#f1f3f8; --selbg:#eef2ff;
-    --bd:#d8dce3; --txt:#1f2733; --inputbg:#fbfcfe;
+    /* 基础色板：加深卡/底对比，--sub 提深以提升可读性 */
+    --bg:#eaeef5; --card:#ffffff; --ink:#1b2330; --sub:#586273; --line:#e1e6ef;
+    --primary:#3b5bdb; --green:#2f9e44; --red:#e03131; --amber:#e8920c; --purple:#7048e8;
+    --blue:#1c7ed6; --teal:#0ca678;
+    --shadow:0 1px 2px rgba(16,24,40,.05),0 10px 30px rgba(16,24,40,.08);
+    /* 子背景与边框（亮色） */
+    --subbg:#f4f6fb; --subbg2:#e8edf5; --subbg3:#edf1f8; --selbg:#e9f0ff;
+    --bd:#d3dae4; --txt:#1b2330; --inputbg:#fbfcfe;
+    /* KPI / 标签分组强调色 */
+    --ac-blue:#1c7ed6; --ac-green:#2f9e44; --ac-red:#e03131; --ac-amber:#e8920c; --ac-purple:#7048e8;
+    /* 间距阶梯 */
+    --sp1:6px; --sp2:10px; --sp3:14px; --sp4:18px; --sp5:24px; --sp6:32px;
+    /* 字号阶梯 */
+    --fs-xs:11.5px; --fs-sm:12.5px; --fs-md:14px; --fs-lg:16px; --fs-xl:18px; --fs-2xl:22px; --fs-3xl:28px;
   }
   /* === 夜间模式（三态）===
      auto  ：跟随系统 prefers-color-scheme（系统深色且未强制亮 → 暗）
@@ -599,6 +607,7 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
       --subbg:#1c2433; --subbg2:#222c3d; --subbg3:#1e2737; --selbg:#28324a;
       --bd:#2f3a4d; --txt:#e7ecf3; --inputbg:#141b27;
       --green:#51cf66; --red:#ff6b6b; --amber:#ffa94d; --blue:#4dabf7; --teal:#20c997; --purple:#9775fa;
+      --ac-blue:#4dabf7; --ac-green:#51cf66; --ac-red:#ff6b6b; --ac-amber:#ffa94d; --ac-purple:#9775fa;
     }
     :root:not(.theme-light) header.top{background:linear-gradient(135deg,#2b3f9e,#3b5bdb)}
     :root:not(.theme-light) .sec-nav{background:var(--bg);border-bottom-color:var(--line)}
@@ -671,8 +680,8 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
   :root.theme-dark .note,:root.theme-dark .empty,:root.theme-dark .pg,:root.theme-dark .bf-count{color:var(--sub)}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
-    background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5;-webkit-text-size-adjust:100%}
-  .wrap{max-width:1600px;margin:0 auto;padding:16px 16px calc(32px + env(safe-area-inset-bottom))}
+    background:var(--bg);color:var(--ink);font-size:14px;line-height:1.55;-webkit-text-size-adjust:100%;font-weight:400}
+  .wrap{max-width:1640px;margin:0 auto;padding:20px 20px calc(36px + env(safe-area-inset-bottom))}
   header.top{background:linear-gradient(135deg,#3b5bdb,#5c7cfa);color:#fff;border-radius:18px;
     padding:20px 22px;box-shadow:var(--shadow);position:relative;overflow:hidden}
   header.top h1{margin:0;font-size:21px;letter-spacing:.5px;display:flex;align-items:center;gap:10px}
@@ -687,7 +696,7 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
     padding:3px 9px;border-radius:20px;font-weight:600}
   .real-flag{position:absolute;top:14px;right:16px;background:var(--green);color:#fff;font-size:11px;
     padding:3px 9px;border-radius:20px;font-weight:600}
-  section{margin-top:18px}
+  section{margin-top:26px}
   /* 快速导航条（吸顶 + 横向滚动） */
   .sec-nav{position:sticky;top:0;z-index:30;display:flex;gap:8px;overflow-x:auto;padding:9px 2px;margin:2px 0 16px;background:var(--bg);border-bottom:1px solid var(--line);scrollbar-width:thin}
   .sec-nav::-webkit-scrollbar{height:5px}
@@ -697,7 +706,7 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
   .sec-nav-item.active{border-color:var(--primary);color:var(--primary);background:var(--selbg);font-weight:700}
   .sec-nav-item svg{width:14px;height:14px;flex:0 0 14px}
   /* 横向滑动容器（卡片横滑 / 移动端左右滑） */
-  .hscroll{display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:8px;scrollbar-width:thin}
+  .hscroll{display:flex;gap:14px;overflow-x:auto;scroll-snap-type:x mandatory;padding:4px 2px 12px;scrollbar-width:thin}
   .hscroll::-webkit-scrollbar{height:6px}
   .hscroll::-webkit-scrollbar-thumb{background:#cdd5e3;border-radius:3px}
   .hscroll>.card,.hscroll>.kpi{flex:0 0 auto;min-width:172px;max-width:248px;scroll-snap-align:start}
@@ -706,19 +715,28 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
   .pg button{appearance:none;padding:6px 14px;border:1px solid var(--line);background:var(--card);border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink)}
   .pg button:disabled{opacity:.4;cursor:default}
   .pg-info{font-variant-numeric:tabular-nums}
-  .sec-title{display:flex;align-items:center;gap:9px;font-size:16px;font-weight:700;margin:0 0 12px 2px}
-  .sec-title svg{width:20px;height:20px;flex:0 0 20px}
+  .sec-title{position:relative;display:flex;align-items:center;gap:9px;font-size:var(--fs-xl);font-weight:800;margin:0 0 14px 14px;letter-spacing:.2px}
+  .sec-title::before{content:"";position:absolute;left:-14px;top:1px;bottom:1px;width:4px;border-radius:4px;background:linear-gradient(180deg,var(--primary),#5c7cfa)}
+  .sec-title svg{width:20px;height:20px;flex:0 0 20px;color:var(--primary)}
   .grid{display:grid;gap:14px}
   .g2{grid-template-columns:1fr 1fr}
   .g3{grid-template-columns:repeat(3,1fr)}
   .g4{grid-template-columns:repeat(4,1fr)}
   @media(max-width:880px){.g2,.g3,.g4{grid-template-columns:1fr}}
   @media(max-width:680px){.pd-stats{grid-template-columns:repeat(2,1fr)}}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:var(--shadow)}
-  .card h3{margin:0 0 12px;font-size:14px;color:var(--sub);font-weight:600}
-  .kpi{display:flex;flex-direction:column;gap:4px}
-  .kpi .v{font-size:26px;font-weight:800;letter-spacing:.5px}
-  .kpi .l{font-size:12.5px;color:var(--sub)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:var(--shadow)}
+  .card h3{margin:0 0 14px;font-size:15px;color:var(--ink);font-weight:700;padding-bottom:10px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:7px}
+  .kpi{--ac:var(--primary);display:flex;flex-direction:column;gap:6px;padding:15px 16px 14px;
+    box-shadow:var(--shadow), inset 0 3px 0 0 var(--ac);transition:transform .15s, box-shadow .15s}
+  .kpi:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(16,24,40,.14), inset 0 3px 0 0 var(--ac)}
+  .kpi .top{display:flex;align-items:center;gap:7px}
+  .kpi .ac-dot{width:8px;height:8px;border-radius:50%;background:var(--ac);flex:0 0 8px}
+  .kpi .lbl{font-size:var(--fs-sm);color:var(--sub);letter-spacing:.3px;font-weight:600}
+  .kpi .v{font-size:var(--fs-3xl);font-weight:800;letter-spacing:.5px;line-height:1.12;color:var(--ink)}
+  .kpi .v.neg{color:var(--red)}
+  .kpi .sub{font-size:var(--fs-xs);color:var(--sub);line-height:1.45;margin-top:1px}
+  .kpi.ac-blue{--ac:var(--ac-blue)} .kpi.ac-green{--ac:var(--ac-green)} .kpi.ac-red{--ac:var(--ac-red)}
+  .kpi.ac-amber{--ac:var(--ac-amber)} .kpi.ac-purple{--ac:var(--ac-purple)}
   .donut-wrap{display:flex;align-items:center;gap:16px}
   .legend{display:flex;flex-direction:column;gap:7px;font-size:13px;flex:1;min-width:0}
   .legend .row{display:flex;align-items:center;gap:8px}
@@ -726,8 +744,10 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
   .legend .nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .legend .vl{font-weight:700}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line)}
-  th{color:var(--sub);font-weight:600;font-size:12px}
+  th,td{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--ink);font-weight:700;font-size:11.5px;letter-spacing:.3px;background:var(--subbg)}
+  tbody tr:nth-child(even) td{background:var(--subbg)}
+  tbody tr:hover td{background:var(--selbg)}
   tr:last-child td{border-bottom:0}
   .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:600;white-space:nowrap}
   .st-进行中{background:#e7f5ff;color:#1971c2}
@@ -737,14 +757,15 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
   .tag-green{background:#ebfbee;color:var(--green)}
   .tag-amber{background:#fff4e6;color:var(--amber)}
   .num{font-variant-numeric:tabular-nums}
-  .bar-row{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:13px}
-  .bar-row .nm{width:84px;flex:0 0 84px;color:var(--sub);text-align:right}
-  .bar-track{flex:1;background:var(--subbg2);border-radius:6px;height:18px;overflow:hidden}
+  .bar-row{display:flex;align-items:center;gap:10px;margin:10px 0;font-size:13px}
+  .bar-row .nm{width:92px;flex:0 0 92px;color:var(--sub);text-align:right}
+  .bar-track{flex:1;background:var(--subbg2);border-radius:6px;height:20px;overflow:hidden;box-shadow:inset 0 1px 2px rgba(16,24,40,.1)}
   .bar-fill{height:100%;border-radius:6px}
-  .bar-row .vl{width:54px;flex:0 0 54px;font-weight:700;text-align:right}
+  .bar-row .vl{width:56px;flex:0 0 56px;font-weight:700;text-align:right}
   .cf{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
   @media(max-width:680px){.cf{grid-template-columns:repeat(2,1fr)}}
-  .cf .cell{background:var(--subbg);border-radius:12px;padding:11px;text-align:center}
+  .cf .cell{background:var(--subbg);border:1px solid var(--line);border-radius:12px;padding:13px;text-align:center;transition:transform .15s, box-shadow .15s, border-color .15s}
+  .cf .cell:hover{transform:translateY(-2px);box-shadow:var(--shadow);border-color:var(--bd)}
   .cf .bk{font-size:12px;color:var(--sub)}
   .cf .bi{font-size:16px;font-weight:800;color:var(--green)}
   .cf .bo{font-size:13px;color:var(--red)}
@@ -764,11 +785,12 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
   .pd-stats .c-red{color:var(--red)} .pd-stats .c-green{color:var(--green)} .pd-stats .c-amber{color:var(--amber)}
   .sub{color:var(--sub);font-size:11px;font-weight:500;margin-left:2px}
   /* 行动建议 */
-  .actions{display:flex;flex-direction:column;gap:8px}
-  .act{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:12px;background:var(--bg);border:1px solid var(--line)}
-  .act .pri{flex:0 0 auto;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;margin-top:1px;white-space:nowrap}
-  .pri-高{background:#fff0f0;color:var(--red)} .pri-中{background:#fff4e6;color:var(--amber)} .pri-提示{background:#e7f5ff;color:#1971c2}
-  .act .tx{flex:1;font-size:13.5px;line-height:1.45}
+  .actions{display:flex;flex-direction:column;gap:10px}
+  .act{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-radius:12px;background:var(--subbg);border:1px solid var(--line);transition:border-color .15s, background .15s}
+  .act:hover{border-color:var(--bd);background:var(--card)}
+  .act .pri{flex:0 0 auto;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;margin-top:1px;white-space:nowrap}
+  .pri-高{background:#ffe3e3;color:var(--red)} .pri-中{background:#fff0db;color:var(--amber)} .pri-提示{background:#dbeafe;color:#1971c2}
+  .act .tx{flex:1;font-size:13.5px;line-height:1.5}
   /* 甘特图 */
   .gantt-wrap{overflow-x:auto}
   .gantt{position:relative;min-width:820px;padding-top:22px}
@@ -1155,25 +1177,25 @@ function buildKPIs(m, role){
   const k=m.kpi, t=m.time, q=m.quality, s=m.supply, pd=m.partdb;
   const b=pd?pd.bom:null;
   const M={
-    projects:{l:"项目总数",v:fmt(k.projects),s:`进行中 ${k.active} · 计划 ${k.planned} · 完成 ${k.done}`,c:""},
-    contract:{l:"总合同额",v:yuan(k.contract),s:"已收 "+yuan(k.received),c:""},
-    received:{l:"已收金额",v:yuan(k.received),s:"合同执行率 "+pct(k.exec_rate),c:""},
-    receivable:{l:"应收款",v:yuan(k.receivable),s:"待回收",c:"neg"},
-    cost:{l:"生产总花销",v:yuan(k.cost),s:"毛利率 "+pct(k.margin),c:""},
-    margin:{l:"毛利率",v:pct(k.margin),s:"目标 30%",c:""},
-    unit_cost:{l:"单片成本",v:yuan(k.unit_cost),s:"台账均单价",c:""},
-    exec_rate:{l:"合同执行率",v:pct(k.exec_rate),s:"已收 / 合同",c:""},
-    ontime_rate:{l:"交期达成率",v:pct(k.ontime_rate),s:"在制 "+k.wip+" 单",c:""},
-    purchase_overdue:{l:"采购逾期",v:fmt(k.purchase_overdue),s:"需跟进",c:k.purchase_overdue>0?"neg":""},
-    wip:{l:"在制单数",v:fmt(k.wip),s:"进行中生产",c:""},
-    shortage:{l:"在产缺料",v:fmt(b?b.shortage.length:0),s:`零确认 ${pd?pd.zero_confirmed:0} 种`,c:(b&&b.shortage.length)?"neg":""},
-    kit_rate:{l:"物料齐套率",v:pct(b?((b.bom_count-b.shortage.length)/b.bom_count*100):100),s:`BOM ${b?b.bom_count:0} 行`,c:""},
-    part_count:{l:"在库料号",v:fmt(pd?pd.part_count:0),s:"零件总数",c:""},
-    zero_stock:{l:"零确认库存",v:fmt(pd?pd.zero_confirmed:0),s:"需盘点",c:(pd&&pd.zero_confirmed>0)?"neg":""},
-    supplier_ontime:{l:"供应商准时率",v:pct(supplierAvg(s)),s:`${s.supplier.length} 家`,c:supplierAvg(s)<70?"neg":""},
-    smt_yield:{l:"贴片良品率",v:pct(q.smt_yield),s:"良品 / 投入",c:""},
-    repair_rate:{l:"维修率",v:pct(q.repair_rate),s:`${q.repair_total}/${q.shipped}`,c:""},
-    cycle:{l:"平均生产周期",v:t.avg_cycle+"天",s:"实际花费天数",c:""},
+    projects:{l:"项目总数",v:fmt(k.projects),s:`进行中 ${k.active} · 计划 ${k.planned} · 完成 ${k.done}`,c:"",ac:"blue"},
+    contract:{l:"总合同额",v:yuan(k.contract),s:"已收 "+yuan(k.received),c:"",ac:"blue"},
+    received:{l:"已收金额",v:yuan(k.received),s:"合同执行率 "+pct(k.exec_rate),c:"",ac:"green"},
+    receivable:{l:"应收款",v:yuan(k.receivable),s:"待回收",c:"neg",ac:"red"},
+    cost:{l:"生产总花销",v:yuan(k.cost),s:"毛利率 "+pct(k.margin),c:"",ac:"amber"},
+    margin:{l:"毛利率",v:pct(k.margin),s:"目标 30%",c:"",ac:"green"},
+    unit_cost:{l:"单片成本",v:yuan(k.unit_cost),s:"台账均单价",c:"",ac:"amber"},
+    exec_rate:{l:"合同执行率",v:pct(k.exec_rate),s:"已收 / 合同",c:"",ac:"blue"},
+    ontime_rate:{l:"交期达成率",v:pct(k.ontime_rate),s:"在制 "+k.wip+" 单",c:"",ac:"blue"},
+    purchase_overdue:{l:"采购逾期",v:fmt(k.purchase_overdue),s:"需跟进",c:k.purchase_overdue>0?"neg":"",ac:"red"},
+    wip:{l:"在制单数",v:fmt(k.wip),s:"进行中生产",c:"",ac:"blue"},
+    shortage:{l:"在产缺料",v:fmt(b?b.shortage.length:0),s:`零确认 ${pd?pd.zero_confirmed:0} 种`,c:(b&&b.shortage.length)?"neg":"",ac:"red"},
+    kit_rate:{l:"物料齐套率",v:pct(b?((b.bom_count-b.shortage.length)/b.bom_count*100):100),s:`BOM ${b?b.bom_count:0} 行`,c:"",ac:"green"},
+    part_count:{l:"在库料号",v:fmt(pd?pd.part_count:0),s:"零件总数",c:"",ac:"blue"},
+    zero_stock:{l:"零确认库存",v:fmt(pd?pd.zero_confirmed:0),s:"需盘点",c:(pd&&pd.zero_confirmed>0)?"neg":"",ac:"red"},
+    supplier_ontime:{l:"供应商准时率",v:pct(supplierAvg(s)),s:`${s.supplier.length} 家`,c:supplierAvg(s)<70?"neg":"",ac:"amber"},
+    smt_yield:{l:"贴片良品率",v:pct(q.smt_yield),s:"良品 / 投入",c:"",ac:"green"},
+    repair_rate:{l:"维修率",v:pct(q.repair_rate),s:`${q.repair_total}/${q.shipped}`,c:"",ac:"red"},
+    cycle:{l:"平均生产周期",v:t.avg_cycle+"天",s:"实际花费天数",c:"",ac:"blue"},
   };
   const sets={
     boss:["projects","contract","receivable","cost","margin","ontime_rate","purchase_overdue","unit_cost"],
@@ -1217,8 +1239,8 @@ function render(m){
   const secK=el(`<section id="sec-K" class="sec"><div class="sec-title">__IC_GRID__ 核心指标概览 · ${ROLES[role].name}</div>
     <div class="hscroll" id="kpig"></div></section>`);
   kpis.forEach(x=>secK.querySelector("#kpig").appendChild(el(
-    `<div class="card kpi"><div class="v ${x.c}">${x.v}</div><div class="l">${x.l}</div>
-     <div class="l">${x.s}</div></div>`)));
+    `<div class="card kpi ac-${x.ac}"><div class="top"><span class="ac-dot"></span><span class="lbl">${x.l}</span></div>
+     <div class="v ${x.c}">${x.v}</div><div class="sub">${x.s}</div></div>`)));
   if(ROLES[role].sections.includes("K")) app.appendChild(secK);
 
   /* 下一步行动建议（按角色过滤） */
@@ -1354,7 +1376,8 @@ function render(m){
         <div class="legend">${catItems.map((x,i)=>`<div class="row"><span class="dot" style="background:${x.color}"></span>
           <span class="nm">${x.name}</span><span class="vl num">${yuan(x.value)}</span></div>`).join("")}</div></div></div>
       <div class="card"><h3>利润与预算</h3>
-        <div class="kpi"><div class="v">${yuan(c.profit)}</div><div class="l">总利润（合同 ${yuan(c.contract)} − 花销 ${yuan(c.cost)}）</div></div>
+        <div class="kpi ac-green"><div class="top"><span class="ac-dot"></span><span class="lbl">总利润</span></div>
+          <div class="v">${yuan(c.profit)}</div><div class="sub">合同 ${yuan(c.contract)} − 花销 ${yuan(c.cost)}</div></div>
         <div class="bar-row" style="margin-top:14px"><div class="nm">毛利率</div>
           <div class="bar-track"><div class="bar-fill" style="width:${Math.min(100,c.margin)}%;background:${c.margin>=c.budget_margin?'#2f9e44':'#e03131'}"></div></div>
           <div class="vl num">${pct(c.margin)}</div></div>
