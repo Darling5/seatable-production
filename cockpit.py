@@ -1111,10 +1111,14 @@ function renderGantt(g, todayStr){
 }
 /* ---------- 角色视图（单文件 + 角色切换 + #role 书签）---------- */
 const ROLES={
-  boss:      {name:"老板",     sections:["K","A","WZ","BF","PW","G","T","C","Q","P","Sup","Inv"], actions:null},
-  warehouse: {name:"仓库",     sections:["K","A","WZ","Inv","P"],                       actions:["warehouse"]},
-  purchase:  {name:"采购",     sections:["K","A","WZ","Sup"],                          actions:["purchase"]},
+  // 老板：只看数据，不含任何写入口（新建/补录均为项目经理职责，不出现在老板页）
+  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv"], actions:null},
+  // 仓库/采购：非项目经理，不开放「新建」写入口（仅看数据 + 各自作业动作）
+  warehouse: {name:"仓库",     sections:["K","A","Inv","P"],                       actions:["warehouse"]},
+  purchase:  {name:"采购",     sections:["K","A","Sup"],                          actions:["purchase"]},
+  // 生产经理：项目经理职责 → 新建生产计划（写「生产计划」表）
   production:{name:"生产经理", sections:["K","A","WZ","G","T","Q","P","Inv"],           actions:["production","warehouse","delivery"]},
+  // 销售：立项职责 → 新建项目（写「项目」表，对应销售立项表单）
   sales:     {name:"销售",     sections:["K","A","WZ","PW","G"],                       actions:["sales","delivery"]},
 };
 const ROLE_ORDER=["boss","warehouse","purchase","production","sales"];
@@ -1485,12 +1489,18 @@ function render(m){
   if(ROLES[role].sections.includes("Sup")) app.appendChild(secSup);
   if(ROLES[role].sections.includes("Inv")) app.appendChild(secInv);
 
-  /* 新建生产项目向导：纯表单采集，提交导出 JSON；写入由 op.py apply-wizard 完成（网页不持有任何账号/口令） */
-  const secWZ=el(`<section id="sec-WZ" class="sec"><div class="sec-title">__IC_ADD__ 新建生产项目（向导）</div>
+  /* 新建向导：销售→「项目」表（销售立项表单）；其余角色→「生产计划」表（生产经理建计划）。
+     老板/仓库/采购页不显示（已在 ROLES 裁剪：WZ 不在其 sections 中） */
+  const _isSales = (role==="sales");
+  const _wzTitle = _isSales ? "新建项目（向导）" : "新建生产项目（向导）";
+  const _wzNameLbl = _isSales ? "项目名称 *" : "产品名称 *";
+  const _wzNamePh = _isSales ? "如 客户A-4G小卡二代" : "如 4G小卡二代";
+  const _wzTargetName = _isSales ? "项目" : "生产计划";
+  const secWZ=el(`<section id="sec-WZ" class="sec"><div class="sec-title">__IC_ADD__ ${_wzTitle}</div>
     <div class="card">
-      <p class="note">填完点「🚀 一键发起 → WorkBuddy 预填待确认」：会把信息整理成文字、<b>复制到剪贴板</b>，并<b>拉起本地 WorkBuddy、自动预填任务并开始执行</b>。注意：按技能铁律「任何增删改必须先向你确认」，专家会先列出完整数据<b>等你点头</b>，确认后才写库、算缺料、刷新驾驶舱——所以<b>不是全自动落库</b>，但仍省去手动复制粘贴。没装桌面端时点「🌐 网页版提交」手动发送。</p>
+      <p class="note">填完点「🚀 一键发起 → WorkBuddy 预填待确认」：会把信息整理成文字、<b>复制到剪贴板</b>，并<b>拉起本地 WorkBuddy、自动预填任务并开始执行</b>。注意：按技能铁律「任何增删改必须先向你确认」，专家会先列出完整数据<b>等你点头</b>，确认后才写库、算缺料、刷新驾驶舱——所以<b>不是全自动落库</b>，但仍省去手动复制粘贴。没装桌面端时点「🌐 网页版提交」手动发送。最终写入 SeaTable「${_wzTargetName}」表${_isSales?"（即销售立项表单）":""}。</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:680px">
-        <label>产品名称 *<input id="wz-product" type="text" placeholder="如 4G小卡二代" style="width:100%"></label>
+        <label>${_wzNameLbl}<input id="wz-product" type="text" placeholder="${_wzNamePh}" style="width:100%"></label>
         <label>数量 *<input id="wz-qty" type="number" min="1" placeholder="100" style="width:100%"></label>
         <label>交期天数（天）<input id="wz-days" type="number" min="1" placeholder="30" style="width:100%"></label>
         <label>优先级<select id="wz-prio" style="width:100%"><option>高</option><option selected>中</option><option>低</option></select></label>
@@ -1532,6 +1542,10 @@ function toast(msg){
   t._timer=setTimeout(()=>t.classList.remove("show"), 3200);
 }
 /* 新建项目向导：采集 → 复制成纯文本 → 唤起 WorkBuddy（用户粘贴发送，AI 落库） */
+function currentTarget(){
+  // 销售立项 → 写「项目」表（对应销售立项表单）；其余角色 → 写「生产计划」表
+  return (currentRole()==="sales") ? "项目" : "生产计划";
+}
 function collectWizard(){
   const 产品=document.getElementById('wz-product').value.trim();
   const 数量=parseInt(document.getElementById('wz-qty').value)||0;
@@ -1539,15 +1553,17 @@ function collectWizard(){
   const 优先级=document.getElementById('wz-prio').value;
   const 负责人=document.getElementById('wz-owner').value.trim();
   const 备注=document.getElementById('wz-note').value.trim();
-  if(!产品||!数量){ toast('请填写产品名称和数量'); return null; }
+  if(!产品||!数量){ toast('请填写项目名称/产品名称和数量'); return null; }
   const 交期=new Date(Date.now()+天数*86400000).toISOString().slice(0,10);
   return {产品,数量,天数,交期,优先级,负责人,备注};
 }
 function wizardToText(d){
-  const lines=["【新建生产项目】","产品："+d.产品,"数量："+d.数量,"交期天数："+d.天数,"预计完工："+d.交期,"优先级："+d.优先级];
+  const t=currentTarget();
+  const head=(t==="项目")?"【新建项目】":"【新建生产计划】";
+  const lines=[head,"产品："+d.产品,"数量："+d.数量,"交期天数："+d.天数,"预计完工："+d.交期,"优先级："+d.优先级];
   if(d.负责人) lines.push("负责人："+d.负责人);
   if(d.备注) lines.push("备注："+d.备注);
-  lines.push("（由生产驾驶舱「新建项目」向导生成。请在已加载 seatable-production 技能的项目中运行 op.py apply-text 处理此指令：写入数据并刷新驾驶舱。）");
+  lines.push("（由生产驾驶舱「新建项目」向导生成。请在已加载 seatable-production 技能的项目中运行 op.py apply-text 处理此指令：写入「"+t+"」表并刷新驾驶舱。）");
   return lines.join("\n");
 }
 function copyText(txt){
@@ -1585,11 +1601,12 @@ function submitWizardCopy(){
 }
 function submitWizardDownload(){
   const d=collectWizard(); if(!d) return;
-  const obj={_wizard:"new-project",产品:d.产品,数量:d.数量,交期天数:d.天数,预计完工:d.交期,优先级:d.优先级,负责人:d.负责人,备注:d.备注,生成时间:new Date().toISOString()};
+  const t=currentTarget();
+  const obj={_wizard:"new-project",_target:t,产品:d.产品,数量:d.数量,交期天数:d.天数,预计完工:d.交期,优先级:d.优先级,负责人:d.负责人,备注:d.备注,生成时间:new Date().toISOString()};
   const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='新建生产项目.json'; a.click();
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=(t==="项目"?"新建项目.json":"新建生产项目.json"); a.click();
   URL.revokeObjectURL(a.href);
-  toast('已下载 新建生产项目.json（备用）');
+  toast('已下载 '+(t==="项目"?"新建项目.json":"新建生产项目.json")+'（备用）');
 }
 /* 分享角色视图：复制带 #role 锚点 + 口令的微信文案，直接发微信给对应人 */
 function shareRole(role){

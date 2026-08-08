@@ -44,8 +44,8 @@ def _print_rows(rows):
         print("\t".join(str(r.get(c, "")) for c in header))
 
 
-def create_project_row(data):
-    """把向导/文本解析出的结构化数据转成「生产计划」表的写入行。"""
+def create_production_plan_row(data):
+    """把向导/文本解析出的结构化数据转成「生产计划」表的写入行（项目经理建计划）。"""
     import datetime as _dt
     prod = str(data.get("产品", "")).strip()
     qty = int(data.get("数量", 0) or 0)
@@ -70,9 +70,37 @@ def create_project_row(data):
     }
 
 
-def _apply_and_refresh(adapter, args, row):
-    rid = adapter.append_row("生产计划", row)
-    print(f"OK 已写入「生产计划」 row_id={rid}")
+def create_project_record(data):
+    """把销售立项向导/文本解析出的数据转成「项目」表的写入行（对应销售立项表单）。"""
+    import datetime as _dt
+    name = str(data.get("产品", "")).strip()
+    if not name:
+        raise ValueError("项目名称缺失，无法写入")
+    days = int(data.get("交期天数", 0) or 0)
+    due = str(data.get("预计完工") or "").strip() or (
+        (_dt.date.today() + _dt.timedelta(days=days)).isoformat())
+    return {
+        "项目": name,
+        "状态": "计划中",
+        "阶段": "立项",
+        "合同交期": due,
+        "花费天数": days,
+        "创建者": str(data.get("负责人", "") or ""),
+        "产品需求": str(data.get("备注", "") or ""),
+    }
+
+
+def _build_target_row(data):
+    """按 _target 选择写入表与目标行；默认「生产计划」（向后兼容旧下载 JSON）。"""
+    target = str(data.get("_target") or "生产计划").strip()
+    if target == "项目":
+        return "项目", create_project_record(data)
+    return "生产计划", create_production_plan_row(data)
+
+
+def _apply_and_refresh(adapter, args, table, row):
+    rid = adapter.append_row(table, row)
+    print(f"OK 已写入「{table}」 row_id={rid}")
     try:
         import subprocess
         cockpit = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cockpit.py")
@@ -84,7 +112,7 @@ def _apply_and_refresh(adapter, args, row):
 
 
 def _parse_wizard_text(text):
-    """解析【新建生产项目】纯文本为结构化 dict（兼容中文/英文冒号）。"""
+    """解析【新建项目】/【新建生产计划】纯文本为结构化 dict（兼容中文/英文冒号）。"""
     data = {}
     for line in text.splitlines():
         line = line.strip()
@@ -96,6 +124,9 @@ def _parse_wizard_text(text):
         elif ":" in line:
             k, _, v = line.partition(":")
             data[k.strip()] = v.strip()
+    # 识别目标表：销售立项表单写到「项目」，其余写到「生产计划」
+    if "【新建项目】" in text:
+        data["_target"] = "项目"
     return data
 
 
@@ -188,22 +219,22 @@ def main():
         with open(args.file, encoding="utf-8") as _f:
             data = json.load(_f)
         if data.get("_wizard") != "new-project":
-            print("该文件不是向导生成的「新建生产项目.json」（缺少 _wizard 标记），已跳过。")
+            print("该文件不是向导生成的「新建*.json」（缺少 _wizard 标记），已跳过。")
             sys.exit(1)
         try:
-            row = create_project_row(data)
+            table, row = _build_target_row(data)
         except ValueError as e:
             print(str(e)); sys.exit(1)
-        _apply_and_refresh(adapter, args, row)
+        _apply_and_refresh(adapter, args, table, row)
     elif args.cmd == "apply-text":
         with open(args.file, encoding="utf-8") as _f:
             text = _f.read()
         data = _parse_wizard_text(text)
         try:
-            row = create_project_row(data)
+            table, row = _build_target_row(data)
         except ValueError as e:
             print(str(e)); sys.exit(1)
-        _apply_and_refresh(adapter, args, row)
+        _apply_and_refresh(adapter, args, table, row)
 
 
 if __name__ == "__main__":
