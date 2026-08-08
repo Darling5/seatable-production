@@ -1538,7 +1538,7 @@ function render(m){
         <button class="btn-ghost" onclick="submitWizardDownload()">__IC_DOWNLOAD__ 下载 JSON（备用）</button>
       </div>
       <textarea id="wz-text" readonly style="display:none;width:100%;max-width:680px;height:130px;margin-top:12px;font-size:13px;padding:8px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit"></textarea>
-      <p class="note" style="margin-top:10px">💡 「一键发起」需要 WorkBuddy 桌面端已安装。<b>多数情况下安装/首次启动即自动注册</b> <code>workbuddy://</code> 协议（和百度云/夸克拉起本地客户端同理），无需手动设置；<b>仅当点击没反应时</b>，再去 <b>Claw设置 → 协议注册</b> 开启一次即可（开关为一次性，开过即永久生效）。点按钮即拉起本地客户端并预填任务，专家会<b>请你确认后再写库</b>。没装桌面端则点「🌐 网页版提交」在 workbuddy.cn 手动粘贴（网页版需先登录）。网页不持有任何账号/口令，数据由本机 Python 落库。</p>
+      <p class="note" style="margin-top:10px">💡 「一键发起」需要 WorkBuddy 桌面端已安装，且<strong>在本机系统浏览器（Chrome / Edge）中打开本页</strong>再点按钮——浏览器会弹「是否用 WorkBuddy 打开」并拉起客户端、预填任务，专家会<b>请你确认后再写库</b>。注意：在 WorkBuddy 自带的预览面板里点可能不会触发系统协议，请改用外部浏览器打开 HTML 文件。没装桌面端则在系统浏览器打开「🌐 网页版提交（workbuddy.cn）」粘贴发送即可（网页版需先登录）。网页不持有任何账号/口令，数据由本机 Python 落库。</p>
     </div></section>`);
   if(ROLES[role].sections.includes("WZ")) app.appendChild(secWZ);
 
@@ -1606,13 +1606,13 @@ function copyText(txt){
 function invokeWorkBuddyAuto(txt){
   // 云盘式一键发起：workbuddy://task?action=start 自动开始执行任务、skills= 自动加载 seatable-production 技能
   // 但技能铁律要求写入前必须经用户确认，故专家会先列出数据等待确认，不会直接落库
-  // 用隐藏 iframe 触发系统协议处理，不离开当前页面（类似百度云网页拉起本地客户端下载）
+  // 用真实 <a> 在用户点击手势里触发顶层导航（隐藏 iframe 跳自定义协议会被 Chrome/Edge 静默拦截，导致毫无反应）
   const url='workbuddy://task?action=start&prompt='+encodeURIComponent(txt)+'&skills=seatable-production';
   try{
-    const iframe=document.createElement('iframe');
-    iframe.style.display='none'; iframe.src=url;
-    document.body.appendChild(iframe);
-    setTimeout(()=>{ try{document.body.removeChild(iframe);}catch(e){} }, 2000);
+    const a=document.createElement('a');
+    a.href=url; a.rel='noopener'; a.style.display='none';
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ try{document.body.removeChild(a);}catch(e){} }, 2000);
   }catch(e){ /* 忽略：交给 toast / 网页版按钮兜底 */ }
 }
 function submitWizardCopy(){
@@ -1631,7 +1631,7 @@ function submitWizardCopy(){
       if(launched){
         toast('已拉起 WorkBuddy 并预填任务 ✅ 专家会列出数据，请你确认后再写库');
       }else{
-        toast('本地客户端未响应？去 Claw设置→协议注册 开一次 workbuddy://，或点「网页版提交」');
+        toast('未拉起客户端？请在系统浏览器(Chrome/Edge)中打开本页再点，或点「网页版提交」');
       }
     }, 1800);
   });
