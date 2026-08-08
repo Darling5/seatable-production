@@ -26,11 +26,11 @@ PY="C:/Users/11430/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
 - 本地结构化匹配：IC 精确名 / 无源器件按值+封装+介质+电压 / LED 按颜色 / 开关按 KEY 关键词。
 - 输出 `partdb_import_report.json` + `partdb_import_report.md`。
 - 每条处置分类：
-  - `SKIP` 华之安价已等于合同价
-  - `UPDATE` 华之安有 MOQ=1 档且不同 → 就地更新
-  - `ADD_TIER` 华之安有记录但无 MOQ=1 档 → 新增一档（保留历史）
-  - `NEW_ORDER` 该料号从无华之安记录 → 新建采购记录
-  - `NEW_PART` PartDB 无此型号 → 新建料 + 华之安价
+  - `SKIP` 之安传感价已等于合同价
+  - `UPDATE` 之安传感有 MOQ=1 档且不同 → 就地更新
+  - `ADD_TIER` 之安传感有记录但无 MOQ=1 档 → 新增一档（保留历史）
+  - `NEW_ORDER` 该料号从无之安传感记录 → 新建采购记录
+  - `NEW_PART` PartDB 无此型号 → 新建料 + 之安传感价
   - `CONFLICT` 多候选/规格歧义 → **交用户定**（报告给出默认建议）
 - 把报告路径与"共 N 条，其中 X 条需你确认"告诉用户，**请用户审核/确认**。
 

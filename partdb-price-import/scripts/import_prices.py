@@ -12,11 +12,11 @@ partdb-price-import —— 采购合同 PDF -> PartDB 价格导入（可自动�
   python import_prices.py apply  --report <report.json> --yes
 
 报告（report.json / report.md）会清楚标出每一条的处置类别：
-  SKIP      华之安价已等于合同价，无需改动
-  UPDATE    华之安已有 MOQ=1 价格档且不同 -> 就地更新到合同价
-  ADD_TIER  华之安已有但无 MOQ=1 档 -> 新增一档合同价（保留历史）
-  NEW_ORDER 该料号从无华之安记录 -> 新建华之安采购记录
-  NEW_PART  PartDB 无此型号 -> 新建料 + 华之安价
+  SKIP      之安传感价已等于合同价，无需改动
+  UPDATE    之安传感已有 MOQ=1 价格档且不同 -> 就地更新到合同价
+  ADD_TIER  之安传感已有但无 MOQ=1 档 -> 新增一档合同价（保留历史）
+  NEW_ORDER 该料号从无之安传感记录 -> 新建之安传感采购记录
+  NEW_PART  PartDB 无此型号 -> 新建料 + 之安传感价
   CONFLICT  多候选/规格冲突 -> 需用户在报告里选定（默认给建议）
 
 apply 前必须用户确认；CONFLICT 类若用户未给定 part_id，apply 会中断并提示。
@@ -432,9 +432,9 @@ def pick_best(cands, line):
     return best, conflict, scored
 
 
-# ----------------------------- 华之安价格动作分类 -----------------------------
+# ----------------------------- 之安传感价格动作分类 -----------------------------
 def classify_price_action(part, contract_price, supplier_id):
-    """给定 Part 与合同价，判断华之安(supplier_id)下该怎么做。"""
+    """给定 Part 与合同价，判断之安传感(supplier_id)下该怎么做。"""
     ods = part.get("orderdetails") or []
     hua = None
     for od in ods:
@@ -465,7 +465,7 @@ def source_date_from_name(fname):
     return "unknown"
 
 
-def analyze(pdf_paths, db, supplier_name="华之安"):
+def analyze(pdf_paths, db, supplier_name="之安传感"):
     # 供应商
     sup = db.get("/suppliers?name=" + urllib.parse.quote(supplier_name) + "&limit=20")
     supplier = None
@@ -525,7 +525,7 @@ def analyze(pdf_paths, db, supplier_name="华之安"):
         if not cands:
             rec["action"] = "NEW_PART"
             rec["decision"] = "auto"
-            rec["note"] = "PartDB 无此型号，将新建料+华之安价（制造商/分类/封装在写入时解析）"
+            rec["note"] = "PartDB 无此型号，将新建料+之安传感价（制造商/分类/封装在写入时解析）"
             items.append(rec)
             continue
         best, conflict, scored = pick_best(cands, it)
@@ -547,10 +547,10 @@ def analyze(pdf_paths, db, supplier_name="华之安"):
         # 非冲突 -> 价格动作（必须用详情，列表未展开 orderdetails）
         act, pd = classify_price_action(best_detail, it["price"], supplier_id)
         rec["action"] = act
-        rec["note"] = {"SKIP": "华之安价已等于合同价",
+        rec["note"] = {"SKIP": "之安传感价已等于合同价",
                        "UPDATE": "就地更新现有 MOQ=1 档到合同价",
                        "ADD_TIER": "新增一档合同价（保留历史）",
-                       "NEW_ORDER": "新建华之安采购记录"}[act]
+                       "NEW_ORDER": "新建之安传感采购记录"}[act]
         items.append(rec)
 
     # 去重：同一 (part_id, action, price) 的多条记录合并为一条（如 ETA5055 在不同合同写法不同但都指向 P0058）
@@ -628,9 +628,9 @@ def _do_write(db, action, part_id, supplier_id, price, it):
                 "price_related_quantity": 1})
             if s2 >= 400:
                 return False, f"pricedetail 失败 {s2}: {b2[:200]}"
-            return True, f"新建华之安记录 OK (od={odid})"
+            return True, f"新建之安传感记录 OK (od={odid})"
         if action == "ADD_TIER":
-            # 找该 part 的华之安 orderdetail
+            # 找该 part 的之安传感 orderdetail
             part = db.get(f"/parts/{part_id}")
             odid = None
             for od in (part.get("orderdetails") or []):
@@ -640,7 +640,7 @@ def _do_write(db, action, part_id, supplier_id, price, it):
                     odid = od["id"]
                     break
             if odid is None:
-                return False, "找不到华之安 orderdetail"
+                return False, "找不到之安传感 orderdetail"
             s2, b2 = db.post("/pricedetails", {
                 "orderdetail": f"/orderdetails/{odid}", "price": price,
                 "price_per_unit": price, "min_discount_quantity": 1,
@@ -698,7 +698,7 @@ def _create_part_and_price(db, it, supplier_id, price):
     # 设 ipn = P + 4位零填充 id（本项目约定）
     ipn = "P%04d" % pid
     db.patch(f"/parts/{pid}", {"ipn": ipn})
-    # 建华之安采购记录 + 价格
+    # 建之安传感采购记录 + 价格
     s2, b2 = db.post("/orderdetails", {
         "part": f"/parts/{pid}", "supplier": f"/suppliers/{supplier_id}",
         "supplierpartnr": "待补"})
@@ -760,7 +760,7 @@ def write_reports(rep, out_dir):
             for c in it["candidates"]:
                 mark = " ← 默认建议" if c["id"] == it["part_id"] else ""
                 lines.append(f"  - part_id={c['id']} ipn={c['ipn']} name=`{c['name']}` "
-                             f"华之安现价为 {c['price_now']}{mark}")
+                             f"之安传感现价为 {c['price_now']}{mark}")
             lines.append("")
     open(mp, "w", encoding="utf-8").write("\n".join(lines))
     return jp, mp

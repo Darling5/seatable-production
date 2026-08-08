@@ -12,20 +12,21 @@
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
     background:var(--bg);color:var(--text);line-height:1.7;-webkit-font-smoothing:antialiased}
-  .wrap{max-width:880px;margin:0 auto;padding:28px 18px 64px}
-  header.hero{background:linear-gradient(135deg,#3b5bdb,#5c7cfa);color:#fff;border-radius:18px;padding:34px 28px;margin-bottom:22px}
-  header.hero h1{margin:0 0 8px;font-size:26px}
-  header.hero p{margin:0;opacity:.92;font-size:15px}
+  .wrap{max-width:1600px;margin:0 auto;padding:32px 28px 72px}
+  header.hero{background:linear-gradient(135deg,#3b5bdb,#5c7cfa);color:#fff;border-radius:18px;padding:42px 40px;margin-bottom:24px}
+  header.hero h1{margin:0 0 10px;font-size:30px;letter-spacing:.5px}
+  header.hero p{margin:0;opacity:.92;font-size:16px;max-width:1100px}
   .badge{display:inline-block;background:rgba(255,255,255,.18);border-radius:999px;padding:3px 12px;font-size:12px;margin-bottom:14px}
-  section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 22px;margin-bottom:18px}
-  h2{font-size:19px;margin:0 0 14px;display:flex;align-items:center;gap:8px}
-  h2 .num{background:var(--primary);color:#fff;width:26px;height:26px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;font-size:14px;flex:none}
-  h3{font-size:15px;margin:18px 0 8px;color:var(--primary)}
-  p,li{font-size:14.5px;color:var(--text)}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:28px 30px;margin-bottom:20px}
+  h2{font-size:22px;margin:0 0 16px;display:flex;align-items:center;gap:10px}
+  h2 .num{background:var(--primary);color:#fff;width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;font-size:14px;flex:none}
+  h3{font-size:16px;margin:20px 0 10px;color:var(--primary)}
+  p,li{font-size:15.5px;color:var(--text)}
   .muted{color:var(--sub);font-size:13px}
-  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .grid2{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  @media(max-width:1100px){.grid2{grid-template-columns:repeat(2,1fr)}}
   @media(max-width:640px){.grid2{grid-template-columns:1fr}}
-  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:var(--primary-soft)}
+  .card{border:1px solid var(--line);border-radius:12px;padding:18px 20px;background:var(--primary-soft);line-height:1.65}
   .card b{color:var(--primary)}
   .step{border-left:3px solid var(--primary);padding:4px 0 4px 16px;margin:0 0 14px}
   .step b{color:var(--primary)}
@@ -135,7 +136,7 @@
     <div class="grid2">
       <div class="card"><b>建生产计划</b><br>「帮我建个生产计划：产品 4G 小卡，数量 100，交期 30 个工作日」</div>
       <div class="card"><b>记一笔发货</b><br>「给项目 A 发一批货，类型销售，内容见下表…」</div>
-      <div class="card"><b>记一笔采购</b><br>「IC 采购：物料 XX，供应商华之安，关联生产计划 #12」</div>
+      <div class="card"><b>记一笔采购</b><br>「IC 采购：物料 XX，供应商之安传感，关联生产计划 #12」</div>
       <div class="card"><b>问进度</b><br>「项目 B 现在到哪一步了？有没有逾期的？」</div>
     </div>
     <p class="muted">写之前 AI 会把完整内容念给你确认，你点头它才落库——不会稀里糊涂改了你的数据。</p>

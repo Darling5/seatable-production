@@ -48,7 +48,7 @@ GET {PARTDB_URL}/parts?limit=100&page=N
 
 价格挂在 `Part → orderdetails[] → pricedetails[].price_per_unit` 下。
 
-- 供应商（如「华之安」）先查 `GET /suppliers?name=...` 拿 `id`。
+- 供应商（如「之安传感」）先查 `GET /suppliers?name=...` 拿 `id`。
 - **该 Part 无此供应商记录** → `POST /orderdetails`：`{part, supplier, supplierpartnr:"待补"}`（supplierpartnr 不可空，否则 422）→ 再 `POST /pricedetails`：`{orderdetail, price, price_per_unit, min_discount_quantity:1, price_related_quantity:1}`。
 - **该 Part 已有此供应商记录** → 直接 `POST /pricedetails` 到现有 orderdetail（新增价格档）。
 - 内容类型：POST 用 `application/ld+json`；**PATCH 必须用 `application/merge-patch+json`**（用 ld+json 会 415）。

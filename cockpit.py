@@ -1812,7 +1812,7 @@ function openSync(){
   for(const r of rows) html+='<tr><td class="sk">'+r[0]+'</td><td class="sv">'+r[1]+'</td></tr>';
   html+='</tbody></table>';
   if(f.lvl==="red") html+='<div class="note" style="color:var(--red)">⚠ 距上次同步已超过 24 小时，建议重新同步获取最新数据。</div>';
-  html+='<div class="note">本驾驶舱是生成时的冻结快照，页面不会自动联网拉取。点下方按钮复制「重新同步」指令，粘贴到 WorkBuddy 发送，我就会重跑同步并重新生成 HTML。</div>';
+  html+='<div class="note">本驾驶舱是生成时的冻结快照，页面不会自联动物联网拉取。点下方按钮复制「重新同步」指令，粘贴到 WorkBuddy 发送，我就会重跑同步并重新生成 HTML。</div>';
   html+='<div class="modal-ft"><button class="btn" id="btnCopySync">一键复制重新同步指令</button><button class="btn btn-ghost" id="btnCloseSync">关闭</button></div></div></div>';
   const tmp=document.createElement("div"); tmp.innerHTML=html; document.body.appendChild(tmp.firstChild);
   const mask=$("#syncMask");
