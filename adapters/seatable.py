@@ -88,9 +88,13 @@ class SeaTableAdapter(BaseAdapter):
         return (new[0].get("_id") if new else None)
 
     def update_row(self, table: str, row_id: str, data: dict):
-        # SeaTable 更新单行接口字段名为 updates（非 row）
-        payload = {"table_name": table, "row_id": row_id,
-                   "updates": {k: v for k, v in data.items() if k != "__row_id__"}}
+        # SeaTable 更新单行接口：updates 必须是 [{row_id, row:{...}}] 的数组结构
+        payload = {
+            "table_name": table,
+            "updates": [
+                {"row_id": row_id, "row": {k: v for k, v in data.items() if k != "__row_id__"}}
+            ],
+        }
         r = requests.put(self._base() + "/rows/", headers={**self._h, "Content-Type": "application/json"},
                         json=payload, timeout=30)
         r.raise_for_status()
