@@ -1,0 +1,26 @@
+# ============================================================
+# 生产交付协同助手 — 配置文件（复制为 config.yaml 后填写）
+# ============================================================
+# 三种后端，开箱默认用 local（零配置、离线、不需要任何账号）
+backend: local
+
+# ── 本地模式（默认，零配置）──────────────────────────────
+# 数据存成 CSV/Excel 文件，放在技能目录的 data/ 下，任何人都可直接用
+local:
+  data_dir: data          # 数据文件夹（相对本技能目录）；不存在会自动创建
+  format: csv            # csv = 每表一个 .csv 文件；excel = 单个 .xlsx 多 sheet
+
+# ── SeaTable 模式（可选）──────────────────────────────────
+# 只有你想把数据存到自己的 SeaTable Base 时才填；留空则禁用
+seatable:
+  api_token: ""          # 你的 SeaTable API Token（在 Base → 设置 → API 获取）
+  server: "https://cloud.seatable.cn"
+  base_uuid: ""          # 你的 Base 的 dtable_uuid（不要写 access_token）
+  # 不填 api_token / base_uuid → 自动退回 local 模式
+
+# ── PartDB 模式（可选，仅用于缺料检查）────────────────────
+# 没自己的 PartDB 就保持 enabled: false，技能会自动跳过缺料检查并提示用户
+partdb:
+  enabled: false
+  url: ""                # 如 http://host:port/api
+  token: ""              # PartDB API Token

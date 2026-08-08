@@ -1,6 +1,6 @@
 {
   "name": "production-cockpit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Production delivery cockpit expert that generates a single-file HTML dashboard from SeaTable+PartDB data, with role-based views, access control and one-click cloud deploy.",
   "author": {
     "name": "WorkBuddy User",

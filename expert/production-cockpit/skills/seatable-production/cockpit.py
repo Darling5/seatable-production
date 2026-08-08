@@ -244,13 +244,15 @@ def compute(adapter, today):
     ontime_rate = (ontime / dated * 100) if dated else None
     avg_cycle = round(sum(c["days"] for c in cycles) / len(cycles), 1) if cycles else 0
 
-    # 产线实时流转：生产工序表的「当前流程」分布（每个在产计划当前卡在哪个工序）
-    flow_rows = adapter.list_rows("生产工序")
+    # 产线实时流转：在产计划（状态≠已交付）当前所处工序（生产计划.阶段）的分布
+    # 注意：绝不能用「生产工序」主表的「当前流程」计数——该表是工序目录（每工序仅一行），
+    # 计数恒为 1，无法表达“卡在哪个工序”。正确口径是按在产计划的实际阶段聚合。
     flow_dist = {}
-    for r in flow_rows:
-        fl = (r.get("当前流程") or "").strip()
-        if fl:
-            flow_dist[fl] = flow_dist.get(fl, 0) + 1
+    for r in plans:
+        if (r.get("状态") or "").strip() == "已交付":
+            continue
+        st = (r.get("阶段") or "未定义").strip() or "未定义"
+        flow_dist[st] = flow_dist.get(st, 0) + 1
 
     # ── 质量 ──
     shipped = sum(_num(s.get("发货数量")) for s in shipments) or len(shipments)
@@ -529,6 +531,8 @@ ICONS = {
     "IC_BOX": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/><path d="M12 11v10"/></svg>',
     "IC_SHARE": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l7.8 4"/><path d="M15.4 6.5l-7.8 4"/></svg>',
     "IC_KEY": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M14 7a4 4 0 1 0-3.6 5.9L7 17v3H4v-3l5.4-5.4A4 4 0 0 0 14 7zm-1.6 2.4a2 2 0 1 1-2.8 2.8 2 2 0 0 1 2.8-2.8z"/></svg>',
+    "IC_ADD": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
+    "IC_THEME": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
 }
 
 # ===== 访问口令（客户端校验，写进 HTML 源码；已 base64 混淆，开发者选项里不再一眼看到明文）=====
@@ -571,16 +575,115 @@ HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>生产·项目管理驾驶舱</title>
+<script>
+/* 防闪烁：在 body 渲染前先应用已保存的手动主题（暗/亮），避免亮→暗闪一下 */
+(function(){try{var t=localStorage.getItem('cockpit_theme');var r=document.documentElement;
+if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.add('theme-light');}}catch(e){}})();
+</script>
 <style>
   :root{
-    --bg:#f4f6fb; --card:#ffffff; --ink:#1f2733; --sub:#6b7686; --line:#e6eaf2;
-    --primary:#3b5bdb; --green:#2f9e44; --red:#e03131; --amber:#f08c00; --purple:#7048e8;
-    --blue:#1c7ed6; --teal:#0ca678; --shadow:0 1px 3px rgba(16,24,40,.06),0 8px 24px rgba(16,24,40,.06);
+    /* 基础色板：加深卡/底对比，--sub 提深以提升可读性 */
+    --bg:#eaeef5; --card:#ffffff; --ink:#1b2330; --sub:#586273; --line:#e1e6ef;
+    --primary:#3b5bdb; --green:#2f9e44; --red:#e03131; --amber:#e8920c; --purple:#7048e8;
+    --blue:#1c7ed6; --teal:#0ca678;
+    --shadow:0 1px 2px rgba(16,24,40,.05),0 10px 30px rgba(16,24,40,.08);
+    /* 子背景与边框（亮色） */
+    --subbg:#f4f6fb; --subbg2:#e8edf5; --subbg3:#edf1f8; --selbg:#e9f0ff;
+    --bd:#d3dae4; --txt:#1b2330; --inputbg:#fbfcfe;
+    /* KPI / 标签分组强调色 */
+    --ac-blue:#1c7ed6; --ac-green:#2f9e44; --ac-red:#e03131; --ac-amber:#e8920c; --ac-purple:#7048e8;
+    /* 间距阶梯 */
+    --sp1:6px; --sp2:10px; --sp3:14px; --sp4:18px; --sp5:24px; --sp6:32px;
+    /* 字号阶梯 */
+    --fs-xs:11.5px; --fs-sm:12.5px; --fs-md:14px; --fs-lg:16px; --fs-xl:18px; --fs-2xl:22px; --fs-3xl:28px;
   }
+  /* === 夜间模式（三态）===
+     auto  ：跟随系统 prefers-color-scheme（系统深色且未强制亮 → 暗）
+     dark  ：手动强制暗，无视系统设置
+     light ：手动强制亮，覆盖下面的系统媒体查询（:not(.theme-light) 已排除）
+  */
+  @media (prefers-color-scheme: dark){
+    :root:not(.theme-light){
+      --bg:#0f1420; --card:#19202e; --ink:#e7ecf3; --sub:#9aa6b6; --line:#2a3445;
+      --shadow:0 1px 3px rgba(0,0,0,.5),0 8px 24px rgba(0,0,0,.5);
+      --subbg:#1c2433; --subbg2:#222c3d; --subbg3:#1e2737; --selbg:#28324a;
+      --bd:#2f3a4d; --txt:#e7ecf3; --inputbg:#141b27;
+      --green:#51cf66; --red:#ff6b6b; --amber:#ffa94d; --blue:#4dabf7; --teal:#20c997; --purple:#9775fa;
+      --ac-blue:#4dabf7; --ac-green:#51cf66; --ac-red:#ff6b6b; --ac-amber:#ffa94d; --ac-purple:#9775fa;
+    }
+    :root:not(.theme-light) header.top{background:linear-gradient(135deg,#2b3f9e,#3b5bdb)}
+    :root:not(.theme-light) .sec-nav{background:var(--bg);border-bottom-color:var(--line)}
+    :root:not(.theme-light) .hscroll::-webkit-scrollbar-thumb,:root:not(.theme-light) .sec-nav::-webkit-scrollbar-thumb{background:#3a465c}
+    :root:not(.theme-light) .bar-track{background:var(--subbg2)}
+    :root:not(.theme-light) .cf .cell{background:var(--subbg)}
+    :root:not(.theme-light) .gantt-track{background:var(--subbg3)}
+    :root:not(.theme-light) .bf-btn.ghost,:root:not(.theme-light) .btn-ghost{background:var(--subbg2)}
+    :root:not(.theme-light) .bf-table th{background:var(--subbg)}
+    :root:not(.theme-light) .bf-table input,:root:not(.theme-light) .bf-table select,:root:not(.theme-light) .pw-note textarea.pw-out{background:var(--inputbg);color:var(--txt);border-color:var(--bd)}
+    :root:not(.theme-light) .sec-nav-item.active{background:var(--selbg)}
+    :root:not(.theme-light) .modal-card,:root:not(.theme-light) .modal,:root:not(.theme-light) .lock-card{background:var(--card)}
+    :root:not(.theme-light) .modal-x{background:var(--subbg2);color:var(--sub)}
+    :root:not(.theme-light) .role-bar{background:var(--card);border-color:var(--bd)}
+    :root:not(.theme-light) .role-tab{background:var(--subbg);color:var(--txt)}
+    :root:not(.theme-light) .role-tab.active{background:var(--primary);color:#fff}
+    :root:not(.theme-light) .role-key,:root:not(.theme-light) .pw-cp{background:var(--card);color:var(--txt);border-color:var(--bd)}
+    :root:not(.theme-light) .pw-val{background:var(--subbg);color:var(--txt);border-color:var(--bd)}
+    :root:not(.theme-light) .lock-card h2{color:var(--ink)} :root:not(.theme-light) .lock-card p{color:var(--sub)}
+    :root:not(.theme-light) .lock-input{background:var(--inputbg);color:var(--txt);border-color:var(--bd)}
+    :root:not(.theme-light) .pw-note{background:#241f0c;border-color:#4a3d12;color:#ffd43b}
+    :root:not(.theme-light) .st-进行中{background:#15324a;color:#74c0fc}
+    :root:not(.theme-light) .st-计划中{background:#3a2a12;color:#ffa94d}
+    :root:not(.theme-light) .st-已完成{background:#14331f;color:#69db7c}
+    :root:not(.theme-light) .tag-red{background:#3a1820;color:#ff8787}
+    :root:not(.theme-light) .tag-green{background:#14331f;color:#69db7c}
+    :root:not(.theme-light) .tag-amber{background:#3a2a12;color:#ffa94d}
+    :root:not(.theme-light) .pri-高{background:#3a1820;color:#ff8787}
+    :root:not(.theme-light) .pri-中{background:#3a2a12;color:#ffa94d}
+    :root:not(.theme-light) .pri-提示{background:#15324a;color:#74c0fc}
+    :root:not(.theme-light) .note,:root:not(.theme-light) .empty,:root:not(.theme-light) .pg,:root:not(.theme-light) .bf-count{color:var(--sub)}
+  }
+  /* 手动强制暗：与上面媒体查询内容一致，但无视系统设置 */
+  :root.theme-dark{
+    --bg:#0f1420; --card:#19202e; --ink:#e7ecf3; --sub:#9aa6b6; --line:#2a3445;
+    --shadow:0 1px 3px rgba(0,0,0,.5),0 8px 24px rgba(0,0,0,.5);
+    --subbg:#1c2433; --subbg2:#222c3d; --subbg3:#1e2737; --selbg:#28324a;
+    --bd:#2f3a4d; --txt:#e7ecf3; --inputbg:#141b27;
+    --green:#51cf66; --red:#ff6b6b; --amber:#ffa94d; --blue:#4dabf7; --teal:#20c997; --purple:#9775fa;
+  }
+  :root.theme-dark header.top{background:linear-gradient(135deg,#2b3f9e,#3b5bdb)}
+  :root.theme-dark .sec-nav{background:var(--bg);border-bottom-color:var(--line)}
+  :root.theme-dark .hscroll::-webkit-scrollbar-thumb,:root.theme-dark .sec-nav::-webkit-scrollbar-thumb{background:#3a465c}
+  :root.theme-dark .bar-track{background:var(--subbg2)}
+  :root.theme-dark .cf .cell{background:var(--subbg)}
+  :root.theme-dark .gantt-track{background:var(--subbg3)}
+  :root.theme-dark .bf-btn.ghost,:root.theme-dark .btn-ghost{background:var(--subbg2)}
+  :root.theme-dark .bf-table th{background:var(--subbg)}
+  :root.theme-dark .bf-table input,:root.theme-dark .bf-table select,:root.theme-dark .pw-note textarea.pw-out{background:var(--inputbg);color:var(--txt);border-color:var(--bd)}
+  :root.theme-dark .sec-nav-item.active{background:var(--selbg)}
+  :root.theme-dark .modal-card,:root.theme-dark .modal,:root.theme-dark .lock-card{background:var(--card)}
+  :root.theme-dark .modal-x{background:var(--subbg2);color:var(--sub)}
+  :root.theme-dark .role-bar{background:var(--card);border-color:var(--bd)}
+  :root.theme-dark .role-tab{background:var(--subbg);color:var(--txt)}
+  :root.theme-dark .role-tab.active{background:var(--primary);color:#fff}
+  :root.theme-dark .role-key,:root.theme-dark .pw-cp{background:var(--card);color:var(--txt);border-color:var(--bd)}
+  :root.theme-dark .pw-val{background:var(--subbg);color:var(--txt);border-color:var(--bd)}
+  :root.theme-dark .lock-card h2{color:var(--ink)} :root.theme-dark .lock-card p{color:var(--sub)}
+  :root.theme-dark .lock-input{background:var(--inputbg);color:var(--txt);border-color:var(--bd)}
+  :root.theme-dark .pw-note{background:#241f0c;border-color:#4a3d12;color:#ffd43b}
+  :root.theme-dark .st-进行中{background:#15324a;color:#74c0fc}
+  :root.theme-dark .st-计划中{background:#3a2a12;color:#ffa94d}
+  :root.theme-dark .st-已完成{background:#14331f;color:#69db7c}
+  :root.theme-dark .tag-red{background:#3a1820;color:#ff8787}
+  :root.theme-dark .tag-green{background:#14331f;color:#69db7c}
+  :root.theme-dark .tag-amber{background:#3a2a12;color:#ffa94d}
+  :root.theme-dark .pri-高{background:#3a1820;color:#ff8787}
+  :root.theme-dark .pri-中{background:#3a2a12;color:#ffa94d}
+  :root.theme-dark .pri-提示{background:#15324a;color:#74c0fc}
+  :root.theme-dark .note,:root.theme-dark .empty,:root.theme-dark .pg,:root.theme-dark .bf-count{color:var(--sub)}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
-    background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5;-webkit-text-size-adjust:100%}
-  .wrap{max-width:1600px;margin:0 auto;padding:16px 16px calc(32px + env(safe-area-inset-bottom))}
+    background:var(--bg);color:var(--ink);font-size:14px;line-height:1.55;-webkit-text-size-adjust:100%;font-weight:400}
+  .wrap{max-width:1640px;margin:0 auto;padding:20px 20px calc(36px + env(safe-area-inset-bottom))}
   header.top{background:linear-gradient(135deg,#3b5bdb,#5c7cfa);color:#fff;border-radius:18px;
     padding:20px 22px;box-shadow:var(--shadow);position:relative;overflow:hidden}
   header.top h1{margin:0;font-size:21px;letter-spacing:.5px;display:flex;align-items:center;gap:10px}
@@ -595,17 +698,17 @@ HTML = r"""<!DOCTYPE html>
     padding:3px 9px;border-radius:20px;font-weight:600}
   .real-flag{position:absolute;top:14px;right:16px;background:var(--green);color:#fff;font-size:11px;
     padding:3px 9px;border-radius:20px;font-weight:600}
-  section{margin-top:18px}
+  section{margin-top:26px}
   /* 快速导航条（吸顶 + 横向滚动） */
   .sec-nav{position:sticky;top:0;z-index:30;display:flex;gap:8px;overflow-x:auto;padding:9px 2px;margin:2px 0 16px;background:var(--bg);border-bottom:1px solid var(--line);scrollbar-width:thin}
   .sec-nav::-webkit-scrollbar{height:5px}
   .sec-nav::-webkit-scrollbar-thumb{background:#cdd5e3;border-radius:3px}
   .sec-nav-item{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;padding:7px 13px;border:1px solid var(--line);background:var(--card);border-radius:999px;font-size:13px;color:var(--sub);cursor:pointer;white-space:nowrap}
   .sec-nav-item:hover{border-color:var(--primary)}
-  .sec-nav-item.active{border-color:var(--primary);color:var(--primary);background:#eef2ff;font-weight:700}
+  .sec-nav-item.active{border-color:var(--primary);color:var(--primary);background:var(--selbg);font-weight:700}
   .sec-nav-item svg{width:14px;height:14px;flex:0 0 14px}
   /* 横向滑动容器（卡片横滑 / 移动端左右滑） */
-  .hscroll{display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:8px;scrollbar-width:thin}
+  .hscroll{display:flex;gap:14px;overflow-x:auto;scroll-snap-type:x mandatory;padding:4px 2px 12px;scrollbar-width:thin}
   .hscroll::-webkit-scrollbar{height:6px}
   .hscroll::-webkit-scrollbar-thumb{background:#cdd5e3;border-radius:3px}
   .hscroll>.card,.hscroll>.kpi{flex:0 0 auto;min-width:172px;max-width:248px;scroll-snap-align:start}
@@ -614,19 +717,28 @@ HTML = r"""<!DOCTYPE html>
   .pg button{appearance:none;padding:6px 14px;border:1px solid var(--line);background:var(--card);border-radius:8px;cursor:pointer;font-size:13px;color:var(--ink)}
   .pg button:disabled{opacity:.4;cursor:default}
   .pg-info{font-variant-numeric:tabular-nums}
-  .sec-title{display:flex;align-items:center;gap:9px;font-size:16px;font-weight:700;margin:0 0 12px 2px}
-  .sec-title svg{width:20px;height:20px;flex:0 0 20px}
+  .sec-title{position:relative;display:flex;align-items:center;gap:9px;font-size:var(--fs-xl);font-weight:800;margin:0 0 14px 14px;letter-spacing:.2px}
+  .sec-title::before{content:"";position:absolute;left:-14px;top:1px;bottom:1px;width:4px;border-radius:4px;background:linear-gradient(180deg,var(--primary),#5c7cfa)}
+  .sec-title svg{width:20px;height:20px;flex:0 0 20px;color:var(--primary)}
   .grid{display:grid;gap:14px}
   .g2{grid-template-columns:1fr 1fr}
   .g3{grid-template-columns:repeat(3,1fr)}
   .g4{grid-template-columns:repeat(4,1fr)}
   @media(max-width:880px){.g2,.g3,.g4{grid-template-columns:1fr}}
   @media(max-width:680px){.pd-stats{grid-template-columns:repeat(2,1fr)}}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:var(--shadow)}
-  .card h3{margin:0 0 12px;font-size:14px;color:var(--sub);font-weight:600}
-  .kpi{display:flex;flex-direction:column;gap:4px}
-  .kpi .v{font-size:26px;font-weight:800;letter-spacing:.5px}
-  .kpi .l{font-size:12.5px;color:var(--sub)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:var(--shadow)}
+  .card h3{margin:0 0 14px;font-size:15px;color:var(--ink);font-weight:700;padding-bottom:10px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:7px}
+  .kpi{--ac:var(--primary);display:flex;flex-direction:column;gap:6px;padding:15px 16px 14px;
+    box-shadow:var(--shadow), inset 0 3px 0 0 var(--ac);transition:transform .15s, box-shadow .15s}
+  .kpi:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(16,24,40,.14), inset 0 3px 0 0 var(--ac)}
+  .kpi .top{display:flex;align-items:center;gap:7px}
+  .kpi .ac-dot{width:8px;height:8px;border-radius:50%;background:var(--ac);flex:0 0 8px}
+  .kpi .lbl{font-size:var(--fs-sm);color:var(--sub);letter-spacing:.3px;font-weight:600}
+  .kpi .v{font-size:var(--fs-3xl);font-weight:800;letter-spacing:.5px;line-height:1.12;color:var(--ink)}
+  .kpi .v.neg{color:var(--red)}
+  .kpi .sub{font-size:var(--fs-xs);color:var(--sub);line-height:1.45;margin-top:1px}
+  .kpi.ac-blue{--ac:var(--ac-blue)} .kpi.ac-green{--ac:var(--ac-green)} .kpi.ac-red{--ac:var(--ac-red)}
+  .kpi.ac-amber{--ac:var(--ac-amber)} .kpi.ac-purple{--ac:var(--ac-purple)}
   .donut-wrap{display:flex;align-items:center;gap:16px}
   .legend{display:flex;flex-direction:column;gap:7px;font-size:13px;flex:1;min-width:0}
   .legend .row{display:flex;align-items:center;gap:8px}
@@ -634,8 +746,10 @@ HTML = r"""<!DOCTYPE html>
   .legend .nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .legend .vl{font-weight:700}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line)}
-  th{color:var(--sub);font-weight:600;font-size:12px}
+  th,td{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--ink);font-weight:700;font-size:11.5px;letter-spacing:.3px;background:var(--subbg)}
+  tbody tr:nth-child(even) td{background:var(--subbg)}
+  tbody tr:hover td{background:var(--selbg)}
   tr:last-child td{border-bottom:0}
   .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:600;white-space:nowrap}
   .st-进行中{background:#e7f5ff;color:#1971c2}
@@ -645,14 +759,15 @@ HTML = r"""<!DOCTYPE html>
   .tag-green{background:#ebfbee;color:var(--green)}
   .tag-amber{background:#fff4e6;color:var(--amber)}
   .num{font-variant-numeric:tabular-nums}
-  .bar-row{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:13px}
-  .bar-row .nm{width:84px;flex:0 0 84px;color:var(--sub);text-align:right}
-  .bar-track{flex:1;background:#eef1f7;border-radius:6px;height:18px;overflow:hidden}
+  .bar-row{display:flex;align-items:center;gap:10px;margin:10px 0;font-size:13px}
+  .bar-row .nm{width:92px;flex:0 0 92px;color:var(--sub);text-align:right}
+  .bar-track{flex:1;background:var(--subbg2);border-radius:6px;height:20px;overflow:hidden;box-shadow:inset 0 1px 2px rgba(16,24,40,.1)}
   .bar-fill{height:100%;border-radius:6px}
-  .bar-row .vl{width:54px;flex:0 0 54px;font-weight:700;text-align:right}
+  .bar-row .vl{width:56px;flex:0 0 56px;font-weight:700;text-align:right}
   .cf{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
   @media(max-width:680px){.cf{grid-template-columns:repeat(2,1fr)}}
-  .cf .cell{background:#f8f9fc;border-radius:12px;padding:11px;text-align:center}
+  .cf .cell{background:var(--subbg);border:1px solid var(--line);border-radius:12px;padding:13px;text-align:center;transition:transform .15s, box-shadow .15s, border-color .15s}
+  .cf .cell:hover{transform:translateY(-2px);box-shadow:var(--shadow);border-color:var(--bd)}
   .cf .bk{font-size:12px;color:var(--sub)}
   .cf .bi{font-size:16px;font-weight:800;color:var(--green)}
   .cf .bo{font-size:13px;color:var(--red)}
@@ -672,17 +787,18 @@ HTML = r"""<!DOCTYPE html>
   .pd-stats .c-red{color:var(--red)} .pd-stats .c-green{color:var(--green)} .pd-stats .c-amber{color:var(--amber)}
   .sub{color:var(--sub);font-size:11px;font-weight:500;margin-left:2px}
   /* 行动建议 */
-  .actions{display:flex;flex-direction:column;gap:8px}
-  .act{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:12px;background:var(--bg);border:1px solid var(--line)}
-  .act .pri{flex:0 0 auto;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;margin-top:1px;white-space:nowrap}
-  .pri-高{background:#fff0f0;color:var(--red)} .pri-中{background:#fff4e6;color:var(--amber)} .pri-提示{background:#e7f5ff;color:#1971c2}
-  .act .tx{flex:1;font-size:13.5px;line-height:1.45}
+  .actions{display:flex;flex-direction:column;gap:10px}
+  .act{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-radius:12px;background:var(--subbg);border:1px solid var(--line);transition:border-color .15s, background .15s}
+  .act:hover{border-color:var(--bd);background:var(--card)}
+  .act .pri{flex:0 0 auto;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;margin-top:1px;white-space:nowrap}
+  .pri-高{background:#ffe3e3;color:var(--red)} .pri-中{background:#fff0db;color:var(--amber)} .pri-提示{background:#dbeafe;color:#1971c2}
+  .act .tx{flex:1;font-size:13.5px;line-height:1.5}
   /* 甘特图 */
   .gantt-wrap{overflow-x:auto}
   .gantt{position:relative;min-width:820px;padding-top:22px}
   .gantt-row{display:flex;align-items:center;gap:12px;margin:7px 0;font-size:13px}
   .gantt-label{width:230px;flex:0 0 230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
-  .gantt-track{position:relative;flex:1;height:24px;background:#f1f3f8;border-radius:6px}
+  .gantt-track{position:relative;flex:1;height:24px;background:var(--subbg3);border-radius:6px}
   .gantt-bar{position:absolute;top:3px;height:18px;border-radius:5px;overflow:hidden;display:flex;align-items:center;color:#fff;font-size:10.5px;font-weight:700}
   .gantt-prog{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.32)}
   .gantt-cap{position:relative;padding:0 6px;white-space:nowrap}
@@ -693,16 +809,16 @@ HTML = r"""<!DOCTYPE html>
   .bf-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
   .bf-btn{appearance:none;border:0;border-radius:10px;padding:8px 14px;font-size:13px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;min-height:40px;font-weight:600}
   .bf-btn.copy{background:var(--primary);color:#fff}
-  .bf-btn.ghost{background:#eef1f7;color:var(--ink)}
+  .bf-btn.ghost{background:var(--subbg2);color:var(--ink)}
   .bf-btn:hover{opacity:.9}
   .bf-count{font-size:12.5px;color:var(--sub)}
   .bf-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
   .bf-table{width:100%;border-collapse:collapse;font-size:13px;min-width:720px}
   .bf-table th,.bf-table td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
-  .bf-table th{color:var(--sub);font-weight:600;font-size:12px;background:#f8f9fc;position:sticky;top:0}
+  .bf-table th{color:var(--sub);font-weight:600;font-size:12px;background:var(--subbg);position:sticky;top:0}
   .bf-table input,.bf-table select{width:100%;min-width:120px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;
-    font-size:13px;background:#fbfcfe;color:var(--ink);font-family:inherit}
-  .bf-table input:focus,.bf-table select:focus{outline:none;border-color:var(--primary);background:#fff}
+    font-size:13px;background:var(--inputbg);color:var(--ink);font-family:inherit}
+  .bf-table input:focus,.bf-table select:focus{outline:none;border-color:var(--primary);background:var(--inputbg)}
   .bf-name{font-weight:600;white-space:nowrap}
   .bf-sub{font-size:11px;color:var(--sub);font-weight:500;margin-top:2px}
   @media(max-width:680px){.bf-table input,.bf-table select{min-width:104px}}
@@ -723,7 +839,7 @@ HTML = r"""<!DOCTYPE html>
   .sync-t .sv .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle}
   .modal .note{font-size:12px;color:var(--sub);padding:12px 18px 0;line-height:1.65}
   .modal-ft{display:flex;gap:10px;padding:14px 18px 18px;flex-wrap:wrap}
-  .btn-ghost{background:#eef1f7;color:var(--ink)}
+  .btn-ghost{background:var(--subbg2);color:var(--ink)}
   @media(max-width:680px){.modal-ft .btn{flex:1}}
   /* 访问口令门 */
   .lock-mask{position:fixed;inset:0;background:linear-gradient(135deg,#1e293b,#0f172a);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px}
@@ -738,36 +854,36 @@ HTML = r"""<!DOCTYPE html>
   .lock-btn:active{background:#2f4bc4}
   .lock-err{color:#e03131;font-size:13px;min-height:18px;margin-top:10px;font-weight:600}
   .lock-hint{font-size:11px;color:#9aa3af;margin-top:14px;line-height:1.5}
-  .role-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 14px;padding:10px 12px;background:#fff;border:1px solid var(--bd);border-radius:14px}
+  .role-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 14px;padding:10px 12px;background:var(--card);border:1px solid var(--bd);border-radius:14px}
   .role-lbl{font-weight:700;font-size:13px;color:var(--sub)}
-  .role-tab{border:1px solid var(--bd);background:#f8f9fc;color:var(--txt);font-size:13px;font-weight:600;padding:8px 14px;border-radius:10px;cursor:pointer;transition:.15s}
+  .role-tab{border:1px solid var(--bd);background:var(--subbg);color:var(--txt);font-size:13px;font-weight:600;padding:8px 14px;border-radius:10px;cursor:pointer;transition:.15s}
   .role-tab:hover{border-color:#3b5bdb;color:#3b5bdb}
   .role-tab.active{background:#3b5bdb;border-color:#3b5bdb;color:#fff}
   .role-hint{margin-left:auto;font-size:11px;color:var(--sub)}
   .role-share{border:1px solid #3b5bdb;background:#3b5bdb;color:#fff;font-size:13px;font-weight:600;padding:8px 14px;border-radius:10px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:.15s}
   .role-share:hover{background:#2f4bc4}
-  .role-key{border:1px solid var(--bd);background:#fff;color:var(--txt);font-size:13px;font-weight:600;padding:8px 14px;border-radius:10px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:.15s}
-  .role-key:hover{background:#f1f3f8}
+  .role-key{border:1px solid var(--bd);background:var(--card);color:var(--txt);font-size:13px;font-weight:600;padding:8px 14px;border-radius:10px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:.15s}
+  .role-key:hover{background:var(--subbg2)}
   /* 口令管理弹窗 */
   .modal{display:none;position:fixed;inset:0;z-index:60}
   .modal.show{display:flex;align-items:center;justify-content:center}
   .modal-mask{position:absolute;inset:0;background:rgba(15,23,42,.45)}
-  .modal-card{position:relative;width:min(440px,92vw);max-height:86vh;overflow:auto;background:#fff;border-radius:16px;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+  .modal-card{position:relative;width:min(440px,92vw);max-height:86vh;overflow:auto;background:var(--card);border-radius:16px;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.25)}
   .modal-h{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:800;margin-bottom:4px}
   .modal-sub{font-size:11px;font-weight:500;color:var(--sub)}
-  .modal-x{margin-left:auto;border:none;background:#f1f3f8;width:28px;height:28px;border-radius:8px;font-size:18px;line-height:1;cursor:pointer;color:var(--sub)}
+  .modal-x{margin-left:auto;border:none;background:var(--subbg2);width:28px;height:28px;border-radius:8px;font-size:18px;line-height:1;cursor:pointer;color:var(--sub)}
   .modal-x:hover{background:#e3e7ef}
   .pw-list{margin:14px 0 6px;display:flex;flex-direction:column;gap:8px}
   .pw-row{display:flex;align-items:center;gap:8px}
   .pw-name{width:120px;font-size:13px;font-weight:600;color:var(--txt)}
-  .pw-val{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;padding:7px 10px;border:1px solid var(--bd);border-radius:8px;background:#f8f9fc;color:#111}
-  .pw-cp{border:1px solid var(--bd);background:#fff;color:var(--txt);font-size:12px;font-weight:600;padding:7px 12px;border-radius:8px;cursor:pointer}
-  .pw-cp:hover{background:#f1f3f8}
+  .pw-val{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;padding:7px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--subbg);color:var(--txt)}
+  .pw-cp{border:1px solid var(--bd);background:var(--card);color:var(--txt);font-size:12px;font-weight:600;padding:7px 12px;border-radius:8px;cursor:pointer}
+  .pw-cp:hover{background:var(--subbg2)}
   .modal-actions{display:flex;gap:10px;margin-top:14px}
   .btn-primary{border:none;background:#3b5bdb;color:#fff;font-size:13px;font-weight:700;padding:10px 16px;border-radius:10px;cursor:pointer}
   .btn-primary:hover{background:#2f4bc4}
-  .btn-ghost{border:1px solid var(--bd);background:#fff;color:var(--txt);font-size:13px;font-weight:600;padding:10px 16px;border-radius:10px;cursor:pointer}
-  .btn-ghost:hover{background:#f1f3f8}
+  .btn-ghost{border:1px solid var(--bd);background:var(--card);color:var(--txt);font-size:13px;font-weight:600;padding:10px 16px;border-radius:10px;cursor:pointer}
+  .btn-ghost:hover{background:var(--subbg2)}
   .pw-note{margin-top:12px;font-size:12px;line-height:1.6;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 12px}
   .pw-note textarea.pw-out{width:100%;margin-top:8px;height:92px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;padding:8px;border:1px solid var(--bd);border-radius:8px;resize:vertical}
   .role-share:hover{background:#2f4bc4;border-color:#2f4bc4}
@@ -808,6 +924,7 @@ HTML = r"""<!DOCTYPE html>
     <h1>__TITLE_ICON__ 生产 · 项目管理驾驶舱</h1>
     <div class="meta" id="metaLine"></div>
     <div class="toolbar">
+      <button class="btn" id="btnTheme" title="切换主题：自动 / 暗色 / 亮色">__IC_THEME__ 主题：自动</button>
       <button class="btn" id="btnExport">__IC_DOWNLOAD__ 导出分析JSON</button>
       <button class="btn" id="btnImport">__IC_UPLOAD__ 导入数据快照</button>
       <button class="btn" id="btnAnalyze" style="background:rgba(255,255,255,.32)">__IC_ANALYZE__ 分析数据（复制发我）</button>
@@ -840,6 +957,35 @@ function fmt(n){ if(n===null||n===undefined||isNaN(n)) return "0";
 function yuan(n){ return "¥"+fmt(n); }
 function pct(n){ return (n==null?"—":n+"%"); }
 function el(html){ const t=document.createElement("template"); t.innerHTML=html.trim(); return t.content.firstChild; }
+
+/* ---------- 主题切换：自动 / 暗色 / 亮色（三态，localStorage 持久化） ---------- */
+const THEME_KEY = "cockpit_theme";
+const THEME_LABEL = {auto:"主题：自动", dark:"主题：暗色", light:"主题：亮色"};
+function _currentTheme(){
+  const r=document.documentElement;
+  if(r.classList.contains("theme-dark")) return "dark";
+  if(r.classList.contains("theme-light")) return "light";
+  return "auto";
+}
+function applyTheme(t){
+  const r=document.documentElement;
+  r.classList.toggle("theme-dark", t==="dark");
+  r.classList.toggle("theme-light", t==="light");
+  const b=document.getElementById("btnTheme");
+  if(b){ const svg=(b.querySelector("svg")?b.innerHTML.split("</svg>")[0]+"</svg> ":"") ; b.innerHTML=svg+THEME_LABEL[t]; }
+}
+(function(){
+  let saved;
+  try{ saved=localStorage.getItem(THEME_KEY); }catch(e){ saved=null; }
+  const cur = (saved==="dark"||saved==="light") ? saved : "auto";
+  applyTheme(cur);
+  const btn=document.getElementById("btnTheme");
+  if(btn){ btn.onclick=function(){
+    const next = _currentTheme()==="auto" ? "dark" : _currentTheme()==="dark" ? "light" : "auto";
+    try{ if(next==="auto") localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY,next); }catch(e){}
+    applyTheme(next);
+  }; }
+})();
 
 /* ---------- SVG 图表 ---------- */
 function donut(pctv, color, size=120){
@@ -989,11 +1135,15 @@ function renderGantt(g, todayStr){
 }
 /* ---------- 角色视图（单文件 + 角色切换 + #role 书签）---------- */
 const ROLES={
-  boss:      {name:"老板",     sections:["K","A","BF","PW","G","T","C","Q","P","Sup","Inv"], actions:null},
+  // 老板：只看数据，不含任何写入口（新建/补录均为项目经理职责，不出现在老板页）
+  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv"], actions:null},
+  // 仓库/采购：非项目经理，不开放「新建」写入口（仅看数据 + 各自作业动作）
   warehouse: {name:"仓库",     sections:["K","A","Inv","P"],                       actions:["warehouse"]},
   purchase:  {name:"采购",     sections:["K","A","Sup"],                          actions:["purchase"]},
-  production:{name:"生产经理", sections:["K","A","G","T","Q","P","Inv"],           actions:["production","warehouse","delivery"]},
-  sales:     {name:"销售",     sections:["K","A","PW","G"],                       actions:["sales","delivery"]},
+  // 生产经理：项目经理职责 → 新建生产计划（写「生产计划」表）
+  production:{name:"生产经理", sections:["K","A","WZ","G","T","Q","P","Inv"],           actions:["production","warehouse","delivery"]},
+  // 销售：立项职责 → 新建项目（写「项目」表，对应销售立项表单）
+  sales:     {name:"销售",     sections:["K","A","WZ","PW","G"],                       actions:["sales","delivery"]},
 };
 const ROLE_ORDER=["boss","warehouse","purchase","production","sales"];
 function currentRole(){
@@ -1029,25 +1179,25 @@ function buildKPIs(m, role){
   const k=m.kpi, t=m.time, q=m.quality, s=m.supply, pd=m.partdb;
   const b=pd?pd.bom:null;
   const M={
-    projects:{l:"项目总数",v:fmt(k.projects),s:`进行中 ${k.active} · 计划 ${k.planned} · 完成 ${k.done}`,c:""},
-    contract:{l:"总合同额",v:yuan(k.contract),s:"已收 "+yuan(k.received),c:""},
-    received:{l:"已收金额",v:yuan(k.received),s:"合同执行率 "+pct(k.exec_rate),c:""},
-    receivable:{l:"应收款",v:yuan(k.receivable),s:"待回收",c:"neg"},
-    cost:{l:"生产总花销",v:yuan(k.cost),s:"毛利率 "+pct(k.margin),c:""},
-    margin:{l:"毛利率",v:pct(k.margin),s:"目标 30%",c:""},
-    unit_cost:{l:"单片成本",v:yuan(k.unit_cost),s:"台账均单价",c:""},
-    exec_rate:{l:"合同执行率",v:pct(k.exec_rate),s:"已收 / 合同",c:""},
-    ontime_rate:{l:"交期达成率",v:pct(k.ontime_rate),s:"在制 "+k.wip+" 单",c:""},
-    purchase_overdue:{l:"采购逾期",v:fmt(k.purchase_overdue),s:"需跟进",c:k.purchase_overdue>0?"neg":""},
-    wip:{l:"在制单数",v:fmt(k.wip),s:"进行中生产",c:""},
-    shortage:{l:"在产缺料",v:fmt(b?b.shortage.length:0),s:`零确认 ${pd?pd.zero_confirmed:0} 种`,c:(b&&b.shortage.length)?"neg":""},
-    kit_rate:{l:"物料齐套率",v:pct(b?((b.bom_count-b.shortage.length)/b.bom_count*100):100),s:`BOM ${b?b.bom_count:0} 行`,c:""},
-    part_count:{l:"在库料号",v:fmt(pd?pd.part_count:0),s:"零件总数",c:""},
-    zero_stock:{l:"零确认库存",v:fmt(pd?pd.zero_confirmed:0),s:"需盘点",c:(pd&&pd.zero_confirmed>0)?"neg":""},
-    supplier_ontime:{l:"供应商准时率",v:pct(supplierAvg(s)),s:`${s.supplier.length} 家`,c:supplierAvg(s)<70?"neg":""},
-    smt_yield:{l:"贴片良品率",v:pct(q.smt_yield),s:"良品 / 投入",c:""},
-    repair_rate:{l:"维修率",v:pct(q.repair_rate),s:`${q.repair_total}/${q.shipped}`,c:""},
-    cycle:{l:"平均生产周期",v:t.avg_cycle+"天",s:"实际花费天数",c:""},
+    projects:{l:"项目总数",v:fmt(k.projects),s:`进行中 ${k.active} · 计划 ${k.planned} · 完成 ${k.done}`,c:"",ac:"blue"},
+    contract:{l:"总合同额",v:yuan(k.contract),s:"已收 "+yuan(k.received),c:"",ac:"blue"},
+    received:{l:"已收金额",v:yuan(k.received),s:"合同执行率 "+pct(k.exec_rate),c:"",ac:"green"},
+    receivable:{l:"应收款",v:yuan(k.receivable),s:"待回收",c:"neg",ac:"red"},
+    cost:{l:"生产总花销",v:yuan(k.cost),s:"毛利率 "+pct(k.margin),c:"",ac:"amber"},
+    margin:{l:"毛利率",v:pct(k.margin),s:"目标 30%",c:"",ac:"green"},
+    unit_cost:{l:"单片成本",v:yuan(k.unit_cost),s:"台账均单价",c:"",ac:"amber"},
+    exec_rate:{l:"合同执行率",v:pct(k.exec_rate),s:"已收 / 合同",c:"",ac:"blue"},
+    ontime_rate:{l:"交期达成率",v:pct(k.ontime_rate),s:"在制 "+k.wip+" 单",c:"",ac:"blue"},
+    purchase_overdue:{l:"采购逾期",v:fmt(k.purchase_overdue),s:"需跟进",c:k.purchase_overdue>0?"neg":"",ac:"red"},
+    wip:{l:"在制单数",v:fmt(k.wip),s:"进行中生产",c:"",ac:"blue"},
+    shortage:{l:"在产缺料",v:fmt(b?b.shortage.length:0),s:`零确认 ${pd?pd.zero_confirmed:0} 种`,c:(b&&b.shortage.length)?"neg":"",ac:"red"},
+    kit_rate:{l:"物料齐套率",v:pct(b?((b.bom_count-b.shortage.length)/b.bom_count*100):100),s:`BOM ${b?b.bom_count:0} 行`,c:"",ac:"green"},
+    part_count:{l:"在库料号",v:fmt(pd?pd.part_count:0),s:"零件总数",c:"",ac:"blue"},
+    zero_stock:{l:"零确认库存",v:fmt(pd?pd.zero_confirmed:0),s:"需盘点",c:(pd&&pd.zero_confirmed>0)?"neg":"",ac:"red"},
+    supplier_ontime:{l:"供应商准时率",v:pct(supplierAvg(s)),s:`${s.supplier.length} 家`,c:supplierAvg(s)<70?"neg":"",ac:"amber"},
+    smt_yield:{l:"贴片良品率",v:pct(q.smt_yield),s:"良品 / 投入",c:"",ac:"green"},
+    repair_rate:{l:"维修率",v:pct(q.repair_rate),s:`${q.repair_total}/${q.shipped}`,c:"",ac:"red"},
+    cycle:{l:"平均生产周期",v:t.avg_cycle+"天",s:"实际花费天数",c:"",ac:"blue"},
   };
   const sets={
     boss:["projects","contract","receivable","cost","margin","ontime_rate","purchase_overdue","unit_cost"],
@@ -1091,8 +1241,8 @@ function render(m){
   const secK=el(`<section id="sec-K" class="sec"><div class="sec-title">__IC_GRID__ 核心指标概览 · ${ROLES[role].name}</div>
     <div class="hscroll" id="kpig"></div></section>`);
   kpis.forEach(x=>secK.querySelector("#kpig").appendChild(el(
-    `<div class="card kpi"><div class="v ${x.c}">${x.v}</div><div class="l">${x.l}</div>
-     <div class="l">${x.s}</div></div>`)));
+    `<div class="card kpi ac-${x.ac}"><div class="top"><span class="ac-dot"></span><span class="lbl">${x.l}</span></div>
+     <div class="v ${x.c}">${x.v}</div><div class="sub">${x.s}</div></div>`)));
   if(ROLES[role].sections.includes("K")) app.appendChild(secK);
 
   /* 下一步行动建议（按角色过滤） */
@@ -1144,7 +1294,7 @@ function render(m){
         <th>产品 / 编号</th><th>计划开始</th><th>计划完成</th><th>实际完成</th><th>放行状态</th>
       </tr></thead><tbody id="bfBody">
         ${planRows}
-        ${asmRows.length ? `<tr><td colspan="5" style="background:#f8f9fc;font-weight:600;color:var(--sub)">组装记录（${asmRows.length} 条）</td></tr>` : ""}
+        ${asmRows.length ? `<tr><td colspan="5" style="background:var(--subbg);font-weight:600;color:var(--sub)">组装记录（${asmRows.length} 条）</td></tr>` : ""}
         ${asmRows}
       </tbody></table></div>
       <div class="note">说明：生产计划「计划开始 / 完成」已按 立项日期 / 合同交期 预填，可直接改；「实际完成」「放行状态」需你填写（放行状态三选一：待评审 / 允许进入下一阶段 / 禁止放行）。填完点「一键复制」，把内容粘贴到 WorkBuddy 发我，我确认后写入 SeaTable 云端真库。<b>写回不可逆</b>，我绝不替你编造数值。</div>
@@ -1228,7 +1378,8 @@ function render(m){
         <div class="legend">${catItems.map((x,i)=>`<div class="row"><span class="dot" style="background:${x.color}"></span>
           <span class="nm">${x.name}</span><span class="vl num">${yuan(x.value)}</span></div>`).join("")}</div></div></div>
       <div class="card"><h3>利润与预算</h3>
-        <div class="kpi"><div class="v">${yuan(c.profit)}</div><div class="l">总利润（合同 ${yuan(c.contract)} − 花销 ${yuan(c.cost)}）</div></div>
+        <div class="kpi ac-green"><div class="top"><span class="ac-dot"></span><span class="lbl">总利润</span></div>
+          <div class="v">${yuan(c.profit)}</div><div class="sub">合同 ${yuan(c.contract)} − 花销 ${yuan(c.cost)}</div></div>
         <div class="bar-row" style="margin-top:14px"><div class="nm">毛利率</div>
           <div class="bar-track"><div class="bar-fill" style="width:${Math.min(100,c.margin)}%;background:${c.margin>=c.budget_margin?'#2f9e44':'#e03131'}"></div></div>
           <div class="vl num">${pct(c.margin)}</div></div>
@@ -1284,7 +1435,7 @@ function render(m){
   const secP=el(`<section id="sec-P" class="sec"><div class="sec-title">__IC_PROJ__ 生产进度 & 产线流转</div>
     <div class="grid g2">
       <div class="card"><h3>产线实时流转（在产计划当前工序）</h3>${flowHTML}
-        <div class="note">基于生产工序表「当前流程」：每个在产计划当前所处环节，用于定位产能瓶颈。共 ${flowEntries.length} 个工序环节在流转。</div></div>
+        <div class="note">基于生产计划表「阶段」（在产 = 状态≠已交付）：每个在产计划当前所处工序，用于定位产能瓶颈。共 ${flowEntries.length} 个工序环节在流转。</div></div>
       <div class="card"><h3>生产计划阶段分布</h3>${bars(stageItems2)}
         <div class="note">基于生产计划表「阶段」：整体进度分布（已交付/备料中/组装等）。</div></div>
     </div></section>`);
@@ -1363,8 +1514,36 @@ function render(m){
   if(ROLES[role].sections.includes("Sup")) app.appendChild(secSup);
   if(ROLES[role].sections.includes("Inv")) app.appendChild(secInv);
 
+  /* 新建向导：销售→「项目」表（销售立项表单）；其余角色→「生产计划」表（生产经理建计划）。
+     老板/仓库/采购页不显示（已在 ROLES 裁剪：WZ 不在其 sections 中） */
+  const _isSales = (role==="sales");
+  const _wzTitle = _isSales ? "新建项目（向导）" : "新建生产项目（向导）";
+  const _wzNameLbl = _isSales ? "项目名称 *" : "产品名称 *";
+  const _wzNamePh = _isSales ? "如 客户A-4G小卡二代" : "如 4G小卡二代";
+  const _wzTargetName = _isSales ? "项目" : "生产计划";
+  const secWZ=el(`<section id="sec-WZ" class="sec"><div class="sec-title">__IC_ADD__ ${_wzTitle}</div>
+    <div class="card">
+      <p class="note">填完点「🚀 一键发起 → WorkBuddy 预填待确认」：会把信息整理成文字、<b>复制到剪贴板</b>，并<b>拉起本地 WorkBuddy、自动预填任务并开始执行</b>。注意：按技能铁律「任何增删改必须先向你确认」，专家会先列出完整数据<b>等你点头</b>，确认后才写库、算缺料、刷新驾驶舱——所以<b>不是全自动落库</b>，但仍省去手动复制粘贴。没装桌面端时点「🌐 网页版提交」手动发送。最终写入 SeaTable「${_wzTargetName}」表${_isSales?"（即销售立项表单）":""}。</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:680px">
+        <label>${_wzNameLbl}<input id="wz-product" type="text" placeholder="${_wzNamePh}" style="width:100%"></label>
+        <label>数量 *<input id="wz-qty" type="number" min="1" placeholder="100" style="width:100%"></label>
+        <label>交期天数（天）<input id="wz-days" type="number" min="1" placeholder="30" style="width:100%"></label>
+        <label>优先级<select id="wz-prio" style="width:100%"><option>高</option><option selected>中</option><option>低</option></select></label>
+        <label>负责人<input id="wz-owner" type="text" placeholder="选填" style="width:100%"></label>
+        <label>备注<input id="wz-note" type="text" placeholder="选填" style="width:100%"></label>
+      </div>
+      <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button class="btn-primary" onclick="submitWizardCopy()">__IC_ADD__ 一键发起 → WorkBuddy 预填待确认</button>
+        <button class="btn-ghost" onclick="window.open('https://www.workbuddy.cn/','_blank')">🌐 网页版提交（workbuddy.cn）</button>
+        <button class="btn-ghost" onclick="submitWizardDownload()">__IC_DOWNLOAD__ 下载 JSON（备用）</button>
+      </div>
+      <textarea id="wz-text" readonly style="display:none;width:100%;max-width:680px;height:130px;margin-top:12px;font-size:13px;padding:8px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit"></textarea>
+      <p class="note" style="margin-top:10px">💡 「一键发起」需要 WorkBuddy 桌面端已安装，且<strong>在本机系统浏览器（Chrome / Edge）中打开本页</strong>再点按钮——浏览器会弹「是否用 WorkBuddy 打开」并拉起客户端、预填任务，专家会<b>请你确认后再写库</b>。注意：在 WorkBuddy 自带的预览面板里点可能不会触发系统协议，请改用外部浏览器打开 HTML 文件。没装桌面端则在系统浏览器打开「🌐 网页版提交（workbuddy.cn）」粘贴发送即可（网页版需先登录）。网页不持有任何账号/口令，数据由本机 Python 落库。</p>
+    </div></section>`);
+  if(ROLES[role].sections.includes("WZ")) app.appendChild(secWZ);
+
   /* 快速导航条：列出当前角色可见模块，点击平滑跳转，滚动自动高亮 */
-  const SEC_NAV={K:['核心指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],BF:['补录数据','__IC_EDIT__'],
+  const SEC_NAV={K:['核心指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],WZ:['新建项目','__IC_ADD__'],BF:['补录数据','__IC_EDIT__'],
     PW:['项目&在制','__IC_PROJ__'],G:['甘特图','__IC_GANT__'],T:['工时','__IC_TIME__'],
     C:['成本','__IC_COST__'],Q:['质量','__IC_QUAL__'],P:['产线流转','__IC_PROJ__'],
     Sup:['供应链','__IC_SUP__'],Inv:['库存预警','__IC_BOX__']};
@@ -1386,6 +1565,85 @@ function toast(msg){
   t.textContent=msg; t.classList.add("show");
   clearTimeout(t._timer);
   t._timer=setTimeout(()=>t.classList.remove("show"), 3200);
+}
+/* 新建项目向导：采集 → 复制成纯文本 → 唤起 WorkBuddy（用户粘贴发送，AI 落库） */
+function currentTarget(){
+  // 销售立项 → 写「项目」表（对应销售立项表单）；其余角色 → 写「生产计划」表
+  return (currentRole()==="sales") ? "项目" : "生产计划";
+}
+function collectWizard(){
+  const 产品=document.getElementById('wz-product').value.trim();
+  const 数量=parseInt(document.getElementById('wz-qty').value)||0;
+  const 天数=parseInt(document.getElementById('wz-days').value)||0;
+  const 优先级=document.getElementById('wz-prio').value;
+  const 负责人=document.getElementById('wz-owner').value.trim();
+  const 备注=document.getElementById('wz-note').value.trim();
+  if(!产品||!数量){ toast('请填写项目名称/产品名称和数量'); return null; }
+  const 交期=new Date(Date.now()+天数*86400000).toISOString().slice(0,10);
+  return {产品,数量,天数,交期,优先级,负责人,备注};
+}
+function wizardToText(d){
+  const t=currentTarget();
+  const head=(t==="项目")?"【新建项目】":"【新建生产计划】";
+  const lines=[head,"产品："+d.产品,"数量："+d.数量,"交期天数："+d.天数,"预计完工："+d.交期,"优先级："+d.优先级];
+  if(d.负责人) lines.push("负责人："+d.负责人);
+  if(d.备注) lines.push("备注："+d.备注);
+  lines.push("（由生产驾驶舱「新建项目」向导生成。请在已加载 seatable-production 技能的项目中运行 op.py apply-text 处理此指令：写入「"+t+"」表并刷新驾驶舱。）");
+  return lines.join("\n");
+}
+function copyText(txt){
+  if(navigator.clipboard && window.isSecureContext){
+    return navigator.clipboard.writeText(txt).then(()=>true).catch(()=>null);
+  }
+  try{
+    const ta=document.createElement('textarea');
+    ta.value=txt; ta.style.position='fixed'; ta.style.top='-1000px'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok=document.execCommand('copy'); document.body.removeChild(ta);
+    return Promise.resolve(ok?true:null);
+  }catch(e){ return Promise.resolve(null); }
+}
+function invokeWorkBuddyAuto(txt){
+  // 云盘式一键发起：workbuddy://task?action=start 自动开始执行任务、skills= 自动加载 seatable-production 技能
+  // 但技能铁律要求写入前必须经用户确认，故专家会先列出数据等待确认，不会直接落库
+  // 用真实 <a> 在用户点击手势里触发顶层导航（隐藏 iframe 跳自定义协议会被 Chrome/Edge 静默拦截，导致毫无反应）
+  const url='workbuddy://task?action=start&prompt='+encodeURIComponent(txt)+'&skills=seatable-production';
+  try{
+    const a=document.createElement('a');
+    a.href=url; a.rel='noopener'; a.style.display='none';
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ try{document.body.removeChild(a);}catch(e){} }, 2000);
+  }catch(e){ /* 忽略：交给 toast / 网页版按钮兜底 */ }
+}
+function submitWizardCopy(){
+  const d=collectWizard(); if(!d) return;
+  const txt=wizardToText(d);
+  const box=document.getElementById('wz-text'); box.value=txt; box.style.display='block';
+  copyText(txt).then(ok=>{
+    // 启发式检测：系统接管协议拉起本地客户端时，当前窗口通常会失焦(blur)。
+    // 若 ~1.8s 后仍聚焦，说明协议未注册/未被接管，才提示兜底（手动步骤只在真失败时出现）。
+    let launched=false;
+    const onBlur=()=>{ launched=true; window.removeEventListener('blur', onBlur); };
+    window.addEventListener('blur', onBlur);
+    invokeWorkBuddyAuto(txt);
+    setTimeout(()=>{
+      window.removeEventListener('blur', onBlur);
+      if(launched){
+        toast('已拉起 WorkBuddy 并预填任务 ✅ 专家会列出数据，请你确认后再写库');
+      }else{
+        toast('未拉起客户端？请在系统浏览器(Chrome/Edge)中打开本页再点，或点「网页版提交」');
+      }
+    }, 1800);
+  });
+}
+function submitWizardDownload(){
+  const d=collectWizard(); if(!d) return;
+  const t=currentTarget();
+  const obj={_wizard:"new-project",_target:t,产品:d.产品,数量:d.数量,交期天数:d.天数,预计完工:d.交期,优先级:d.优先级,负责人:d.负责人,备注:d.备注,生成时间:new Date().toISOString()};
+  const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=(t==="项目"?"新建项目.json":"新建生产项目.json"); a.click();
+  URL.revokeObjectURL(a.href);
+  toast('已下载 '+(t==="项目"?"新建项目.json":"新建生产项目.json")+'（备用）');
 }
 /* 分享角色视图：复制带 #role 锚点 + 口令的微信文案，直接发微信给对应人 */
 function shareRole(role){
