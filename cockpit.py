@@ -1538,7 +1538,7 @@ function render(m){
         <button class="btn-ghost" onclick="submitWizardDownload()">__IC_DOWNLOAD__ 下载 JSON（备用）</button>
       </div>
       <textarea id="wz-text" readonly style="display:none;width:100%;max-width:680px;height:130px;margin-top:12px;font-size:13px;padding:8px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit"></textarea>
-      <p class="note" style="margin-top:10px">💡 「一键发起」需要 WorkBuddy 桌面端已安装，并在 <b>Claw设置 → 协议注册</b> 启用 <code>workbuddy://</code> 绑定（和百度云/夸克拉起本地客户端同理）。启用后点按钮即拉起本地客户端并预填任务；专家会<b>请你确认后再写库</b>。未启用则点「🌐 网页版提交」在 workbuddy.cn 手动粘贴（网页版需先登录）。网页不持有任何账号/口令，数据由本机 Python 落库。</p>
+      <p class="note" style="margin-top:10px">💡 「一键发起」需要 WorkBuddy 桌面端已安装。<b>多数情况下安装/首次启动即自动注册</b> <code>workbuddy://</code> 协议（和百度云/夸克拉起本地客户端同理），无需手动设置；<b>仅当点击没反应时</b>，再去 <b>Claw设置 → 协议注册</b> 开启一次即可（开关为一次性，开过即永久生效）。点按钮即拉起本地客户端并预填任务，专家会<b>请你确认后再写库</b>。没装桌面端则点「🌐 网页版提交」在 workbuddy.cn 手动粘贴（网页版需先登录）。网页不持有任何账号/口令，数据由本机 Python 落库。</p>
     </div></section>`);
   if(ROLES[role].sections.includes("WZ")) app.appendChild(secWZ);
 
@@ -1620,8 +1620,20 @@ function submitWizardCopy(){
   const txt=wizardToText(d);
   const box=document.getElementById('wz-text'); box.value=txt; box.style.display='block';
   copyText(txt).then(ok=>{
+    // 启发式检测：系统接管协议拉起本地客户端时，当前窗口通常会失焦(blur)。
+    // 若 ~1.8s 后仍聚焦，说明协议未注册/未被接管，才提示兜底（手动步骤只在真失败时出现）。
+    let launched=false;
+    const onBlur=()=>{ launched=true; window.removeEventListener('blur', onBlur); };
+    window.addEventListener('blur', onBlur);
     invokeWorkBuddyAuto(txt);
-    toast('已拉起 WorkBuddy 并预填任务 ✅ 专家会列出数据，请你确认后再写库');
+    setTimeout(()=>{
+      window.removeEventListener('blur', onBlur);
+      if(launched){
+        toast('已拉起 WorkBuddy 并预填任务 ✅ 专家会列出数据，请你确认后再写库');
+      }else{
+        toast('本地客户端未响应？去 Claw设置→协议注册 开一次 workbuddy://，或点「网页版提交」');
+      }
+    }, 1800);
   });
 }
 function submitWizardDownload(){
