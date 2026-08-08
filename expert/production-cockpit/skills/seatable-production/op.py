@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+生产交付协同助手 — 统一数据操作 CLI（后端无关）。
+
+所有增删改查都走这里，SKILL.md 不直接碰任何存储细节，也不出现任何凭证。
+用法示例：
+  python3 op.py list 生产计划
+  python3 op.py list 生产计划 --where 状态=进行中
+  python3 op.py append 生产计划 '{"生产产品":"4G小卡","数量":100,"关联项目":"项目A"}'
+  python3 op.py update 生产计划 row_3 '{"状态":"已完成"}'
+  python3 op.py delete 生产计划 row_3
+  python3 op.py link 生产计划 PCB下单记录 row_3 row_7
+  python3 op.py linked 生产计划 row_3
+  python3 op.py meta 生产计划
+  python3 op.py resolve-link 生产计划 PCB下单记录
+  python3 op.py export-excel 生产数据.xlsx
+  python3 op.py partdb-search 电容 10
+  python3 op.py partdb-shortage 22 100
+"""
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from adapters.factory import load_config, get_adapter, get_partdb  # noqa: E402
+from adapters import schema  # noqa: E402
+
+
+def _print_rows(rows):
+    if not rows:
+        print("(空)")
+        return
+    # 打印为表格
+    cols = []
+    for r in rows:
+        for k in r.keys():
+            if k != "__row_id__" and k not in cols:
+                cols.append(k)
+    header = ["__row_id__"] + cols
+    print("\t".join(header))
+    for r in rows:
+        print("\t".join(str(r.get(c, "")) for c in header))
+
+
+def create_production_plan_row(data):
+    """把向导/文本解析出的结构化数据转成「生产计划」表的写入行（项目经理建计划）。"""
+    import datetime as _dt
+    prod = str(data.get("产品", "")).strip()
+    qty = int(data.get("数量", 0) or 0)
+    if not prod or not qty:
+        raise ValueError("产品名称或数量缺失，无法写入")
+    days = int(data.get("交期天数", 0) or 0)
+    due = str(data.get("预计完工") or "").strip() or (
+        (_dt.date.today() + _dt.timedelta(days=days)).isoformat())
+    today = _dt.date.today().isoformat()
+    return {
+        "生产产品": prod,
+        "数量": qty,
+        "关联项目": prod + " 项目",
+        "状态": "进行中",
+        "阶段": "库存核对",
+        "立项日期": today,
+        "合同交期": due,
+        "完货日期": "",
+        "负责人": str(data.get("负责人", "") or ""),
+        "优先级": str(data.get("优先级", "中") or "中"),
+        "备注": str(data.get("备注", "") or ""),
+    }
+
+
+def create_project_record(data):
+    """把销售立项向导/文本解析出的数据转成「项目」表的写入行（对应销售立项表单）。"""
+    import datetime as _dt
+    name = str(data.get("产品", "")).strip()
+    if not name:
+        raise ValueError("项目名称缺失，无法写入")
+    days = int(data.get("交期天数", 0) or 0)
+    due = str(data.get("预计完工") or "").strip() or (
+        (_dt.date.today() + _dt.timedelta(days=days)).isoformat())
+    return {
+        "项目": name,
+        "状态": "计划中",
+        "阶段": "立项",
+        "合同交期": due,
+        "花费天数": days,
+        "创建者": str(data.get("负责人", "") or ""),
+        "产品需求": str(data.get("备注", "") or ""),
+    }
+
+
+def _build_target_row(data):
+    """按 _target 选择写入表与目标行；默认「生产计划」（向后兼容旧下载 JSON）。"""
+    target = str(data.get("_target") or "生产计划").strip()
+    if target == "项目":
+        return "项目", create_project_record(data)
+    return "生产计划", create_production_plan_row(data)
+
+
+def _apply_and_refresh(adapter, args, table, row):
+    rid = adapter.append_row(table, row)
+    print(f"OK 已写入「{table}」 row_id={rid}")
+    try:
+        import subprocess
+        cockpit = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cockpit.py")
+        out = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), "项目管理驾驶舱.html")
+        subprocess.run([sys.executable, cockpit, out], check=False)
+        print(f"OK 驾驶舱已刷新：{out}")
+    except Exception as e:
+        print(f"[warn] 驾驶舱自动刷新失败（手动跑 python cockpit.py 即可）：{e}")
+
+
+def _parse_wizard_text(text):
+    """解析【新建项目】/【新建生产计划】纯文本为结构化 dict（兼容中文/英文冒号）。"""
+    data = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("【") or line.startswith("（") or line.startswith("("):
+            continue
+        if "：" in line:
+            k, _, v = line.partition("：")
+            data[k.strip()] = v.strip()
+        elif ":" in line:
+            k, _, v = line.partition(":")
+            data[k.strip()] = v.strip()
+    # 识别目标表：销售立项表单写到「项目」，其余写到「生产计划」
+    if "【新建项目】" in text:
+        data["_target"] = "项目"
+    return data
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--config", default=None)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("list").add_argument("table")
+    sp = sub.add_parser("query"); sp.add_argument("table"); sp.add_argument("--where", action="append", default=[])
+    sp = sub.add_parser("append"); sp.add_argument("table"); sp.add_argument("json")
+    sp = sub.add_parser("update"); sp.add_argument("table"); sp.add_argument("row_id"); sp.add_argument("json")
+    sp = sub.add_parser("delete"); sp.add_argument("table"); sp.add_argument("row_ids", nargs="+")
+    sp = sub.add_parser("link"); sp.add_argument("table"); sp.add_argument("other"); sp.add_argument("row_id"); sp.add_argument("other_row_ids", nargs="+")
+    sp = sub.add_parser("linked"); sp.add_argument("table"); sp.add_argument("row_id")
+    sub.add_parser("meta").add_argument("table")
+    sp = sub.add_parser("resolve-link"); sp.add_argument("table"); sp.add_argument("other")
+    sp = sub.add_parser("export-excel"); sp.add_argument("out", nargs="?", default="生产数据.xlsx")
+    sp = sub.add_parser("partdb-search"); sp.add_argument("keyword"); sp.add_argument("limit", nargs="?", type=int, default=20)
+    sp = sub.add_parser("partdb-shortage"); sp.add_argument("project_id", type=int); sp.add_argument("qty", type=int)
+    sp = sub.add_parser("apply-wizard"); sp.add_argument("file"); sp.add_argument("--out", nargs="?", default=None)
+    sp = sub.add_parser("apply-text"); sp.add_argument("file"); sp.add_argument("--out", nargs="?", default=None)
+
+    args = p.parse_args()
+    cfg = load_config(args.config)
+    adapter = get_adapter(cfg)
+    adapter.auth()
+
+    if args.cmd == "list":
+        _print_rows(adapter.list_rows(args.table))
+    elif args.cmd == "query":
+        filters = {}
+        for w in args.where:
+            k, _, v = w.partition("=")
+            filters[k] = v
+        _print_rows(adapter.query(args.table, filters))
+    elif args.cmd == "append":
+        data = json.loads(args.json)
+        rid = adapter.append_row(args.table, data)
+        print(f"OK row_id={rid}")
+    elif args.cmd == "update":
+        adapter.update_row(args.table, args.row_id, json.loads(args.json))
+        print("OK")
+    elif args.cmd == "delete":
+        adapter.delete_rows(args.table, args.row_ids)
+        print("OK")
+    elif args.cmd == "link":
+        lid = schema.link_id_for(args.table, args.other)
+        adapter.link(args.table, args.other, lid, args.row_id, args.other_row_ids)
+        print(f"OK linked {args.table}:{args.row_id} <-> {args.other}:{args.other_row_ids}")
+    elif args.cmd == "linked":
+        print(json.dumps(adapter.list_linked(args.table, args.row_id, ""), ensure_ascii=False))
+    elif args.cmd == "meta":
+        print(json.dumps(adapter.get_metadata(args.table), ensure_ascii=False, indent=2))
+    elif args.cmd == "resolve-link":
+        print(schema.link_id_for(args.table, args.other) or "(local 无独立 link_id，写关联时自动解析)")
+    elif args.cmd == "export-excel":
+        try:
+            from openpyxl import Workbook
+        except Exception:
+            print("导出 Excel 需要 openpyxl：pip install openpyxl", file=sys.stderr); sys.exit(1)
+        wb = Workbook(); wb.remove(wb.active)
+        for t in schema.TABLES:
+            ws = wb.create_sheet(title=t[:31])
+            rows = adapter.list_rows(t)
+            if not rows:
+                ws.append(["(空)"]); continue
+            cols = [c for c in rows[0].keys() if c != "__row_id__"]
+            ws.append(["__row_id__"] + cols)
+            for r in rows:
+                ws.append([r.get("__row_id__", "")] + [r.get(c, "") for c in cols])
+        out = args.out if os.path.isabs(args.out) else os.path.join(os.path.dirname(os.path.abspath(__file__)), args.out)
+        wb.save(out)
+        print(f"OK 导出到 {out}")
+    elif args.cmd == "partdb-search":
+        pd = get_partdb(cfg)
+        if not pd:
+            print("PartDB 未启用（config.yaml 中 partdb.enabled=false 或留空）。已跳过缺料检查。")
+            return
+        for p in pd.search_parts(args.keyword, args.limit):
+            print(f"{p.get('name')} | 料号:{p.get('ipn')} | 库存:{p.get('total_instock')}")
+    elif args.cmd == "partdb-shortage":
+        pd = get_partdb(cfg)
+        if not pd:
+            print("PartDB 未启用，无法做缺料检查。")
+            return
+        for s in pd.shortage(args.project_id, args.qty):
+            print(f"缺料: {s['name']} 料号:{s['ipn']} 需{s['need']} 现有{s['stock']} 缺口{s['gap']}")
+    elif args.cmd == "apply-wizard":
+        with open(args.file, encoding="utf-8") as _f:
+            data = json.load(_f)
+        if data.get("_wizard") != "new-project":
+            print("该文件不是向导生成的「新建*.json」（缺少 _wizard 标记），已跳过。")
+            sys.exit(1)
+        try:
+            table, row = _build_target_row(data)
+        except ValueError as e:
+            print(str(e)); sys.exit(1)
+        _apply_and_refresh(adapter, args, table, row)
+    elif args.cmd == "apply-text":
+        with open(args.file, encoding="utf-8") as _f:
+            text = _f.read()
+        data = _parse_wizard_text(text)
+        try:
+            table, row = _build_target_row(data)
+        except ValueError as e:
+            print(str(e)); sys.exit(1)
+        _apply_and_refresh(adapter, args, table, row)
+
+
+if __name__ == "__main__":
+    main()
