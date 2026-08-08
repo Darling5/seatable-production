@@ -7,11 +7,57 @@
 
 ---
 
-## 0. 从 GitHub 安装到 WorkBuddy
+## 🎬 先看效果（30 秒看懂）
 
-本技能是 [WorkBuddy](https://www.codebuddy.cn) 的技能包，两种装法：
+**它干了什么**：把散落在 SeaTable / PartDB / 本地 CSV 里的生产业务数据，自动汇总成「老板 / 生产经理 / 采购 / 仓库 / 销售」各自视角的网页工作台，按角色口令分享，可一键发起写回。
 
-**方式 A：clone 到技能目录（推荐，可随 git 更新）**
+```mermaid
+flowchart LR
+    A[业务数据<br/>SeaTable · PartDB · 本地CSV] --> B[seatable-production 技能<br/>op.py 统一读写]
+    B --> C[cockpit.py 生成<br/>单文件 HTML 驾驶舱]
+    C --> D{5 个角色视图}
+    D --> E[👔 老板]
+    D --> F[🏭 生产经理]
+    D --> G[🛒 采购]
+    D --> H[📦 仓库]
+    D --> I[💼 销售]
+    C --> J[🚀 一键发起<br/>workbuddy:// 深链写回]
+```
+
+**📸 生成的驾驶舱长这样**（示意图，实际由 `cockpit.py` 生成，零配置即可跑）：
+
+![生产项目管理驾驶舱示意](docs/cockpit-preview.svg)
+
+**▶ 想直接点开看交互效果？** 已托管在线，浏览器打开即玩（无需安装）：
+
+- 🖥️ **[交互式使用指南（HTML，强烈推荐先看）](https://darling5.github.io/seatable-production/usage-guide.html)** —— 图文 + 可点的角色视图、深链发起、夜间模式演示，等于一份会动的产品说明书。
+- 🎬 **演示视频（即将上线）**：最快的方式是把一段 60 秒录屏（OBS / 手机）存为 `docs/demo.mp4` 提交，GitHub Pages 会自动以 `https://darling5.github.io/seatable-production/demo.mp4` 发布，本页链接随即可点；也可用 WorkBuddy 浏览器自动化录制。
+
+> 示意图与演示页均为**公开模板数据**，不含任何真实业务信息与口令，可放心公开。
+
+---
+
+## 🚀 安装（3 种方式，最简单的是第一个）
+
+### 方式一：直接把 GitHub 链接丢进 WorkBuddy（推荐，30 秒）
+
+不用 clone、不用解压。在 WorkBuddy 里：
+
+1. **「我的项目 → 新建项目」**，项目来源粘贴本仓库链接：
+   ```
+   https://github.com/Darling5/seatable-production
+   ```
+2. 项目创建后，会自动带上 `seatable-production` 技能与「生产驾驶舱」专家。
+3. 直接对话：「**生成演示版驾驶舱**」→ 用内置示例数据给你一张完整网页；或「**帮我建个生产计划：产品 4G 小卡，数量 100，交期 30 个工作日**」。
+
+> 首次运行建议先跑引导式安装向导（会问你要用哪种后端、有没有 token，避免手动改配置）：
+> ```bash
+> cd ~/.workbuddy/skills/seatable-production
+> python setup.py            # 交互式：选 本地 / SeaTable
+> # 或 python setup.py --local   # 直接零配置
+> ```
+
+### 方式二：clone 到技能目录（可随 git 更新）
 
 ```bash
 # Windows (Git Bash)
@@ -23,20 +69,13 @@ git clone https://github.com/Darling5/seatable-production.git \
   ~/.workbuddy/skills/seatable-production
 ```
 
-**方式 B：下载 ZIP**
+### 方式三：下载 ZIP
+
 在 GitHub 页面点 `Code → Download ZIP`，解压后把 `seatable-production/` 文件夹
 放到 `~/.workbuddy/skills/` 下即可。
 
 > 装好后**重启 WorkBuddy**，对话里说「帮我建个生产计划」「出一张发货清单」就会触发。
 > 默认零配置即用（本地 CSV 存储）；想接自己的 SeaTable / PartDB，见第 3、4 节。
-
-**首次运行建议先跑引导式安装向导**（会问你要用哪种后端、有没有 token，避免手动改配置）：
-
-```bash
-cd ~/.workbuddy/skills/seatable-production
-python setup.py            # 交互式：选 本地 / SeaTable
-# 或 python setup.py --local   # 直接零配置
-```
 
 ---
 

@@ -1,0 +1,109 @@
+<svg viewBox="0 0 860 540" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif">
+  <defs>
+    <linearGradient id="hdr" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b5bdb"/><stop offset="1" stop-color="#5c7cfa"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#5c7cfa"/><stop offset="1" stop-color="#3b5bdb"/>
+    </linearGradient>
+  </defs>
+
+  <!-- page bg -->
+  <rect x="0" y="0" width="860" height="540" rx="18" fill="#f6f8fc"/>
+  <rect x="14" y="14" width="832" height="512" rx="14" fill="#ffffff" stroke="#e3e8f0"/>
+
+  <!-- header -->
+  <rect x="14" y="14" width="832" height="52" rx="14" fill="url(#hdr)"/>
+  <rect x="14" y="44" width="832" height="22" fill="url(#hdr)"/>
+  <circle cx="44" cy="40" r="11" fill="#ffffff" opacity="0.25"/>
+  <text x="64" y="46" fill="#ffffff" font-size="17" font-weight="800">生产项目管理驾驶舱</text>
+  <rect x="690" y="28" width="74" height="24" rx="12" fill="#ffffff" opacity="0.18"/>
+  <text x="727" y="44" fill="#ffffff" font-size="12" font-weight="600" text-anchor="middle">🌙 主题</text>
+  <rect x="772" y="28" width="58" height="24" rx="12" fill="#ffffff" opacity="0.18"/>
+  <text x="801" y="44" fill="#ffffff" font-size="12" font-weight="600" text-anchor="middle">↻</text>
+
+  <!-- role tabs -->
+  <g font-size="13" font-weight="700" text-anchor="middle">
+    <rect x="34" y="80" width="96" height="30" rx="15" fill="#ffffff" stroke="#e3e8f0"/>
+    <text x="82" y="100" fill="#6b7280">老板</text>
+    <rect x="140" y="80" width="120" height="30" rx="15" fill="#3b5bdb"/>
+    <text x="200" y="100" fill="#ffffff">生产经理</text>
+    <rect x="270" y="80" width="96" height="30" rx="15" fill="#ffffff" stroke="#e3e8f0"/>
+    <text x="318" y="100" fill="#6b7280">采购</text>
+    <rect x="376" y="80" width="96" height="30" rx="15" fill="#ffffff" stroke="#e3e8f0"/>
+    <text x="424" y="100" fill="#6b7280">仓库</text>
+    <rect x="482" y="80" width="96" height="30" rx="15" fill="#ffffff" stroke="#e3e8f0"/>
+    <text x="530" y="100" fill="#6b7280">销售</text>
+  </g>
+
+  <!-- KPI cards -->
+  <g>
+    <rect x="34" y="124" width="186" height="78" rx="12" fill="#edf2ff" stroke="#dbe4ff"/>
+    <text x="50" y="150" fill="#6b7280" font-size="12">项目数</text>
+    <text x="50" y="184" fill="#1f2733" font-size="30" font-weight="800">20</text>
+    <text x="120" y="184" fill="#2f9e44" font-size="12" font-weight="700">▲ 进行中 12</text>
+
+    <rect x="234" y="124" width="186" height="78" rx="12" fill="#edf2ff" stroke="#dbe4ff"/>
+    <text x="250" y="150" fill="#6b7280" font-size="12">交期达成率</text>
+    <text x="250" y="184" fill="#1f2733" font-size="30" font-weight="800">86<tspan font-size="18">%</tspan></text>
+    <text x="370" y="184" fill="#e8590c" font-size="12" font-weight="700">逾期 3</text>
+
+    <rect x="434" y="124" width="186" height="78" rx="12" fill="#edf2ff" stroke="#dbe4ff"/>
+    <text x="450" y="150" fill="#6b7280" font-size="12">良品率</text>
+    <text x="450" y="184" fill="#1f2733" font-size="30" font-weight="800">98.2<tspan font-size="18">%</tspan></text>
+    <text x="600" y="184" fill="#2f9e44" font-size="12" font-weight="700">▲ 优</text>
+
+    <rect x="634" y="124" width="186" height="78" rx="12" fill="#edf2ff" stroke="#dbe4ff"/>
+    <text x="650" y="150" fill="#6b7280" font-size="12">应收</text>
+    <text x="650" y="184" fill="#1f2733" font-size="26" font-weight="800">¥174<tspan font-size="16">万</tspan></text>
+    <text x="770" y="184" fill="#e8590c" font-size="12" font-weight="700">待回 38万</text>
+  </g>
+
+  <!-- left: bar chart -->
+  <rect x="34" y="220" width="400" height="280" rx="12" fill="#ffffff" stroke="#e3e8f0"/>
+  <text x="52" y="248" fill="#1f2733" font-size="14" font-weight="800">产线实时流转（在产）</text>
+  <g>
+    <rect x="70" y="470" width="48" height="0" fill="url(#bar)"/>
+    <rect x="70" y="360" width="48" height="110" rx="5" fill="url(#bar)"/>
+    <rect x="140" y="320" width="48" height="150" rx="5" fill="url(#bar)"/>
+    <rect x="210" y="390" width="48" height="80" rx="5" fill="url(#bar)"/>
+    <rect x="280" y="350" width="48" height="120" rx="5" fill="url(#bar)"/>
+    <rect x="350" y="410" width="48" height="60" rx="5" fill="url(#bar)"/>
+    <g font-size="11" fill="#6b7280" text-anchor="middle">
+      <text x="94" y="488">库存</text>
+      <text x="164" y="488">贴片</text>
+      <text x="234" y="488">组装</text>
+      <text x="304" y="488">烧录</text>
+      <text x="374" y="488">测试</text>
+    </g>
+    <g font-size="11" fill="#1f2733" font-weight="700" text-anchor="middle">
+      <text x="94" y="354">6</text>
+      <text x="164" y="314">9</text>
+      <text x="234" y="384">4</text>
+      <text x="304" y="344">7</text>
+      <text x="374" y="404">3</text>
+    </g>
+  </g>
+  <line x1="60" y1="470" x2="416" y2="470" stroke="#e3e8f0"/>
+
+  <!-- right: table + action -->
+  <rect x="450" y="220" width="370" height="280" rx="12" fill="#ffffff" stroke="#e3e8f0"/>
+  <text x="468" y="248" fill="#1f2733" font-size="14" font-weight="800">下一步行动（按角色）</text>
+  <!-- table header -->
+  <rect x="468" y="262" width="334" height="26" rx="6" fill="#edf2ff"/>
+  <text x="478" y="280" fill="#3b5bdb" font-size="11" font-weight="700">事项</text>
+  <text x="600" y="280" fill="#3b5bdb" font-size="11" font-weight="700">状态</text>
+  <text x="700" y="280" fill="#3b5bdb" font-size="11" font-weight="700">角色</text>
+  <g font-size="11" fill="#1f2733">
+    <text x="478" y="312">A 物料逾期跟进</text><text x="600" y="312" fill="#e8590c" font-weight="700">逾期</text><text x="700" y="312" fill="#6b7280">采购</text>
+    <text x="478" y="344">项目 B 组装完成确认</text><text x="600" y="344" fill="#2f9e44" font-weight="700">待办</text><text x="700" y="344" fill="#6b7280">生产</text>
+    <text x="478" y="376">客户 C 应收催收</text><text x="600" y="376" fill="#e8590c" font-weight="700">预警</text><text x="700" y="376" fill="#6b7280">老板</text>
+    <text x="478" y="408">PCB 齐套率核查</text><text x="600" y="408" fill="#2f9e44" font-weight="700">正常</text><text x="700" y="408" fill="#6b7280">仓库</text>
+  </g>
+  <rect x="468" y="430" width="334" height="44" rx="10" fill="#f1f3f9" stroke="#e3e8f0"/>
+  <text x="486" y="457" fill="#6b7280" font-size="11.5">🚀 一键发起（workbuddy:// 深链拉起桌面端）</text>
+  <text x="486" y="475" fill="#9aa3b2" font-size="10">复制预填任务 · 确认后写库</text>
+
+  <!-- footer watermark -->
+  <text x="430" y="524" fill="#9aa3b2" font-size="11" text-anchor="middle">示意图：实际由 cockpit.py 生成，数据来自本地 CSV / SeaTable（零配置即可跑）</text>
+</svg>
