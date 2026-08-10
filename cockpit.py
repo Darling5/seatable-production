@@ -24,7 +24,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from adapters.factory import get_adapter  # noqa: E402
 
 _TZ = timezone(timedelta(hours=8))
-DEFAULT_OUT = r"C:\Users\11430\WorkBuddy\2026-08-07-18-30-14\项目管理驾驶舱.html"
+# 默认输出到「当前工作目录/项目管理驾驶舱.html」；可用参数或环境变量 COCKPIT_OUT 覆盖。
+# （不要硬编码某台机器的绝对路径——别人 clone 下来会写到不存在的目录。）
+DEFAULT_OUT = os.environ.get("COCKPIT_OUT") or os.path.join(os.getcwd(), "项目管理驾驶舱.html")
 
 # 采购 / 生产执行表中「花销」列与成本类目映射
 COST_MAP = [
@@ -536,32 +538,73 @@ ICONS = {
 }
 
 # ===== 访问口令（客户端校验，写进 HTML 源码；已 base64 混淆，开发者选项里不再一眼看到明文）=====
-# 注意：仍是客户端校验，口令会写进 HTML 源码，仅防误看 / 随手改 hash 越权，非真加密。
-# - 模式 PW_MODE：
-#     "fixed"  —— 固定口令（写在下方常量），长期稳定；仅手动改 + 重生成才变（推荐，分享出去的人不会天天变口令）。
-#     "rotate" —— 每次运行 cockpit.py（含每日 9 点自动任务）都重新随机生成一套新口令并自动部署。
-# - ADMIN_PASSWORD：管理员（你自己）口令，可解锁全部 5 个角色、自由切换视图、进口令管理面板。
-# - ROLE_PASSWORDS：每个角色独立口令，发给对应人员；对方只能看自己那一份，且无法切换到其他角色。
-# 轮换：管理员页面「口令管理」里点「轮换全部口令」→ 本机立即生成新口令；要让全网（其他设备）生效并作废旧口令，
-#       把生成的新口令发我（或直接说「重新部署」），我用新口令重建上线即可。
-PW_MODE = "fixed"
+# 定位：防「文件误发到外部时被随手打开」的一道门，不是加密。
+#      口令必然要写进 HTML 才能离线校验，所以拿到文件+懂开发者工具的人总能绕过。
+#
+# 🔑 口令从 config.yaml 读取（该文件已 gitignore，不会进版本库）：
+#      cockpit:
+#        admin_password: "xxxx"
+#        role_passwords: {boss: "...", warehouse: "...", ...}
+#   首次运行若 config.yaml 里没有口令，会自动生成一套随机口令并写回 config.yaml，
+#   同时在终端打印出来——请自行分发给对应同事。
+#
+# ⚠️ 绝不要把口令写死在本文件里：本仓库是公开的，写死等于公开发布口令。
+def _load_pw():
+    """从 config.yaml 读口令；没有则随机生成并写回。返回 (admin, {role: pw})。"""
+    import random as _rnd
+    import string as _str
+    from adapters.factory import load_config, _SKILL_DIR
 
-if PW_MODE == "rotate":
-    import random as _rnd, string as _str
-    def _genpw(p): return p + "".join(_rnd.choices(_str.digits, k=4))
-    ADMIN_PASSWORD = _genpw("ZHWL")
-    ROLE_PASSWORDS = {k: _genpw(p) for k, p in
-                      {"boss": "ZHWL", "warehouse": "CK", "purchase": "CG",
-                       "production": "SC", "sales": "XS"}.items()}
-else:
-    ADMIN_PASSWORD = "ZHWL8888"
-    ROLE_PASSWORDS = {
-        "boss": "ZHWL2026",
-        "warehouse": "CK8888",
-        "purchase": "CG8888",
-        "production": "SC8888",
-        "sales": "XS8888",
-    }
+    _ROLES = ("boss", "warehouse", "purchase", "production", "sales")
+    cfg = load_config() or {}
+    cp = cfg.get("cockpit") or {}
+    admin = (cp.get("admin_password") or "").strip()
+    roles = dict(cp.get("role_passwords") or {})
+
+    # 强口令：大小写字母+数字，10 位，避免 "CK8888" 这种可猜格式
+    alphabet = _str.ascii_letters + _str.digits
+    def _gen():
+        return "".join(_rnd.SystemRandom().choice(alphabet) for _ in range(10))
+
+    missing = (not admin) or any(not (roles.get(r) or "").strip() for r in _ROLES)
+    if not missing:
+        return admin, {r: roles[r] for r in _ROLES}
+
+    admin = admin or _gen()
+    for r in _ROLES:
+        if not (roles.get(r) or "").strip():
+            roles[r] = _gen()
+
+    # 写回 config.yaml（不存在则以 example 为基础创建）
+    cfg_path = os.path.join(_SKILL_DIR, "config.yaml")
+    try:
+        block = ["", "# 驾驶舱访问口令（自动生成，可自行修改；本文件已 gitignore）",
+                 "cockpit:", '  admin_password: "%s"' % admin, "  role_passwords:"]
+        block += ['    %s: "%s"' % (r, roles[r]) for r in _ROLES]
+        text = ""
+        if os.path.exists(cfg_path):
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                text = f.read()
+        if "cockpit:" in text:
+            # 已有 cockpit 段但字段不全 —— 不自动改写，避免破坏用户手写内容
+            print("[warn] config.yaml 的 cockpit 段口令不完整，本次使用临时随机口令；"
+                  "请手动补全后重跑。", file=sys.stderr)
+            return admin, {r: roles[r] for r in _ROLES}
+        with open(cfg_path, "a" if text else "w", encoding="utf-8") as f:
+            if not text:
+                f.write("backend: local\n")
+            f.write("\n".join(block) + "\n")
+        print("[口令] 已生成新的驾驶舱口令并写入 config.yaml：", file=sys.stderr)
+        print("       管理员 %s" % admin, file=sys.stderr)
+        for r in _ROLES:
+            print("       %-10s %s" % (r, roles[r]), file=sys.stderr)
+        print("       请分发给对应同事；改口令请编辑 config.yaml 后重跑本脚本。", file=sys.stderr)
+    except Exception as e:
+        print("[warn] 口令写回 config.yaml 失败（%s），本次使用临时随机口令。" % e, file=sys.stderr)
+    return admin, {r: roles[r] for r in _ROLES}
+
+
+ADMIN_PASSWORD, ROLE_PASSWORDS = _load_pw()
 
 # 构建期：把口令表编码为 base64 再写入源码（开发者选项里不再是一眼明文）
 import base64 as _b64
@@ -2017,10 +2060,6 @@ def main():
     for k, v in ICONS.items():
         html = html.replace("__" + k + "__", v)
     html = html.replace("__PW_BLOB__", json.dumps(PW_BLOB))
-    if PW_MODE == "rotate":
-        _pwfile = os.path.join(os.path.dirname(os.path.abspath(out)), "cockpit_passwords.json")
-        with open(_pwfile, "w", encoding="utf-8") as _f:
-            json.dump(_PW_MAP, _f, ensure_ascii=False, indent=2)
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
