@@ -706,6 +706,7 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
   .sec-nav-item{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;padding:7px 13px;border:1px solid var(--line);background:var(--card);border-radius:999px;font-size:13px;color:var(--sub);cursor:pointer;white-space:nowrap}
   .sec-nav-item:hover{border-color:var(--primary)}
   .sec-nav-item.active{border-color:var(--primary);color:var(--primary);background:var(--selbg);font-weight:700}
+  .sec-nav-item.in-more{opacity:0.7;font-size:12px}
   .sec-nav-item svg{width:14px;height:14px;flex:0 0 14px}
   /* 横向滑动容器（卡片横滑 / 移动端左右滑） */
   .hscroll{display:flex;gap:14px;overflow-x:auto;scroll-snap-type:x mandatory;padding:4px 2px 12px;scrollbar-width:thin}
@@ -891,6 +892,47 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
   .toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);background:#1f2430;color:#fff;font-size:13.5px;line-height:1.55;padding:12px 18px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.22);opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:9999;max-width:88vw;text-align:center}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   @media(max-width:680px){.role-hint{display:none}.role-tab{flex:1;text-align:center}.role-share{flex:1;justify-content:center}}
+
+  /* ── 今天要处理（首屏置顶收口）─────────────────────────── */
+  .today{background:linear-gradient(135deg,#fff5f5,#fff9f0);border:1px solid #ffc9c9;border-radius:16px;
+    padding:20px 22px;margin:0 0 18px}
+  :root.theme-dark .today{background:linear-gradient(135deg,#2a1618,#2a2016);border-color:#5c2b2b}
+  @media (prefers-color-scheme: dark){
+    :root:not(.theme-light) .today{background:linear-gradient(135deg,#2a1618,#2a2016);border-color:#5c2b2b}
+  }
+  .today-hd{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+  .today-hd .t{font-size:18px;font-weight:800;letter-spacing:.3px;color:var(--ink)}
+  .today-hd .cnt{background:var(--red);color:#fff;font-size:12px;font-weight:700;
+    padding:2px 10px;border-radius:999px}
+  .today-hd .ok{background:var(--green);color:#fff;font-size:12px;font-weight:700;
+    padding:2px 10px;border-radius:999px}
+  .today-list{display:flex;flex-direction:column;gap:10px}
+  .today-item{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--bd);
+    border-radius:12px;padding:12px 14px;min-height:52px}
+  .today-item.p-高{border-left:4px solid var(--red)}
+  .today-item.p-中{border-left:4px solid var(--amber)}
+  .today-item.p-提示{border-left:4px solid var(--primary)}
+  .today-item .tx{flex:1;font-size:14.5px;line-height:1.6}
+  .today-item .go{flex:none;border:1px solid var(--bd);background:var(--subbg);color:var(--txt);
+    font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:9px;cursor:pointer;min-height:38px}
+  .today-item .go:hover{background:var(--primary);color:#fff;border-color:var(--primary)}
+  .today-empty{color:var(--sub);font-size:14px;padding:6px 2px}
+  @media(max-width:680px){
+    .today{padding:16px 14px}
+    .today-item{flex-wrap:wrap}
+    .today-item .go{width:100%;min-height:44px}
+  }
+
+  /* ── 更多分析（二级折叠区）───────────────────────────── */
+  .more-wrap{margin-top:22px}
+  .more-tg{width:100%;display:flex;align-items:center;justify-content:center;gap:10px;
+    background:var(--card);border:1px dashed var(--bd);color:var(--sub);
+    font-size:14px;font-weight:700;padding:14px 18px;border-radius:12px;cursor:pointer;min-height:48px}
+  .more-tg:hover{background:var(--subbg2);color:var(--txt);border-color:var(--primary)}
+  .more-tg .arrow{transition:transform .2s;font-size:12px}
+  .more-tg.open .arrow{transform:rotate(180deg)}
+  .more-body{display:none;margin-top:16px}
+  .more-body.open{display:block}
 </style>
 </head>
 <body>
@@ -1136,14 +1178,20 @@ function renderGantt(g, todayStr){
 /* ---------- 角色视图（单文件 + 角色切换 + #role 书签）---------- */
 const ROLES={
   // 老板：只看数据，不含任何写入口（新建/补录均为项目经理职责，不出现在老板页）
-  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv"], actions:null},
+  // core = 首屏核心模块（≤4）；more = 折叠进「更多分析」的二级模块
+  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv"],
+              core:["K","A","PW"],                more:["G","T","C","Q","P","Sup","Inv"], actions:null},
   // 仓库/采购：非项目经理，不开放「新建」写入口（仅看数据 + 各自作业动作）
-  warehouse: {name:"仓库",     sections:["K","A","Inv","P"],                       actions:["warehouse"]},
-  purchase:  {name:"采购",     sections:["K","A","Sup"],                          actions:["purchase"]},
+  warehouse: {name:"仓库",     sections:["K","A","Inv","P"],
+              core:["K","A","Inv"],               more:["P"],                     actions:["warehouse"]},
+  purchase:  {name:"采购",     sections:["K","A","Sup"],
+              core:["K","A","Sup"],               more:[],                        actions:["purchase"]},
   // 生产经理：项目经理职责 → 新建生产计划（写「生产计划」表）
-  production:{name:"生产经理", sections:["K","A","WZ","G","T","Q","P","Inv"],           actions:["production","warehouse","delivery"]},
+  production:{name:"生产经理", sections:["K","A","WZ","G","T","Q","P","Inv"],
+              core:["K","A","P","WZ"],            more:["G","T","Q","Inv"],       actions:["production","warehouse","delivery"]},
   // 销售：立项职责 → 新建项目（写「项目」表，对应销售立项表单）
-  sales:     {name:"销售",     sections:["K","A","WZ","PW","G"],                       actions:["sales","delivery"]},
+  sales:     {name:"销售",     sections:["K","A","PW","WZ","G"],
+              core:["K","A","PW","WZ"],           more:["G"],                     actions:["sales","delivery"]},
 };
 const ROLE_ORDER=["boss","production","purchase","warehouse","sales"];
 function currentRole(){
@@ -1199,14 +1247,27 @@ function buildKPIs(m, role){
     repair_rate:{l:"维修率",v:pct(q.repair_rate),s:`${q.repair_total}/${q.shipped}`,c:"",ac:"red"},
     cycle:{l:"平均生产周期",v:t.avg_cycle+"天",s:"实际花费天数",c:"",ac:"blue"},
   };
+  // 首屏只留最多 4 张「一眼定生死」的指标，其余下沉到「更多分析 → 更多指标」
   const sets={
-    boss:["projects","contract","receivable","cost","margin","ontime_rate","purchase_overdue","unit_cost"],
-    warehouse:["shortage","kit_rate","part_count","zero_stock"],
-    purchase:["purchase_overdue","supplier_ontime","shortage","ontime_rate"],
-    production:["wip","ontime_rate","cycle","smt_yield","repair_rate","shortage"],
-    sales:["projects","contract","received","receivable","ontime_rate","wip"],
+    boss:      ["contract","receivable","margin","purchase_overdue"],
+    warehouse: ["shortage","kit_rate","zero_stock","part_count"],
+    purchase:  ["purchase_overdue","supplier_ontime","shortage","ontime_rate"],
+    production:["wip","ontime_rate","shortage","cycle"],
+    sales:     ["contract","received","receivable","ontime_rate"],
   };
-  return (sets[role]||sets.boss).map(key=>M[key]).filter(Boolean);
+  const setsMore={
+    boss:      ["projects","cost","ontime_rate","unit_cost","exec_rate","wip"],
+    warehouse: [],
+    purchase:  [],
+    production:["smt_yield","repair_rate"],
+    sales:     ["projects","wip","exec_rate"],
+  };
+  const pick=(arr)=>(arr||[]).map(key=>M[key]).filter(Boolean);
+  return {core:pick(sets[role]||sets.boss), more:pick(setsMore[role])};
+}
+function kpiCard(x){
+  return el(`<div class="card kpi ac-${x.ac}"><div class="top"><span class="ac-dot"></span><span class="lbl">${x.l}</span></div>
+     <div class="v ${x.c}">${x.v}</div><div class="sub">${x.s}</div></div>`);
 }
 
 function render(m){
@@ -1220,6 +1281,13 @@ function render(m){
     return;
   }
   const app=$("#app"); app.innerHTML="";
+  /* 分流器：core → 首屏直接挂载；more → 收进「更多分析」折叠区；都不在 → 不渲染 */
+  const CORE=ROLES[role].core||ROLES[role].sections, MORE=ROLES[role].more||[];
+  const moreBody=el(`<div class="more-body" id="moreBody"></div>`);
+  const put=(key,node)=>{
+    if(CORE.includes(key)) app.appendChild(node);
+    else if(MORE.includes(key)) moreBody.appendChild(node);
+  };
   $("#metaLine").textContent="数据快照："+m.snapshot
     + (m.partdb?" · 物料/缺料接入 PartDB 实时（"+m.partdb.generated_at+"）":"")
     + (m.synced_at?" · 业务表接入 SeaTable 云「"+(m.base_name||"生产")+"」（同步 "+m.synced_at+"）":"")
@@ -1235,25 +1303,50 @@ function render(m){
   }
   app.appendChild(buildRoleBar(role, UNLOCK));
 
-  /* KPI 概览（按角色裁剪） */
+  /* KPI 概览（按角色裁剪，首屏最多 4 张） */
   const k=m.kpi;
-  const kpis=buildKPIs(m, role);
+  const kpiG=buildKPIs(m, role);
   const secK=el(`<section id="sec-K" class="sec"><div class="sec-title">__IC_GRID__ 核心指标概览 · ${ROLES[role].name}</div>
     <div class="hscroll" id="kpig"></div></section>`);
-  kpis.forEach(x=>secK.querySelector("#kpig").appendChild(el(
-    `<div class="card kpi ac-${x.ac}"><div class="top"><span class="ac-dot"></span><span class="lbl">${x.l}</span></div>
-     <div class="v ${x.c}">${x.v}</div><div class="sub">${x.s}</div></div>`)));
-  if(ROLES[role].sections.includes("K")) app.appendChild(secK);
+  kpiG.core.forEach(x=>secK.querySelector("#kpig").appendChild(kpiCard(x)));
+  put("K", secK);
 
-  /* 下一步行动建议（按角色过滤） */
+  /* 今天要处理：首屏置顶，只留高/中优先级，一键跳到对应模块 */
   const actsAll=m.next_actions||[];
   const acts=(role==="boss")?actsAll:actsAll.filter(a=>(ROLES[role].actions||[]).includes(a.cat));
+  // 每类事项按「候选模块」顺序找第一个当前角色可见的模块，保证「去处理」按钮总有落点
+  const CAT_SEC={purchase:["Sup","Inv","P"],warehouse:["Inv","P","Sup"],
+    delivery:["PW","P","G"],production:["P","G","T","PW"],sales:["PW","G"],boss:["PW","G"]};
+  const visible=(kk)=>CORE.includes(kk)||MORE.includes(kk);
+  const urgent=acts.filter(a=>a.pri==="高"||a.pri==="中").slice(0,6);
+  const todayBody=urgent.length
+    ? urgent.map(a=>{
+        const tgt=(CAT_SEC[a.cat]||[]).find(visible);
+        const jump=tgt?`<button class="go" data-jump="sec-${tgt}">去处理 →</button>`:"";
+        return `<div class="today-item p-${a.pri}"><span class="tx">${a.text}</span>${jump}</div>`;
+      }).join("")
+    : `<div class="today-item p-提示"><span class="tx">今天没有逾期或临期事项，保持当前节奏即可 ✔</span></div>`;
+  const secToday=el(`<div class="today" id="sec-Today">
+    <div class="today-hd"><span class="t">今天要处理</span>
+      ${urgent.length?`<span class="cnt">${urgent.length} 项</span>`:`<span class="ok">全部正常</span>`}
+      <span class="note" style="margin:0">数据快照 ${m.snapshot} · 仅显示高/中优先级</span></div>
+    <div class="today-list">${todayBody}</div></div>`);
+  secToday.querySelectorAll("[data-jump]").forEach(b=>b.onclick=()=>{
+    const key=b.dataset.jump.replace("sec-","");
+    if(MORE.includes(key)) openMore();          // 目标在折叠区 → 先展开
+    const t=document.getElementById(b.dataset.jump);
+    if(t) t.scrollIntoView({behavior:"smooth",block:"start"});
+  });
+  app.appendChild(secToday);
+  if(CORE.includes("K")) app.insertBefore(secToday, secK);
+
+  /* 下一步行动建议（完整列表，按角色过滤） */
   const actHTML=acts.length?acts.map(a=>`<div class="act"><span class="pri pri-${a.pri}">${a.pri}</span>
     <span class="tx">${a.text}</span></div>`).join(""):`<div class="act"><span class="pri pri-提示">提示</span><span class="tx">当前角色暂无专属待办事项，保持节奏即可 ✔</span></div>`;
   const secA=el(`<section id="sec-A" class="sec"><div class="sec-title">__IC_NEXT__ 下一步行动建议 · ${ROLES[role].name}（按优先级）</div>
     <div class="card"><div class="actions">${actHTML}</div>
     <div class="note">基于当前真实数据自动推导，按角色筛选：红=高优、橙=中优、蓝=提示。老板视图含全部战略项。</div></div></section>`);
-  if(ROLES[role].sections.includes("A")) app.appendChild(secA);
+  put("A", secA);
 
   /* 补录缺失数据（行内填写 → 存本地 → 复制发回 → 写云端） */
   const bf = m.backfill || {生产计划: [], 组装记录: []};
@@ -1301,7 +1394,7 @@ function render(m){
     </div></section>`);
   secBF.querySelector("#bfCopy").onclick = copyBackfill;
   secBF.querySelector("#bfClear").onclick = clearBackfill;
-  if(ROLES[role].sections.includes("BF")) app.appendChild(secBF);
+  put("BF", secBF);
 
   /* 项目总览 + 在制品看板 */
   const projRows=m.projects.map(p=>`<tr>
@@ -1329,14 +1422,15 @@ function render(m){
         <tbody>${wipRows}</tbody></table></div>
         <div class="note">红色=已逾期，橙色=7天内到期，绿色=余量充足。昨天未完自动顺延至今日。</div></div>
     </div></section>`);
-  if(ROLES[role].sections.includes("PW")) app.appendChild(secPW);
+  put("PW", secPW);
 
   /* 甘特图 */
   const g=m.gantt||[];
   const secG=el(`<section id="sec-G" class="sec"><div class="sec-title">__IC_GANT__ 生产计划甘特图（立项 → 合同交期）</div>
     <div class="card"><div class="gantt-wrap"><div class="gantt" id="gantt"></div></div>
     <div class="note">蓝色=进行中，绿色=已交付，红色=逾期；条内浅色填充为当前进度（按日期推算）。竖红线为今日 ${m.snapshot}。悬停产品名查看全称。</div></div></section>`);
-  if(ROLES[role].sections.includes("G")){ app.appendChild(secG); $("#gantt").innerHTML=renderGantt(g,m.snapshot); }
+  secG.querySelector("#gantt").innerHTML=renderGantt(g,m.snapshot);
+  put("G", secG);
 
   /* 工时 */
   const t=m.time;
@@ -1358,7 +1452,7 @@ function render(m){
         平均实际周期 = 各计划「花费天数」均值（真实工序耗时）。<br>
         阶段分布反映当前产能瓶颈所在工序。</div></div>
     </div></section>`);
-  if(ROLES[role].sections.includes("T")) app.appendChild(secT);
+  put("T", secT);
 
   /* 成本 */
   const c=m.cost;
@@ -1395,7 +1489,7 @@ function render(m){
       <div class="card"><h3>现金流预测（30/60/90天）</h3><div class="cf">${cf}</div>
         <div class="note">收入按合同交期、支出按采购预计到货归集；净额为收减付。</div></div>
     </div></section>`);
-  if(ROLES[role].sections.includes("C")) app.appendChild(secC);
+  put("C", secC);
 
   /* 质量 */
   const q=m.quality;
@@ -1419,7 +1513,7 @@ function render(m){
           <td><span class="pill ${r.done?'tag-green':(r.overdue?'tag-red':'tag-amber')}">${r.done?'已完成':(r.overdue?'超期':'处理中')}</span></td></tr>`).join("")
           +`</tbody></table>`:`<div class="empty">无维修记录</div>`}</div>
     </div></section>`);
-  if(ROLES[role].sections.includes("Q")) app.appendChild(secQ);
+  put("Q", secQ);
 
   /* 生产进度 & 产线流转（基于生产计划 / 工序真实字段） */
   const tp=m.time;
@@ -1439,7 +1533,7 @@ function render(m){
       <div class="card"><h3>生产计划阶段分布</h3>${bars(stageItems2)}
         <div class="note">基于生产计划表「阶段」：整体进度分布（已交付/备料中/组装等）。</div></div>
     </div></section>`);
-  if(ROLES[role].sections.includes("P")) app.appendChild(secP);
+  put("P", secP);
 
   /* 供应链 + 物料库存预警 */
   const s=m.supply;
@@ -1511,8 +1605,8 @@ function render(m){
     </div></section>`);
   const secInv=el(`<section id="sec-Inv" class="sec"><div class="sec-title">__IC_BOX__ 物料库存预警（PartDB 实时）</div>
     ${pdHTML}</section>`);
-  if(ROLES[role].sections.includes("Sup")) app.appendChild(secSup);
-  if(ROLES[role].sections.includes("Inv")) app.appendChild(secInv);
+  put("Sup", secSup);
+  put("Inv", secInv);
 
   /* 新建向导：销售→「项目」表（销售立项表单）；其余角色→「生产计划」表（生产经理建计划）。
      老板/仓库/采购页不显示（已在 ROLES 裁剪：WZ 不在其 sections 中） */
@@ -1540,22 +1634,58 @@ function render(m){
       <textarea id="wz-text" readonly style="display:none;width:100%;max-width:680px;height:130px;margin-top:12px;font-size:13px;padding:8px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit"></textarea>
       <p class="note" style="margin-top:10px">💡 「一键发起」需要 WorkBuddy 桌面端已安装，且<strong>在本机系统浏览器（Chrome / Edge）中打开本页</strong>再点按钮——浏览器会弹「是否用 WorkBuddy 打开」并拉起客户端、预填任务，专家会<b>请你确认后再写库</b>。注意：在 WorkBuddy 自带的预览面板里点可能不会触发系统协议，请改用外部浏览器打开 HTML 文件。没装桌面端则在系统浏览器打开「🌐 网页版提交（workbuddy.cn）」粘贴发送即可（网页版需先登录）。网页不持有任何账号/口令，数据由本机 Python 落库。</p>
     </div></section>`);
-  if(ROLES[role].sections.includes("WZ")) app.appendChild(secWZ);
+  put("WZ", secWZ);
 
-  /* 快速导航条：列出当前角色可见模块，点击平滑跳转，滚动自动高亮 */
-  const SEC_NAV={K:['核心指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],WZ:['新建项目','__IC_ADD__'],BF:['补录数据','__IC_EDIT__'],
+  /* 更多分析（二级折叠区）：把非核心模块 + 次要指标收进来，首屏只保留 3-4 块 */
+  if(kpiG.more.length){
+    const secKM=el(`<section id="sec-KM" class="sec"><div class="sec-title">__IC_GRID__ 更多指标</div>
+      <div class="hscroll" id="kpigm"></div></section>`);
+    kpiG.more.forEach(x=>secKM.querySelector("#kpigm").appendChild(kpiCard(x)));
+    moreBody.insertBefore(secKM, moreBody.firstChild);
+  }
+  const moreCnt=moreBody.children.length;
+  if(moreCnt){
+    const tg=el(`<button class="more-tg" id="moreTg" aria-expanded="false">
+      <span>更多分析（${moreCnt} 项）</span><span class="arrow">▼</span></button>`);
+    const wrap=el(`<div class="more-wrap"></div>`);
+    wrap.appendChild(tg); wrap.appendChild(moreBody);
+    tg.onclick=()=>{ moreBody.classList.contains("open")?closeMore():openMore(); };
+    app.appendChild(wrap);
+  }
+
+  /* 快速导航条：首屏模块直接跳；折叠区模块点击时自动展开再跳 */
+  const SEC_NAV={K:['核心指标','__IC_GRID__'],KM:['更多指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],
+    WZ:['新建项目','__IC_ADD__'],BF:['补录数据','__IC_EDIT__'],
     PW:['项目&在制','__IC_PROJ__'],G:['甘特图','__IC_GANT__'],T:['工时','__IC_TIME__'],
     C:['成本','__IC_COST__'],Q:['质量','__IC_QUAL__'],P:['产线流转','__IC_PROJ__'],
     Sup:['供应链','__IC_SUP__'],Inv:['库存预警','__IC_BOX__']};
-  const navHTML=ROLES[role].sections.map(k=>`<button class="sec-nav-item" data-target="sec-${k}">${SEC_NAV[k][1]}${SEC_NAV[k][0]}</button>`).join("");
+  const navKeys=[["Today",null]].concat(
+    CORE.filter(k=>SEC_NAV[k]).map(k=>[k,false]),
+    MORE.filter(k=>SEC_NAV[k]).map(k=>[k,true]));
+  const navHTML=navKeys.map(([k,inMore])=>{
+    if(k==="Today") return `<button class="sec-nav-item" data-target="sec-Today">__IC_NEXT__今天要处理</button>`;
+    return `<button class="sec-nav-item${inMore?' in-more':''}" data-target="sec-${k}" data-more="${inMore?1:0}">${SEC_NAV[k][1]}${SEC_NAV[k][0]}</button>`;
+  }).join("");
   const navBar=el(`<nav class="sec-nav" id="secNav">${navHTML}</nav>`);
   navBar.querySelectorAll(".sec-nav-item").forEach(b=>b.onclick=()=>{
+    if(b.dataset.more==="1") openMore();
     const t=document.getElementById(b.dataset.target);
     if(t) t.scrollIntoView({behavior:"smooth",block:"start"});
   });
-  app.insertBefore(navBar, secK);
+  app.insertBefore(navBar, secToday);
   initPagination();
   observeNav(navBar);
+}
+/* 「更多分析」折叠区开关（render 内多处调用） */
+function openMore(){
+  const b=document.getElementById("moreBody"), t=document.getElementById("moreTg");
+  if(!b) return;
+  b.classList.add("open"); if(t){ t.classList.add("open"); t.setAttribute("aria-expanded","true"); }
+}
+function closeMore(){
+  const b=document.getElementById("moreBody"), t=document.getElementById("moreTg");
+  if(!b) return;
+  b.classList.remove("open"); if(t){ t.classList.remove("open"); t.setAttribute("aria-expanded","false"); }
 }
 
 /* ---------- 交互 ---------- */
@@ -1747,7 +1877,8 @@ function analyzeData(){
   L.push("数据快照："+m.snapshot + (m.isDemo ? "（演示数据）" : "（真实数据·SeaTable云"+(m.synced_at?"，同步 "+m.synced_at:"")+"）"));
   L.push("");
   L.push("【1 核心指标（"+ROLES[role].name+"视图）】");
-  buildKPIs(m, role).forEach(x=>L.push("· "+x.l+"："+x.v+(x.s?"（"+x.s+"）":"")));
+  const _kp=buildKPIs(m, role);
+  _kp.core.concat(_kp.more).forEach(x=>L.push("· "+x.l+"："+x.v+(x.s?"（"+x.s+"）":"")));
   L.push("");
   L.push("【2 下一步行动建议（"+ROLES[role].name+"专属）】");
   const actsAll=m.next_actions||[];
