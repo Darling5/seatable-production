@@ -2,7 +2,16 @@
 data/
 
 # 真实配置（含个人 token，勿提交；只提交 config.yaml.example）
-config.yaml
+# 用通配兜底：任何 config*.yaml 都不提交，唯独放行 .example
+config*.yaml
+config*.yml
+!config.yaml.example
+
+# 生成的驾驶舱网页含真实业务数据，勿提交
+*驾驶舱*.html
+cockpit_passwords.json
+cockpit_*.html
+!docs/usage-guide.html
 
 # Python 缓存
 __pycache__/
