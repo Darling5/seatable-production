@@ -113,6 +113,155 @@ def _load_sync_meta():
         return None
 
 
+def _overlap_days(a_start, a_end, b_start, b_end):
+    """两个闭区间的重叠天数（含首尾）；任一端缺失按 0 处理。"""
+    if not (a_start and a_end and b_start and b_end):
+        return 0
+    lo = max(a_start, b_start)
+    hi = min(a_end, b_end)
+    return (hi - lo).days + 1 if hi >= lo else 0
+
+
+def compute_resources(adapter, today, plans):
+    """资源域计算：负载率 / 冲突检测 / 成本归集。
+
+    对标 MS Project 的「资源工作表 + 资源使用状况」：
+      - 负载率 = 本周已分配投入量 / (日产能 × 本周工作日)
+      - 超载   = 负载率 > 100%，即同一时间被安排了超过其产能的活
+      - 冲突   = 同一资源在重叠日期区间内被分配到多个进行中的任务
+      - 成本   = Σ(投入量 × 日费率)，按资源与按生产计划两个口径归集
+    """
+    try:
+        resources = adapter.list_rows("资源")
+        allocs = adapter.list_rows("资源分配")
+    except Exception:
+        resources, allocs = [], []
+    if not resources and not allocs:
+        return None  # 未启用资源管理 → 驾驶舱隐藏该模块
+
+    # 本周窗口（周一~周日），用于算「当前负载」
+    wk_start = today - timedelta(days=today.weekday())
+    wk_end = wk_start + timedelta(days=6)
+    workdays = sum(1 for i in range(7) if (wk_start + timedelta(days=i)).weekday() < 5)
+
+    plan_name = {}
+    for p in plans:
+        rid = _rid(p)
+        nm = p.get("生产产品") or p.get("生产计划编号") or ""
+        if rid:
+            plan_name[str(rid)] = nm
+        if p.get("生产计划编号"):
+            plan_name[str(p["生产计划编号"])] = nm
+
+    ACTIVE_ALLOC = {"计划中", "进行中"}
+    by_res = {}
+    for r in resources:
+        nm = (r.get("姓名") or "").strip()
+        if not nm:
+            continue
+        by_res[nm] = {
+            "name": nm,
+            "type": (r.get("类型") or "人员").strip(),
+            "stage": (r.get("所属工序") or "").strip(),
+            "cap": _num(r.get("日产能")) or 1.0,
+            "unit": (r.get("单位") or "人日").strip(),
+            "rate": _num(r.get("日费率")),
+            "status": (r.get("在岗状态") or "在岗").strip(),
+            "alloc": 0.0, "week_alloc": 0.0, "cost": 0.0,
+            "tasks": [], "conflicts": [],
+        }
+
+    alloc_rows = []
+    for a in allocs:
+        res = (a.get("资源") or "").strip()
+        if not res:
+            continue
+        st, en = _date(a.get("开始日期")), _date(a.get("结束日期"))
+        qty = _num(a.get("投入量"))
+        status = (a.get("状态") or "计划中").strip()
+        plan_ref = str(a.get("生产计划") or "").strip()
+        alloc_rows.append({
+            "res": res, "plan": plan_name.get(plan_ref, plan_ref), "plan_ref": plan_ref,
+            "stage": (a.get("工序") or "").strip(), "qty": qty, "status": status,
+            "start": st, "end": en,
+            "start_s": st.isoformat() if st else "", "end_s": en.isoformat() if en else "",
+        })
+
+    # 资源不存在于「资源」表但出现在分配里 → 补一条影子资源，避免漏算
+    for a in alloc_rows:
+        if a["res"] not in by_res:
+            by_res[a["res"]] = {
+                "name": a["res"], "type": "人员", "stage": a["stage"], "cap": 1.0,
+                "unit": "人日", "rate": 0.0, "status": "未登记",
+                "alloc": 0.0, "week_alloc": 0.0, "cost": 0.0, "tasks": [], "conflicts": [],
+            }
+
+    for a in alloc_rows:
+        R = by_res[a["res"]]
+        if a["status"] in ACTIVE_ALLOC:
+            R["alloc"] += a["qty"]
+            R["week_alloc"] += _overlap_days(a["start"], a["end"], wk_start, wk_end) \
+                * (a["qty"] / max((a["end"] - a["start"]).days + 1, 1) if a["start"] and a["end"] else 0)
+        R["cost"] += a["qty"] * R["rate"]
+        R["tasks"].append({"plan": a["plan"], "stage": a["stage"], "qty": a["qty"],
+                           "status": a["status"], "start": a["start_s"], "end": a["end_s"]})
+
+    # 冲突：同一资源、两条进行中分配的日期区间重叠
+    for nm, R in by_res.items():
+        act = [a for a in alloc_rows if a["res"] == nm and a["status"] in ACTIVE_ALLOC]
+        for i in range(len(act)):
+            for j in range(i + 1, len(act)):
+                d = _overlap_days(act[i]["start"], act[i]["end"], act[j]["start"], act[j]["end"])
+                if d > 0:
+                    R["conflicts"].append({
+                        "a": act[i]["plan"] or "（未关联计划）", "b": act[j]["plan"] or "（未关联计划）",
+                        "days": d,
+                    })
+
+    rows = []
+    for R in by_res.values():
+        capacity = R["cap"] * workdays
+        load = round(R["week_alloc"] / capacity * 100, 1) if capacity else 0.0
+        rows.append({
+            "name": R["name"], "type": R["type"], "stage": R["stage"],
+            "cap": R["cap"], "unit": R["unit"], "rate": R["rate"], "status": R["status"],
+            "alloc": round(R["alloc"], 2), "week_alloc": round(R["week_alloc"], 2),
+            "capacity": round(capacity, 2), "load": load,
+            "cost": round(R["cost"], 2),
+            "over": load > 100, "idle": load == 0 and R["status"] == "在岗",
+            "tasks": sorted(R["tasks"], key=lambda t: t["start"] or "9999"),
+            "conflicts": R["conflicts"],
+        })
+    rows.sort(key=lambda x: -x["load"])
+
+    # 按生产计划归集人工成本
+    by_plan = {}
+    for a in alloc_rows:
+        key = a["plan"] or "（未关联计划）"
+        rate = by_res[a["res"]]["rate"]
+        b = by_plan.setdefault(key, {"plan": key, "qty": 0.0, "cost": 0.0, "people": set()})
+        b["qty"] += a["qty"]
+        b["cost"] += a["qty"] * rate
+        b["people"].add(a["res"])
+    plan_cost = sorted(
+        [{"plan": v["plan"], "qty": round(v["qty"], 2), "cost": round(v["cost"], 2),
+          "people": len(v["people"])} for v in by_plan.values()],
+        key=lambda x: -x["cost"])
+
+    over = [r for r in rows if r["over"]]
+    idle = [r for r in rows if r["idle"]]
+    conflicts = [{"name": r["name"], **c} for r in rows for c in r["conflicts"]]
+    loads = [r["load"] for r in rows if r["status"] == "在岗"]
+    return {
+        "week": {"start": wk_start.isoformat(), "end": wk_end.isoformat(), "workdays": workdays},
+        "rows": rows, "plan_cost": plan_cost,
+        "total": len(rows), "on_duty": sum(1 for r in rows if r["status"] == "在岗"),
+        "over": over, "idle": idle, "conflicts": conflicts,
+        "labor_cost": round(sum(r["cost"] for r in rows), 2),
+        "avg_load": round(sum(loads) / len(loads), 1) if loads else 0.0,
+    }
+
+
 def compute(adapter, today):
     projects = adapter.list_rows("项目")
     plans = adapter.list_rows("生产计划")
@@ -432,6 +581,23 @@ def compute(adapter, today):
         actions.append({"pri": "提示", "cat": "production", "text": f"产能瓶颈：{bn[0]} 环节积压 {bn[1]} 个在产计划，建议增配资源或并行处理"})
     if asm_yield is None:
         actions.append({"pri": "提示", "cat": "production", "text": "补录组装良品率：当前组装记录均未填，质量维度暂不完整"})
+
+    # ── 资源域（人/设备负载、冲突、人工成本）──
+    res_model = compute_resources(adapter, today, plans)
+    if res_model:
+        if res_model["over"]:
+            t = res_model["over"][0]
+            actions.insert(0, {"pri": "高", "cat": "resource",
+                               "text": f"资源超载：{t['name']} 本周负载 {t['load']:.0f}%（已排 {t['week_alloc']}{t['unit']} / 产能 {t['capacity']}{t['unit']}），需改期或加人"})
+        if res_model["conflicts"]:
+            c = res_model["conflicts"][0]
+            actions.insert(0, {"pri": "高", "cat": "resource",
+                               "text": f"排程冲突：{c['name']} 在「{c['a']}」与「{c['b']}」上有 {c['days']} 天重叠，需错开档期"})
+        if res_model["idle"]:
+            nm = "、".join(r["name"] for r in res_model["idle"][:3])
+            actions.append({"pri": "中", "cat": "resource",
+                            "text": f"资源闲置：{nm} 本周暂无任务分配，可承接新单或支援瓶颈工序"})
+
     if not actions:
         actions.append({"pri": "提示", "cat": "boss", "text": "暂无紧急事项，保持当前节奏即可 ✔"})
 
@@ -479,6 +645,10 @@ def compute(adapter, today):
             "profit": round(total_profit, 2), "margin": round(margin, 1),
             "ontime_rate": round(ontime_rate, 1) if ontime_rate is not None else None, "purchase_overdue": len(overdue_list),
             "wip": len(wip),
+            "res_load": (res_model or {}).get("avg_load"),
+            "res_over": len((res_model or {}).get("over", [])),
+            "res_conflict": len((res_model or {}).get("conflicts", [])),
+            "labor_cost": (res_model or {}).get("labor_cost"),
             "partdb": bool(_load_partdb()),
             "bom_shortage": (lambda p: (p.get("bom") or {}).get("shortage", []) and len((p.get("bom") or {}).get("shortage", [])) or 0)(_load_partdb()) if _load_partdb() else 0,
         },
@@ -507,6 +677,8 @@ def compute(adapter, today):
         "gantt": gantt,
         "next_actions": actions,
         "backfill": backfill,
+        # 资源域（人/设备负载、冲突、人工成本）；未启用资源管理时为 None
+        "resource": res_model,
         # PartDB 实时（partdb_sync.py 生成；缺失则 None，渲染时回退）
         "partdb": _load_partdb(),
     }
@@ -535,6 +707,7 @@ ICONS = {
     "IC_KEY": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M14 7a4 4 0 1 0-3.6 5.9L7 17v3H4v-3l5.4-5.4A4 4 0 0 0 14 7zm-1.6 2.4a2 2 0 1 1-2.8 2.8 2 2 0 0 1 2.8-2.8z"/></svg>',
     "IC_ADD": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
     "IC_THEME": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
+    "IC_USER": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3 20v-1.5C3 16 5.7 14.5 9 14.5s6 1.5 6 4V20"/><path d="M17 8.5h4"/><path d="M17 12h4"/><path d="M17 15.5h4"/></svg>',
 }
 
 # ===== 访问口令（客户端校验，写进 HTML 源码；已 base64 混淆，开发者选项里不再一眼看到明文）=====
@@ -976,6 +1149,25 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
   .more-tg.open .arrow{transform:rotate(180deg)}
   .more-body{display:none;margin-top:16px}
   .more-body.open{display:block}
+
+  /* ── 资源负载（对标 MS Project 资源工作表）───────────────── */
+  .rs-sum{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;margin-bottom:14px;
+    padding:12px 14px;background:var(--subbg);border:1px solid var(--bd);border-radius:12px;
+    font-size:13.5px;color:var(--sub)}
+  .rs-sum b{font-size:17px;font-weight:800;color:var(--ink);margin-left:4px}
+  .rs-sum b.neg{color:var(--red)}
+  .rs-bar{display:flex;align-items:center;gap:8px;min-width:150px}
+  .rs-track{position:relative;flex:1;height:20px;background:var(--subbg2);border-radius:6px;overflow:hidden}
+  .rs-fill{height:100%;border-radius:6px;transition:width .3s}
+  .rs-fill.over{background:var(--red)}
+  .rs-fill.busy{background:var(--amber)}
+  .rs-fill.ok{background:var(--green)}
+  .rs-fill.idle{background:var(--bd)}
+  .rs-num{flex:none;width:48px;text-align:right;font-size:12.5px;font-weight:700;color:var(--ink);
+    font-variant-numeric:tabular-nums}
+  .rs-num.neg{color:var(--red)}
+  .rs-sub{font-size:11.5px;color:var(--sub);margin-top:2px;font-weight:400}
+  @media(max-width:680px){.rs-sum{gap:8px 14px;font-size:12.5px}.rs-sum b{font-size:15px}}
 </style>
 </head>
 <body>
@@ -1222,16 +1414,16 @@ function renderGantt(g, todayStr){
 const ROLES={
   // 老板：只看数据，不含任何写入口（新建/补录均为项目经理职责，不出现在老板页）
   // core = 首屏核心模块（≤4）；more = 折叠进「更多分析」的二级模块
-  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv"],
-              core:["K","A","PW"],                more:["G","T","C","Q","P","Sup","Inv"], actions:null},
+  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv","Rs"],
+              core:["K","A","PW"],                more:["Rs","G","T","C","Q","P","Sup","Inv"], actions:null},
   // 仓库/采购：非项目经理，不开放「新建」写入口（仅看数据 + 各自作业动作）
   warehouse: {name:"仓库",     sections:["K","A","Inv","P"],
               core:["K","A","Inv"],               more:["P"],                     actions:["warehouse"]},
   purchase:  {name:"采购",     sections:["K","A","Sup"],
               core:["K","A","Sup"],               more:[],                        actions:["purchase"]},
-  // 生产经理：项目经理职责 → 新建生产计划（写「生产计划」表）
-  production:{name:"生产经理", sections:["K","A","WZ","G","T","Q","P","Inv"],
-              core:["K","A","P","WZ"],            more:["G","T","Q","Inv"],       actions:["production","warehouse","delivery"]},
+  // 生产经理：项目经理职责 → 新建生产计划（写「生产计划」表）+ 资源排程
+  production:{name:"生产经理", sections:["K","A","WZ","Rs","G","T","Q","P","Inv"],
+              core:["K","A","Rs","WZ"],           more:["P","G","T","Q","Inv"],   actions:["production","warehouse","delivery","resource"]},
   // 销售：立项职责 → 新建项目（写「项目」表，对应销售立项表单）
   sales:     {name:"销售",     sections:["K","A","PW","WZ","G"],
               core:["K","A","PW","WZ"],           more:["G"],                     actions:["sales","delivery"]},
@@ -1267,7 +1459,7 @@ function supplierAvg(s){
   return rs.length? rs.reduce((a,b)=>a+b,0)/rs.length : 0;
 }
 function buildKPIs(m, role){
-  const k=m.kpi, t=m.time, q=m.quality, s=m.supply, pd=m.partdb;
+  const k=m.kpi, t=m.time, q=m.quality, s=m.supply, pd=m.partdb, res=m.resource;
   const b=pd?pd.bom:null;
   const M={
     projects:{l:"项目总数",v:fmt(k.projects),s:`进行中 ${k.active} · 计划 ${k.planned} · 完成 ${k.done}`,c:"",ac:"blue"},
@@ -1289,20 +1481,29 @@ function buildKPIs(m, role){
     smt_yield:{l:"贴片良品率",v:pct(q.smt_yield),s:"良品 / 投入",c:"",ac:"green"},
     repair_rate:{l:"维修率",v:pct(q.repair_rate),s:`${q.repair_total}/${q.shipped}`,c:"",ac:"red"},
     cycle:{l:"平均生产周期",v:t.avg_cycle+"天",s:"实际花费天数",c:"",ac:"blue"},
+    res_load:{l:"资源平均负载",v:res?pct(res.avg_load):"—",s:res?`在岗 ${res.on_duty} 人/台`:"未启用资源管理",
+      c:(res&&res.avg_load>100)?"neg":"",ac:"purple"},
+    res_over:{l:"超载资源",v:fmt(res?res.over.length:0),s:res?`共 ${res.total} 项资源`:"未启用",
+      c:(res&&res.over.length)?"neg":"",ac:"red"},
+    res_conflict:{l:"排程冲突",v:fmt(res?res.conflicts.length:0),s:"同人同期多任务",
+      c:(res&&res.conflicts.length)?"neg":"",ac:"red"},
+    labor_cost:{l:"人工成本",v:res?yuan(res.labor_cost):"—",s:"投入量 × 日费率",c:"",ac:"amber"},
   };
   // 首屏只留最多 4 张「一眼定生死」的指标，其余下沉到「更多分析 → 更多指标」
   const sets={
     boss:      ["contract","receivable","margin","purchase_overdue"],
     warehouse: ["shortage","kit_rate","zero_stock","part_count"],
     purchase:  ["purchase_overdue","supplier_ontime","shortage","ontime_rate"],
-    production:["wip","ontime_rate","shortage","cycle"],
+    production:["wip","ontime_rate","shortage",res?"res_over":"cycle"],
     sales:     ["contract","received","receivable","ontime_rate"],
   };
   const setsMore={
-    boss:      ["projects","cost","ontime_rate","unit_cost","exec_rate","wip"],
+    boss:      ["projects","cost","ontime_rate","unit_cost","exec_rate","wip"]
+                 .concat(res?["res_load","labor_cost"]:[]),
     warehouse: [],
     purchase:  [],
-    production:["smt_yield","repair_rate"],
+    production:["smt_yield","repair_rate","cycle"]
+                 .concat(res?["res_load","res_conflict","labor_cost"]:[]),
     sales:     ["projects","wip","exec_rate"],
   };
   const pick=(arr)=>(arr||[]).map(key=>M[key]).filter(Boolean);
@@ -1359,7 +1560,8 @@ function render(m){
   const acts=(role==="boss")?actsAll:actsAll.filter(a=>(ROLES[role].actions||[]).includes(a.cat));
   // 每类事项按「候选模块」顺序找第一个当前角色可见的模块，保证「去处理」按钮总有落点
   const CAT_SEC={purchase:["Sup","Inv","P"],warehouse:["Inv","P","Sup"],
-    delivery:["PW","P","G"],production:["P","G","T","PW"],sales:["PW","G"],boss:["PW","G"]};
+    delivery:["PW","P","G"],production:["P","G","T","PW"],sales:["PW","G"],boss:["PW","G"],
+    resource:["Rs","G","T"]};
   const visible=(kk)=>CORE.includes(kk)||MORE.includes(kk);
   const urgent=acts.filter(a=>a.pri==="高"||a.pri==="中").slice(0,6);
   const todayBody=urgent.length
@@ -1651,6 +1853,63 @@ function render(m){
   put("Sup", secSup);
   put("Inv", secInv);
 
+  /* 资源负载（人/设备）：对标 MS Project 资源工作表 —— 谁超载、谁闲置、谁撞期 */
+  const res=m.resource;
+  if(res){
+    const loadBar=(r)=>{
+      const w=Math.min(r.load,150)/150*100;
+      const cls=r.load>100?"over":(r.load>=70?"busy":(r.load>0?"ok":"idle"));
+      return `<div class="rs-bar"><div class="rs-track"><div class="rs-fill ${cls}" style="width:${w.toFixed(1)}%"></div></div>
+        <span class="rs-num ${r.load>100?'neg':''}">${r.load}%</span></div>`;
+    };
+    const resRows=res.rows.length?res.rows.map(r=>`<tr>
+      <td><b>${r.name}</b><div class="rs-sub">${r.type}${r.stage?" · "+r.stage:""}</div></td>
+      <td><span class="pill ${r.status==="在岗"?"tag-green":(r.status==="未登记"?"tag-amber":"tag-red")}">${r.status}</span></td>
+      <td style="min-width:190px">${loadBar(r)}</td>
+      <td class="num">${r.week_alloc} / ${r.capacity}<div class="rs-sub">${r.unit}</div></td>
+      <td class="num">${r.rate?yuan(r.rate):"—"}</td>
+      <td class="num">${yuan(r.cost)}</td>
+      <td>${r.conflicts.length?`<span class="pill tag-red">${r.conflicts.length} 处冲突</span>`:
+           (r.over?`<span class="pill tag-red">超载</span>`:
+           (r.idle?`<span class="pill tag-amber">闲置</span>`:`<span class="pill tag-green">正常</span>`))}</td>
+    </tr>`).join(""):`<tr><td colspan="7" class="empty">尚未录入资源。对我说「新增资源：张三，贴片工序，日产能 1，日费率 400」即可建档。</td></tr>`;
+
+    const confHTML=res.conflicts.length?`<div class="card" style="margin-top:14px">
+      <h3>排程冲突（同一资源同期被排了多个任务）</h3>
+      <div style="overflow-x:auto"><table data-paginate="6"><thead><tr><th>资源</th><th>任务 A</th><th>任务 B</th><th>重叠天数</th></tr></thead>
+      <tbody>${res.conflicts.map(c=>`<tr><td>${c.name}</td><td>${c.a}</td><td>${c.b}</td>
+        <td class="num neg">${c.days} 天</td></tr>`).join("")}</tbody></table></div>
+      <div class="note">重叠 = 两条「计划中/进行中」的分配在日期区间上相交。需改期、拆分投入量，或换人。</div></div>`:"";
+
+    const planCostHTML=res.plan_cost.length?`<div class="card" style="margin-top:14px">
+      <h3>各生产计划人工投入</h3>
+      <div style="overflow-x:auto"><table data-paginate="8"><thead><tr><th>生产计划</th><th>投入人力</th><th>投入量</th><th>人工成本</th></tr></thead>
+      <tbody>${res.plan_cost.map(p=>`<tr><td>${p.plan}</td><td class="num">${p.people} 人</td>
+        <td class="num">${p.qty}</td><td class="num">${yuan(p.cost)}</td></tr>`).join("")}</tbody></table></div>
+      <div class="note">人工成本 = Σ(投入量 × 该资源日费率)，可与「成本分析」里的物料花销合并看总成本。</div></div>`:"";
+
+    const secRs=el(`<section id="sec-Rs" class="sec"><div class="sec-title">__IC_USER__ 资源负载与分配（${res.week.start} ~ ${res.week.end}）</div>
+      <div class="card">
+        <div class="rs-sum">
+          <span>在岗 <b>${res.on_duty}</b>/${res.total}</span>
+          <span>平均负载 <b class="${res.avg_load>100?'neg':''}">${res.avg_load}%</b></span>
+          <span>超载 <b class="${res.over.length?'neg':''}">${res.over.length}</b></span>
+          <span>冲突 <b class="${res.conflicts.length?'neg':''}">${res.conflicts.length}</b></span>
+          <span>人工成本 <b>${yuan(res.labor_cost)}</b></span>
+        </div>
+        <div style="overflow-x:auto"><table data-paginate="10"><thead><tr>
+          <th>资源</th><th>状态</th><th>本周负载</th><th>已排/产能</th><th>日费率</th><th>累计成本</th><th>判定</th>
+        </tr></thead><tbody>${resRows}</tbody></table></div>
+        <div class="note">负载率 = 本周已排投入量 ÷（日产能 × 本周工作日 ${res.week.workdays} 天）。
+          <b style="color:var(--red)">红=超载(&gt;100%)</b>、橙=繁忙(≥70%)、绿=正常、灰=闲置。
+          「未登记」表示该人只出现在分配记录里、资源表中无档案，建议补建档。</div>
+      </div>
+      ${confHTML}
+      ${planCostHTML}
+    </section>`);
+    put("Rs", secRs);
+  }
+
   /* 新建向导：销售→「项目」表（销售立项表单）；其余角色→「生产计划」表（生产经理建计划）。
      老板/仓库/采购页不显示（已在 ROLES 裁剪：WZ 不在其 sections 中） */
   const _isSales = (role==="sales");
@@ -1698,7 +1957,7 @@ function render(m){
 
   /* 快速导航条：首屏模块直接跳；折叠区模块点击时自动展开再跳 */
   const SEC_NAV={K:['核心指标','__IC_GRID__'],KM:['更多指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],
-    WZ:['新建项目','__IC_ADD__'],BF:['补录数据','__IC_EDIT__'],
+    WZ:['新建项目','__IC_ADD__'],BF:['补录数据','__IC_EDIT__'],Rs:['资源负载','__IC_USER__'],
     PW:['项目&在制','__IC_PROJ__'],G:['甘特图','__IC_GANT__'],T:['工时','__IC_TIME__'],
     C:['成本','__IC_COST__'],Q:['质量','__IC_QUAL__'],P:['产线流转','__IC_PROJ__'],
     Sup:['供应链','__IC_SUP__'],Inv:['库存预警','__IC_BOX__']};

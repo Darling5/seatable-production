@@ -1,0 +1,63 @@
+name: smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 覆盖用户可能自带的 Python：3.9 是很多国产办公机的老版本
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 零依赖冒烟测试（不装任何三方包，验证开箱即用）
+        run: python test_smoke.py
+
+      - name: 语法编译全量文件
+        run: python -m compileall -q . -x '\.git'
+
+      - name: 校验 Python 3.9 语法兼容性
+        run: |
+          python - <<'EOF'
+          import ast, io, os, sys
+          bad = []
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__', 'data', 'docs')]
+              for fn in files:
+                  if not fn.endswith('.py'):
+                      continue
+                  p = os.path.join(root, fn)
+                  try:
+                      ast.parse(io.open(p, encoding='utf-8').read(), feature_version=(3, 9))
+                  except SyntaxError as e:
+                      bad.append('%s:%s %s' % (p, e.lineno, e.msg))
+          if bad:
+              print('\n'.join('::error::' + b for b in bad))
+              sys.exit(1)
+          print('OK 全部文件兼容 Python 3.9')
+          EOF
+
+      - name: 确认仓库内没有配置文件/凭证被误提交
+        run: |
+          set -e
+          if git ls-files | grep -E '^config\.(yaml|yml)$'; then
+            echo "::error::config.yaml 被提交进仓库，可能泄露凭证与口令"; exit 1
+          fi
+          if git ls-files | grep -E 'cockpit_passwords\.json'; then
+            echo "::error::口令文件被提交进仓库"; exit 1
+          fi
+          if git ls-files | grep -E '驾驶舱.*\.html$'; then
+            echo "::error::生成的驾驶舱 HTML 被提交（可能含真实业务数据）"; exit 1
+          fi
+          echo "OK 未发现凭证或数据产物"
