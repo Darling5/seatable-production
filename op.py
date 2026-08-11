@@ -17,6 +17,9 @@
   python3 op.py export-excel 生产数据.xlsx
   python3 op.py partdb-search 电容 10
   python3 op.py partdb-shortage 22 100
+  python3 op.py res-add 张三 --stage 贴片 --capacity 1 --rate 400
+  python3 op.py alloc-add 张三 4G小卡二代 --stage 贴片 --qty 5 --days 5
+  python3 op.py res-load
 """
 import argparse
 import json
@@ -130,6 +133,136 @@ def _parse_wizard_text(text):
     return data
 
 
+# ══════════════════════════════════════════════════════════════════
+# 资源域：录入 / 查询 / 负载分析（对标 MS Project 资源工作表）
+# ══════════════════════════════════════════════════════════════════
+
+def _warn_enum(table, row):
+    """写入前软校验枚举值，仅提示不阻断。"""
+    for w in schema.validate_enum(table, row):
+        print(f"[warn] {w}")
+
+
+def _res_exists(adapter, name):
+    """按姓名查资源，返回 (row_id, row) 或 (None, None)。"""
+    for r in adapter.list_rows("资源"):
+        if (r.get("姓名") or "").strip() == name.strip():
+            return r.get("__row_id__"), r
+    return None, None
+
+
+def cmd_res_add(adapter, args):
+    """新增/更新一条资源档案。同名视为更新，避免重复建档。"""
+    row = {
+        "姓名": args.name.strip(),
+        "类型": args.type,
+        "所属工序": args.stage or "",
+        "日产能": args.capacity,
+        "单位": args.unit,
+        "日费率": args.rate,
+        "在岗状态": args.status,
+        "备注": args.note or "",
+    }
+    _warn_enum("资源", row)
+    rid, old = _res_exists(adapter, args.name)
+    if rid:
+        adapter.update_row("资源", rid, row)
+        print(f"OK 已更新资源「{args.name}」 row_id={rid}（同名档案已存在，执行覆盖更新）")
+    else:
+        rid = adapter.append_row("资源", row)
+        print(f"OK 已建档资源「{args.name}」 row_id={rid}")
+    print(f"   类型={args.type} 工序={args.stage or '—'} 日产能={args.capacity}{args.unit} "
+          f"日费率=¥{args.rate} 状态={args.status}")
+
+
+def cmd_alloc_add(adapter, args):
+    """把资源分配到某个生产计划的某道工序上（MS Project 的「资源分配」）。"""
+    import datetime as _dt
+    start = args.start or _dt.date.today().isoformat()
+    if args.days and not args.end:
+        end = (_dt.date.fromisoformat(start) + _dt.timedelta(days=int(args.days) - 1)).isoformat()
+    else:
+        end = args.end or start
+    if end < start:
+        print(f"[error] 结束日期 {end} 早于开始日期 {start}，已拒绝写入。"); sys.exit(1)
+
+    rid_res, res = _res_exists(adapter, args.resource)
+    if not rid_res:
+        _hint = 'python3 op.py res-add "%s" --stage <工序> --rate <日费率>' % args.resource
+        print("[warn] 资源表中没有「%s」的档案，仍会写入分配记录，"
+              "但驾驶舱会标为「未登记」。建议先执行：\n       %s" % (args.resource, _hint))
+
+    # 排程冲突预检：同一资源、活动分配、日期区间相交
+    conflicts = []
+    for a in adapter.list_rows("资源分配"):
+        if (a.get("资源") or "").strip() != args.resource.strip():
+            continue
+        if (a.get("状态") or "计划中").strip() not in ("计划中", "进行中"):
+            continue
+        s2, e2 = str(a.get("开始日期") or "")[:10], str(a.get("结束日期") or "")[:10]
+        if s2 and e2 and not (end < s2 or start > e2):
+            conflicts.append((a.get("生产计划") or "?", s2, e2))
+
+    row = {
+        "资源": args.resource.strip(),
+        "生产计划": args.plan.strip(),
+        "工序": args.stage or "",
+        "投入量": args.qty,
+        "单位": args.unit,
+        "开始日期": start,
+        "结束日期": end,
+        "状态": args.status,
+        "备注": args.note or "",
+    }
+    _warn_enum("资源分配", row)
+    rid = adapter.append_row("资源分配", row)
+    print(f"OK 已分配：{args.resource} → 「{args.plan}」{args.stage or ''} "
+          f"{start}~{end} 投入 {args.qty}{args.unit}  row_id={rid}")
+    if conflicts:
+        print(f"[warn] 检测到 {len(conflicts)} 处排程冲突，该资源同期已被占用：")
+        for pl, s2, e2 in conflicts:
+            print(f"       · 「{pl}」{s2}~{e2}")
+        print("       请改期、拆分投入量，或换人。驾驶舱「资源负载」页会持续提醒。")
+
+
+def cmd_res_load(adapter, args):
+    """终端版资源负载报表：负载率 / 超载 / 闲置 / 冲突 / 人工成本。"""
+    import datetime as _dt
+    import cockpit as _ck
+    today = _dt.date.today()
+    plans = adapter.list_rows("生产计划")
+    res = _ck.compute_resources(adapter, today, plans)
+    if not res:
+        print("尚未录入任何资源或分配记录。先执行：\n"
+              "  python3 op.py res-add 张三 --stage 贴片 --capacity 1 --rate 400\n"
+              "  python3 op.py alloc-add 张三 4G小卡二代 --stage 贴片 --qty 5 --days 5")
+        return
+    w = res["week"]
+    print(f"本周窗口 {w['start']} ~ {w['end']}（{w['workdays']} 个工作日）")
+    print(f"在岗 {res['on_duty']}/{res['total']}  平均负载 {res['avg_load']}%  "
+          f"超载 {len(res['over'])}  闲置 {len(res['idle'])}  冲突 {len(res['conflicts'])}  "
+          f"人工成本 ¥{res['labor_cost']:,.0f}")
+    print("-" * 78)
+    print(f"{'资源':<10}{'类型':<6}{'工序':<10}{'状态':<8}{'负载':>8}{'已排/产能':>14}{'成本':>12}")
+    for r in res["rows"]:
+        flag = "！超载" if r["over"] else ("·闲置" if r["idle"] else "")
+        used = "%s/%s" % (r["week_alloc"], r["capacity"])
+        cost = "¥%s" % format(r["cost"], ",.0f")
+        load = "%s%%" % r["load"]
+        print("%-10s%-6s%-10s%-8s%8s%14s%12s  %s" % (
+            r["name"], r["type"], r["stage"] or "—", r["status"], load, used, cost, flag))
+    if res["conflicts"]:
+        print("-" * 78)
+        print("排程冲突：")
+        for c in res["conflicts"]:
+            print(f"  · {c['name']}：「{c['a']}」与「{c['b']}」重叠 {c['days']} 天")
+    if res["plan_cost"]:
+        print("-" * 78)
+        print("各生产计划人工投入：")
+        for p in res["plan_cost"]:
+            print(f"  · {p['plan']:<24} {p['people']} 人  投入 {p['qty']}  ¥{p['cost']:,.0f}")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", default=None)
@@ -149,6 +282,31 @@ def main():
     sp = sub.add_parser("partdb-shortage"); sp.add_argument("project_id", type=int); sp.add_argument("qty", type=int)
     sp = sub.add_parser("apply-wizard"); sp.add_argument("file"); sp.add_argument("--out", nargs="?", default=None)
     sp = sub.add_parser("apply-text"); sp.add_argument("file"); sp.add_argument("--out", nargs="?", default=None)
+
+    # ── 资源域 ──────────────────────────────────────────────
+    sp = sub.add_parser("res-add", help="新增/更新资源档案（人/设备/外协）")
+    sp.add_argument("name", help="姓名或设备名，同名视为更新")
+    sp.add_argument("--type", default="人员", choices=schema.RESOURCE_TYPES)
+    sp.add_argument("--stage", default="", help="所属工序，如 贴片/组装/测试")
+    sp.add_argument("--capacity", type=float, default=1.0, help="日产能，默认 1")
+    sp.add_argument("--unit", default="人日")
+    sp.add_argument("--rate", type=float, default=0.0, help="日费率（元）")
+    sp.add_argument("--status", default="在岗", choices=schema.RESOURCE_STATUS)
+    sp.add_argument("--note", default="")
+
+    sp = sub.add_parser("alloc-add", help="把资源分配到某生产计划的某道工序")
+    sp.add_argument("resource", help="资源姓名")
+    sp.add_argument("plan", help="生产计划名（生产产品或计划编号）")
+    sp.add_argument("--stage", default="", help="工序")
+    sp.add_argument("--qty", type=float, default=1.0, help="投入量")
+    sp.add_argument("--unit", default="人日")
+    sp.add_argument("--start", default=None, help="开始日期 YYYY-MM-DD，默认今天")
+    sp.add_argument("--end", default=None, help="结束日期 YYYY-MM-DD")
+    sp.add_argument("--days", type=int, default=0, help="持续天数（与 --end 二选一）")
+    sp.add_argument("--status", default="计划中", choices=schema.ALLOCATION_STATUS)
+    sp.add_argument("--note", default="")
+
+    sub.add_parser("res-load", help="资源负载报表：超载/闲置/冲突/人工成本")
 
     args = p.parse_args()
     cfg = load_config(args.config)
@@ -235,6 +393,12 @@ def main():
         except ValueError as e:
             print(str(e)); sys.exit(1)
         _apply_and_refresh(adapter, args, table, row)
+    elif args.cmd == "res-add":
+        cmd_res_add(adapter, args)
+    elif args.cmd == "alloc-add":
+        cmd_alloc_add(adapter, args)
+    elif args.cmd == "res-load":
+        cmd_res_load(adapter, args)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ metadata，这里的定义是本地模式的“兜底真相”。
 约束，模型负责把原始值翻译成中文标签；本地模式里存的就是文本，无需翻译。
 """
 
-# 14 张表（顺序即业务主从关系）
+# 16 张表（顺序即业务主从关系）
 TABLES = [
     "项目",
     "生产计划",
@@ -26,7 +26,25 @@ TABLES = [
     "组装料采购记录",
     "组装记录",
     "成品采购记录",
+    # ── 资源域（对标 MS Project 的资源表 / 资源分配表）──────────
+    "资源",       # 人 / 设备 / 外协：谁可用、每天有多少产能、按什么费率计价
+    "资源分配",   # 谁在哪个生产计划的哪道工序上、投入多少、什么时间段
 ]
+
+# 资源域列定义（本地模式建表用；SeaTable 模式以 Base metadata 为准）
+RESOURCE_COLUMNS = [
+    "资源编号", "姓名", "类型", "所属工序", "日产能", "单位",
+    "日费率", "在岗状态", "备注",
+]
+ALLOCATION_COLUMNS = [
+    "分配编号", "资源", "生产计划", "工序", "投入量", "单位",
+    "开始日期", "结束日期", "状态", "备注",
+]
+
+# 资源类型 / 状态取值（写入时做软校验，非法值仅告警不阻断）
+RESOURCE_TYPES = ["人员", "设备", "外协"]
+RESOURCE_STATUS = ["在岗", "请假", "离职", "维护中", "停用"]
+ALLOCATION_STATUS = ["计划中", "进行中", "已完成", "已取消"]
 
 # 15 条语义关联（本地模式用内部 link_id；SeaTable 模式由 metadata 解析真实 link_id）
 # id: 语义关联标识；table/other: 两张表；table_col/other_col: 各自关联列名
@@ -46,6 +64,9 @@ LINKS = [
     {"id": "wana", "table": "生产计划", "table_col": "项目", "other": "项目", "other_col": "生产计划"},
     {"id": "zPf4", "table": "生产计划", "table_col": "PCBA半成品采购记录", "other": "PCBA半成品采购记录", "other_col": "生产计划"},
     {"id": "zwwS", "table": "生产计划", "table_col": "生产工序", "other": "生产工序", "other_col": "生产计划"},
+    # 资源域关联
+    {"id": "RsAl", "table": "资源", "table_col": "资源分配", "other": "资源分配", "other_col": "资源"},
+    {"id": "PlAl", "table": "生产计划", "table_col": "资源分配", "other": "资源分配", "other_col": "生产计划"},
 ]
 
 # 各表的默认值（模型未提取到时由适配器自动套用）
@@ -60,6 +81,8 @@ TABLE_DEFAULTS = {
     "组装料采购记录": {"状态": "谈判中"},
     "组装记录":   {"组装厂": "禾平"},
     "成品采购记录": {"状态": "谈判中", "下单时间": "__TODAY__"},
+    "资源":       {"类型": "人员", "在岗状态": "在岗", "单位": "人日", "日产能": 1},
+    "资源分配":   {"状态": "计划中", "单位": "人日", "开始日期": "__TODAY__"},
 }
 
 # 列名里含这些字样的，视为「自动编号列」，本地模式自动递增填充（模拟 auto-number）
@@ -82,3 +105,25 @@ def link_col_of(table: str, link_id: str):
         if ln["id"] == link_id and ln["other"] == table:
             return ln["other_col"]
     return None
+
+
+def columns_of(table: str):
+    """返回预定义列（目前仅资源域；其余表列由首次写入的数据决定）。"""
+    return {"资源": RESOURCE_COLUMNS, "资源分配": ALLOCATION_COLUMNS}.get(table)
+
+
+def validate_enum(table: str, row: dict):
+    """软校验资源域枚举值。返回告警列表（不阻断写入，交由调用方展示）。"""
+    checks = {
+        ("资源", "类型"): RESOURCE_TYPES,
+        ("资源", "在岗状态"): RESOURCE_STATUS,
+        ("资源分配", "状态"): ALLOCATION_STATUS,
+    }
+    warns = []
+    for (t, col), allowed in checks.items():
+        if t != table:
+            continue
+        v = (row.get(col) or "").strip() if isinstance(row.get(col), str) else row.get(col)
+        if v and v not in allowed:
+            warns.append("「%s.%s」值 '%s' 不在建议取值 %s 内" % (t, col, v, "/".join(allowed)))
+    return warns
