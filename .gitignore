@@ -18,8 +18,11 @@ __pycache__/
 *.pyc
 *.pyo
 
-# pipeline 运行时产物（测试夹具、生成的审核表/PDF，勿提交）
+# 采购流水线客户资料（公司抬头、BOM、库存导出、流程文件，均不得提交）
 pipeline/out/
+pipeline/boms/
+pipeline/customer/
+pipeline/rules.local.yaml
 .venv-pipeline/
 
 # 编辑器/系统

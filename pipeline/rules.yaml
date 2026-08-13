@@ -1,17 +1,13 @@
 company:
-  name: 深圳市____电子有限公司
-  buyer: 采购部
+  # 真实信息请填写在被 Git 忽略的 rules.local.yaml。
+  name: ""
+  buyer: ""
   phone: ""
   address: ""
-  payment_terms: 款到发货，含税含运。
+  payment_terms: ""
   remark: 请按订单数量、型号、税率供货，如有交期异常请第一时间反馈。
-products:
-  - name: 无GPS版
-    bom: ""
-    aliases: ["无GPS版", "458张", "458套"]
-  - name: 无UWB版
-    bom: ""
-    aliases: ["无UWB版", "542张", "542套"]
+# 产品名称、合同别名与标准 BOM 都是客户业务资料，只在 rules.local.yaml 配置。
+products: []
 passive_keywords:
   - 电阻
   - 电容
@@ -25,13 +21,8 @@ passive_keywords:
   - 连接器
   - TVS
   - 保险丝
-supplier_blacklist:
-  - 华之安
-contract_quantity_patterns:
-  - '(?P<name>无GPS版)[^0-9]{0,20}(?P<qty>\d{2,6})'
-  - '(?P<qty>\d{2,6})[^\n]{0,20}(?P<name>无GPS版)'
-  - '(?P<name>无UWB版)[^0-9]{0,20}(?P<qty>\d{2,6})'
-  - '(?P<qty>\d{2,6})[^\n]{0,20}(?P<name>无UWB版)'
+supplier_blacklist: []
+contract_quantity_patterns: []
 seatable:
   ic_table: IC采购记录
   plan_table: 生产计划

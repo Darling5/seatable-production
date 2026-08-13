@@ -198,21 +198,20 @@ def main():
                           "SKILL.md 仍写着真实供应商『%s』（泄露供应链且不可移植）" % _leak)
 
             print("[10] 开局体检 doctor")
-            f_empty = _doc.check_partdb({"partdb": {"enabled": False}})
+            f_empty = _doc.check_inventory({})
             check(len(f_empty) == 1 and f_empty[0].level == _doc.BLOCK,
-                  "PartDB 未配置应报 BLOCK（缺料推算是核心能力）")
-            check(f_empty[0].fix and "docker" in f_empty[0].fix.lower(),
-                  "PartDB 的修复建议应给出可直接执行的命令")
+                  "未配置库存源应报 BLOCK（缺料推算是核心能力）")
+            check(f_empty[0].fix and "inventory.source" in f_empty[0].fix,
+                  "库存源的修复建议应给出明确配置项")
             # 每条体检结论都必须给出「怎么办」，否则等于没说
-            allf = _doc.run(ad, {"partdb": {"enabled": False}})
+            allf = _doc.run(ad, {})
             check(allf, "体检对演示库应至少给出若干结论")
             for _f in allf:
                 check(bool(_f.fix), "体检项「%s」没有给出下一步操作" % _f.title)
-            check(_doc.has_blocker(allf), "PartDB 未配时应判定为存在致命问题")
+            check(_doc.has_blocker(allf), "库存源未配时应判定为存在致命问题")
             check("体检" in _doc.render(allf), "体检报告渲染异常")
-            # 有数据 + PartDB 正常时，不该再报「数据库是空的」
-            ok_f = _doc.run(ad, {"partdb": {"enabled": True, "url": "http://x/api",
-                                            "token": "t"}})
+            # 有数据 + 有效库存源时，不该再报「数据库是空的」
+            ok_f = _doc.run(ad, {"inventory": {"source": "file", "file": {"path": "stock.xlsx"}}})
             check(not any("空的" in x.title for x in ok_f),
                   "演示库有数据，却仍报「数据库是空的」")
 

@@ -12,7 +12,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer, Table,
                                 TableStyle)
 
-from core import cn_amount, load, load_rules, money, run_dir, today
+from core import cn_amount, die, load, load_rules, money, run_dir, today
 
 FONT = "CN"
 FONT_B = "CN-B"
@@ -58,9 +58,11 @@ def build_pdf(path, company, supplier, items, amount, no, plan=None):
             [Paragraph(f"<b>采购方：</b>{company.get('buyer') or ''}", small),
              Paragraph(f"<b>日期：</b>{today()}", small)],
             [Paragraph(f"<b>联系电话：</b>{company.get('phone') or ''}", small),
-             Paragraph(f"<b>关联计划：</b>{plan or '—'}", small)]]
+             Paragraph(f"<b>关联计划：</b>{plan or '—'}", small)],
+            [Paragraph(f"<b>采购地址：</b>{company.get('address') or ''}", small), ""]]
     t = Table(info, colWidths=[95 * mm, 83 * mm])
-    t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+    t.setStyle(TableStyle([("SPAN", (0, 3), (1, 3)),
+                           ("VALIGN", (0, 0), (-1, -1), "TOP"),
                            ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
     body += [t, Spacer(1, 3 * mm)]
 
@@ -105,11 +107,25 @@ def build_pdf(path, company, supplier, items, amount, no, plan=None):
     return path
 
 
+def validate_formal_order(company, orders):
+    """PDF 可直接发供应商前，必须具备完整抬头与已确认报价。"""
+    required = ("name", "buyer", "phone", "address", "payment_terms")
+    missing = [key for key in required if not str(company.get(key) or "").strip()]
+    if missing:
+        die("不能生成正式采购订单，缺采购方字段：" + "、".join(missing)
+            + "。请填写 pipeline/rules.local.yaml 后重试。")
+    no_price = [order["supplier"] for order in orders if order.get("price_missing")]
+    if no_price:
+        die("不能生成正式采购订单，以下供应商订单仍有待确认单价：" + "、".join(no_price)
+            + "。请先在库存审核表补齐单价并重新执行 plan。")
+
+
 def run(run_id, plan_name=None):
     reg_font()
     rules = load_rules()
     company = rules.get("company") or {}
     data = load(run_id, "orders.json")
+    validate_formal_order(company, data["orders"])
     d = run_dir(run_id)
     for f in glob.glob(os.path.join(d, "采购订单_*.pdf")):
         os.remove(f)

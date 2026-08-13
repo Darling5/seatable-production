@@ -11,7 +11,8 @@ setup.py — 生产交付协同助手 · 引导式安装向导
 用法：
   交互：      python setup.py
   零配置：    python setup.py --local
-  SeaTable：  python setup.py --seatable --token XXX --uuid YYY [--server URL] [--partdb-url U --partdb-token T]
+  SeaTable：  python setup.py --seatable --token XXX --uuid YYY [--server URL]
+  库存：      首次运行 python pipeline/run.py init 后，在 config.yaml 选择 PartDB 或 Excel/CSV
 
 写出的 config.yaml 含凭证，按 .gitignore 排除，不会提交到公开仓库。
 """
@@ -35,15 +36,26 @@ def _build_local():
     return {
         "backend": "local",
         "local": {"data_dir": "data", "format": "csv"},
+        "inventory": {"source": "file", "file": {
+            "path": "pipeline/customer/inventory/库存导出.xlsx",
+            "stock_is_confirmed": False,
+        }},
         "partdb": {"enabled": False, "url": "", "token": ""},
     }
 
 
 def _build_seatable(token, server, uuid, partdb_url="", partdb_token=""):
+    inventory = {"source": "file", "file": {
+        "path": "pipeline/customer/inventory/库存导出.xlsx",
+        "stock_is_confirmed": False,
+    }}
+    if partdb_url and partdb_token:
+        inventory = {"source": "partdb"}
     return {
         "backend": "seatable",
         "local": {"data_dir": "data", "format": "csv"},
         "seatable": {"api_token": token, "server": server, "base_uuid": uuid},
+        "inventory": inventory,
         "partdb": {
             "enabled": bool(partdb_url and partdb_token),
             "url": partdb_url,

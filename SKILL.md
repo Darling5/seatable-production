@@ -29,22 +29,36 @@
 
 ## 0. 后端与配置（必读）
 
-技能根目录下的 `config.yaml` 决定用哪种后端（没有就自动用 local 默认）：
+技能根目录下的 `config.yaml` 决定用哪种业务后端；采购库存源可单独选择 PartDB 或客户导出的 Excel/CSV：
 
 ```yaml
 backend: local          # local（默认）| seatable
 local:
-  data_dir: data      # 数据文件夹，默认技能目录下的 data/，自动创建
-  format: csv          # csv = 每表一个 .csv；Excel 由 op.py export-excel 生成
+  data_dir: data
+  format: csv
 seatable:
-  api_token: ""       # 你的 SeaTable API Token（留空→退回 local）
+  api_token: ""
   server: "https://cloud.seatable.cn"
-  base_uuid: ""       # 你的 Base 的 dtable_uuid（留空→退回 local）
-partdb:
-  enabled: false      # 没 PartDB 就保持 false，会自动跳过缺料检查
+  base_uuid: ""
+inventory:
+  source: file          # partdb | api | mcp | file
+  file:
+    path: "pipeline/customer/inventory/库存导出.xlsx"
+    stock_is_confirmed: false
+partdb:                 # 仅 source=partdb 时需要
+  enabled: false
   url: ""
   token: ""
 ```
+
+首次部署采购流水线：
+
+```bash
+python3 pipeline/run.py init      # 创建被 Git 忽略的客户资料目录与 rules.local.yaml
+python3 pipeline/run.py preflight # 校验公司抬头、BOM、库存源与可选 SeaTable
+```
+
+`pipeline/customer/`、`pipeline/rules.local.yaml`、`config.yaml` 都是客户私有资料，已被 Git 忽略。已有金蝶、简道云、禅道或自建 ERP 时，优先配置 `inventory.source: api` 或 `mcp`；无法在线连接时再用 Excel/CSV 文件源兜底。
 
 **数据操作一律用 `op.py`**（路径相对于技能目录）：
 
@@ -73,7 +87,7 @@ python3 op.py partdb-search 电容 10        # 仅 PartDB 启用时
 7. **询问 link 列时，必须先 `op.py list` 目标表全部记录，完整列出供用户选择，禁止只描述不列表！**
 8. **一句自然语言涉及多表新增时，必须自动建立所有双向关联**（每对表调一次 `op.py link`）。
 9. **后补字段（标记 📥 的）未提及就留空；每周五下午 2 点 cron 自动提醒填写。**（cron 在 WorkBuddy 自动化里配置，本技能只定义字段清单，见 §8）
-10. **PartDB 未配置（enabled=false）时，涉及缺料/BOM 的场景直接说明「未配置 PartDB，跳过缺料检查」，不要报错或编造库存。**
+10. **库存核对必须配置有效 `inventory.source`；通用库存列默认未确认，未确认库存不得用于生产承诺，人工审核关卡不可跳过。**
 
 ---
 
@@ -382,16 +396,23 @@ python3 op.py stage 演示定位终端 --to 量产 --yes       # 跳步 → 必�
 
 ---
 
-## 10. 缺料检查（PartDB，可选）
+## 10. 采购库存核对
 
-仅当 `config.yaml` 中 `partdb.enabled: true` 且填了 url/token 时启用：
+采购流水线通过 `pipeline/run.py audit <run_id>` 使用 `inventory.source` 生成库存审核表：
+
+- `partdb`：逐个命中料号读取 PartDB 批次，按确认日期区分可承诺与未确认库存。
+- `api`：通用 REST/HTTP 连接器，支持鉴权、GET/POST、分页、响应路径与嵌套字段映射；可接金蝶、简道云、禅道及客户自建 ERP。
+- `mcp`：通过 MCP stdio 调用客户现有库存工具，读取 structuredContent 或文本 JSON，并按统一字段映射。
+- `file`：读取 Excel/CSV，作为离线系统或 API 暂不可用时的兜底。
+- API/MCP/文件中的通用“库存”默认归入未确认库存；只有 `stock_is_confirmed: true` 或显式“已确认库存”字段才会抵扣缺口。
+- 审核人员必须在 `库存审核表.csv` 复核库存、供应商、采购数量与单价，并将采购行标为“已批准”。
+
+PartDB 专用的查询命令仍可选用：
 
 ```bash
-python3 op.py partdb-search <关键词> [数量]     # 查物料库存
-python3 op.py partdb-shortage <项目ID> <生产数量>  # 复现 PartDB 前端「生产N套→缺料」
+python3 op.py partdb-search <关键词> [数量]
+python3 op.py partdb-shortage <项目ID> <生产数量>
 ```
-
-**未配置 PartDB 时**：涉及缺料的场景直接说明「未配置 PartDB，跳过缺料检查」，不要编造库存或报错。
 
 **价格导入（采购合同 PDF → PartDB）**：批量把合同型号与含税单价录入 PartDB 的流程——PDF 文本提取、全量零件结构化匹配、Hydra API 写价的关键坑（派生字段 / PATCH 内容类型 / MOQ 唯一约束）、以及新建料号的 IPN 命名约定——见 `references/price-import.md`。
 

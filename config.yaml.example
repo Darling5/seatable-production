@@ -18,15 +18,54 @@ seatable:
   base_uuid: ""          # 你的 Base 的 dtable_uuid（不要写 access_token）
   # 不填 api_token / base_uuid → 自动退回 local 模式
 
-# ── PartDB（物料主数据后端，强烈建议配置）────────────────
-# 本工具把「物料 / BOM / 库存」整块托管给 PartDB（开源免费，自己部署）。
-# 不配的话，这条链会断在第一步：
-#     订单量 × BOM单台用量 − 现有库存 = 缺口 → 最晚下单日
-# 也就无法回答「今天必须下单哪些料」——那正是本工具最核心的能力。
-#
-# 一行起服务：
-#   docker run -d --name partdb -p 8080:80 jbtronics/part-db1:latest
-# 然后在 PartDB 里生成 API Token 填到下面，再跑 python partdb_sync.py
+# ── 采购流水线库存源 ───────────────────────────────────────
+# source: partdb | api | mcp | file
+# PartDB 可由本工具 Docker 一键部署；已有 ERP 优先使用 api 或 mcp；file 是离线兜底。
+inventory:
+  source: file
+  file:
+    path: "pipeline/customer/inventory/库存导出.xlsx"
+    # sheet: "库存"
+    # header_row: 1
+    # 通用“库存”列默认当作未确认库存；盘点确认后才设 true。
+    stock_is_confirmed: false
+    # 列名不同可在这里映射，例如：
+    # columns:
+    #   ipn: "物料编码"
+    #   model: "物料名称"
+    #   stock: "即时库存"
+    #   location: "仓位"
+
+  # 通用 REST/HTTP API。Token 建议用 ${ERP_TOKEN} 环境变量，不要明文提交。
+  # api:
+  #   base_url: "https://erp.example.com"
+  #   list_path: "/api/inventory"
+  #   method: GET
+  #   auth: {type: bearer, token: "${ERP_TOKEN}"}
+  #   data_path: "data.items"
+  #   pagination: {type: page, page_param: page, size_param: pageSize, size: 100}
+  #   # 金蝶等先登录再查库存时，可配置 login 获取会话 Token。
+  #   login: {path: "/api/login", method: POST, body: {account: "${ERP_USER}", password: "${ERP_PASSWORD}"},
+  #           token_path: "data.token", token_header: "Authorization", token_prefix: "Bearer"}
+  #   fields: {ipn: "material.code", model: "material.name", stock: "quantity",
+  #            location: "warehouse.name", unit_price: "price", supplier: "supplier.name"}
+  #   stock_is_confirmed: false
+
+  # MCP：调用客户已有库存工具。command、tool、arguments 都由客户本地配置。
+  # mcp:
+  #   command: "python customer/mcp_inventory_server.py"
+  #   tool: "inventory.list"
+  #   data_path: "items"
+  #   fields: {ipn: "ipn", model: "name", stock: "stock", location: "location"}
+  #   stock_is_confirmed: false
+
+# 常见 ERP 预设只约定入口，不假设客户版本和字段；按现场 API 文档填写 api/mcp。
+# kingdee: inventory.source=api，配置金蝶 WebAPI 地址、账套鉴权和字段映射。
+# jiandaoyun: inventory.source=api，配置简道云 API/视图接口和字段映射。
+# zentao: inventory.source=api 或 mcp，配置禅道库存/物料服务和字段映射。
+
+# ── PartDB（可选库存源）──────────────────────────────
+# 使用 PartDB 时把 inventory.source 改为 partdb，并填 URL/Token。
 partdb:
   enabled: false
   url: ""                # 如 http://localhost:8080/api
