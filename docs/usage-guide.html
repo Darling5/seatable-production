@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>生产交付协同工作台 · 使用指南</title>
+<title>生产经理第二大脑 · 使用指南</title>
 <style>
   :root{
     --primary:#3b5bdb; --primary-soft:#edf2ff; --bg:#f6f8fc; --card:#fff;
@@ -25,7 +25,11 @@
   .muted{color:var(--sub);font-size:13px}
   .grid2{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
   @media(max-width:1100px){.grid2{grid-template-columns:repeat(2,1fr)}}
-  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  @media(max-width:640px){
+    .wrap{padding:14px 12px 40px}.grid2{grid-template-columns:1fr}
+    header.hero{padding:28px 22px;border-radius:14px}header.hero h1{font-size:25px}
+    section{padding:22px 18px}h2{font-size:19px}table{display:block;overflow-x:auto;white-space:nowrap}
+  }
   .card{border:1px solid var(--line);border-radius:12px;padding:18px 20px;background:var(--primary-soft);line-height:1.65}
   .card b{color:var(--primary)}
   .step{border-left:3px solid var(--primary);padding:4px 0 4px 16px;margin:0 0 14px}
@@ -53,18 +57,19 @@
 <div class="wrap">
 
   <header class="hero">
-    <span class="badge">生产交付协同 · 使用指南</span>
-    <h1>生产项目管理驾驶舱</h1>
-    <p>一个把 SeaTable 业务数据 + PartDB 物料库存，自动汇总成「老板 / 销售 / 仓库 / 采购 / 生产经理」各自视图的网页工作台。数据每天自动更新，按角色口令查看，可一键分享。</p>
+    <span class="badge">生产经理第二大脑 · 使用指南</span>
+    <h1>从生产协同到正式采购单，一套公共模板跑通</h1>
+    <p>管理生产计划、分角色驾驶舱，也把采购合同自动转成标准 BOM 扩量、库存审核和供应商采购订单。业务台账可用本地 CSV 或 SeaTable；库存可选 PartDB、现有 ERP 的 API/MCP，或 Excel/CSV 离线文件。</p>
   </header>
 
   <!-- 零基础起步 -->
   <section>
     <h2><span class="num">★</span>零基础也能用（不需要任何账号）</h2>
-    <p>你没 SeaTable、没 PartDB、不懂生产表格？<b>照样能用</b>。本工作台默认「本地模式」：数据存你电脑上的 CSV 文件，开箱即用，连网都不用。</p>
+    <p>没有 SeaTable、PartDB 或现成 ERP？<b>照样能用</b>。业务台账默认使用本地 CSV；采购库存可从 Excel/CSV 起步，之后再切换 PartDB、ERP API 或 MCP，采购审核逻辑无需重写。</p>
     <div class="step"><b>最省事：用 WorkBuddy 对话</b><br>把本仓库链接 <code>https://github.com/Darling5/seatable-production</code> 粘贴到 WorkBuddy「我的项目 → 新建项目」，项目会自动带上技能与「生产驾驶舱」专家。然后直接对专家说：<br>「<b>生成演示版驾驶舱</b>」→ 它用内置示例数据给你一张完整网页；<br>「<b>帮我建个生产计划：产品 4G 小卡，数量 100，交期 30 个工作日</b>」→ 它自动填表，你不用懂那 14 张表。</div>
-    <div class="step"><b>想自己跑（会一点命令行）</b><br><code>git clone 本仓库</code> → <code>python setup.py --local</code> → <code>python seed_demo.py</code> → <code>python cockpit.py</code> → 打开生成的 <code>项目管理驾驶舱.html</code>。</div>
-    <div class="okbox">✅ 本地模式 / 演示数据完全不涉及任何真实业务，可放心试玩。等你真要接自己公司的数据，再按技能说明填 SeaTable / PartDB 凭证即可（那一步才是可选的）。</div>
+    <div class="step"><b>想自己跑（会一点命令行）</b><br><code>git clone 本仓库</code> → <code>python setup.py --local</code> → <code>python seed_demo.py</code> → <code>python cockpit.py</code> → 打开生成的 <code>项目管理驾驶舱.html</code>。要启用采购流水线，再运行 <code>python pipeline/run.py init</code>，填写本地客户规则并运行 <code>python pipeline/run.py preflight</code>。</div>
+    <div class="step"><b>已有 ERP 的客户</b><br>库存源优先选 <code>api</code> 或 <code>mcp</code>；配置登录鉴权、分页、响应路径和字段映射。没有在线接口时，先导出 Excel/CSV 选择 <code>file</code>，后续切换数据源不影响人工审核和采购订单流程。</div>
+    <div class="okbox">✅ 公共仓库只保存通用代码、规则模板和示例配置。公司抬头、联系人、BOM、库存、流程文件、ERP 地址与凭证都放在本地 Git 忽略配置中。</div>
     <div class="okbox">🌙 <b>夜间模式（三态）</b>：默认跟随你系统的深色 / 浅色设置自动切换（macOS / Windows / 手机都支持）。如果自动没生效，或想单独让驾驶舱变暗而系统仍是亮色——点顶部工具栏的 <b>「主题」按钮</b> 即可在「自动 → 暗色 → 亮色」之间循环切换，选择会记在浏览器本地（localStorage），下次打开自动生效。</div>
   </section>
 
@@ -84,8 +89,8 @@
 
       <rect x="245" y="14" width="200" height="96" rx="12" fill="#fff" stroke="#3b5bdb" stroke-width="2"/>
       <text x="345" y="40" fill="#1f2733" font-size="13.5" font-weight="700" text-anchor="middle">WorkBuddy 项目</text>
-      <text x="345" y="62" fill="#3b5bdb" font-size="11.5" text-anchor="middle">· seatable + partdb 技能</text>
-      <text x="345" y="80" fill="#3b5bdb" font-size="11.5" text-anchor="middle">· 生产驾驶舱 专家</text>
+      <text x="345" y="62" fill="#3b5bdb" font-size="11.5" text-anchor="middle">· 生产协同 + 采购流水线</text>
+      <text x="345" y="80" fill="#3b5bdb" font-size="11.5" text-anchor="middle">· PartDB / ERP API / MCP / 文件</text>
       <text x="345" y="98" fill="#6b7280" font-size="10.5" text-anchor="middle">（数据同源联动）</text>
 
       <rect x="500" y="30" width="170" height="64" rx="12" fill="#5c7cfa"/>
@@ -117,16 +122,16 @@
       <line x1="757" y1="94" x2="757" y2="170" stroke="#3b5bdb" stroke-width="2" marker-end="url(#ar)"/>
       <line x1="600" y1="125" x2="440" y2="178" stroke="#adb5bd" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#ar)"/>
     </svg>
-    <p class="muted">一句话：管理者把数据接进 SeaTable / PartDB → 技能每天自动汇总 → 生成一个网页 → 用不同口令发给不同人，每人只看自己该看的。</p>
+    <p class="muted">一句话：生产数据接本地 CSV 或 SeaTable，库存接 PartDB、ERP API/MCP 或文件 → 技能生成分角色驾驶舱；采购合同则经过 BOM 扩量与人工库存审核，输出正式采购订单。</p>
   </section>
 
   <!-- 快速开始 -->
   <section>
     <h2><span class="num">1</span>3 步快速开始（管理者 / 项目创建人）</h2>
-    <div class="step"><b>第 1 步 · 建项目</b><br>在 WorkBuddy 里从本仓库的 GitHub 链接一键创建「生产交付中」项目；项目会自动带上 <code>seatable + partdb</code> 技能和「生产驾驶舱」专家。</div>
-    <div class="step"><b>第 2 步 · 接数据</b><br>按技能说明把 SeaTable 云表、PartDB 库存的访问凭证填进配置（数据存在你自己的环境里，不会进公开仓库）。</div>
-    <div class="step"><b>第 3 步 · 生成 & 分享</b><br>对专家说「生成最新的生产项目管理驾驶舱」，它会产出网页并部署到云端；拿到链接后，用下面的口令分别发给对应的人。</div>
-    <div class="okbox">✅ 之后无需每天手动操作——系统每天 9:00 自动用最新数据重建并部署，打开链接永远是最新的。</div>
+    <div class="step"><b>第 1 步 · 建项目</b><br>在 WorkBuddy 里从本仓库的 GitHub 链接创建项目；项目会带上 <code>seatable-production</code> 技能和「生产驾驶舱」专家。</div>
+    <div class="step"><b>第 2 步 · 接数据</b><br>业务台账选择本地 CSV 或 SeaTable；采购库存选择 PartDB、ERP API、MCP 或 Excel/CSV。全部客户字段和凭证只填本地配置，不进入公开仓库。</div>
+    <div class="step"><b>第 3 步 · 生成与采购</b><br>可以生成生产驾驶舱并分享；也可以只上传采购合同，自动匹配标准 BOM、生成库存审核表，人工批准后输出按供应商分组的正式采购订单 PDF。</div>
+    <div class="okbox">✅ 驾驶舱可按需设置自动更新；采购链路始终保留人工库存审核，SeaTable 写入也必须显式确认。</div>
   </section>
 
   <!-- 大白话建数据 -->
@@ -136,11 +141,26 @@
     <div class="grid2">
       <div class="card"><b>建生产计划</b><br>「帮我建个生产计划：产品 4G 小卡，数量 100，交期 30 个工作日」</div>
       <div class="card"><b>记一笔发货</b><br>「给项目 A 发一批货，类型销售，内容见下表…」</div>
-      <div class="card"><b>记一笔采购</b><br>「IC 采购：物料 XX，供应商之安传感，关联生产计划 #12」</div>
+      <div class="card"><b>记一笔采购</b><br>「记录一笔 IC 采购，关联生产计划 #12」</div>
+      <div class="card"><b>合同出采购单</b><br>「用这份合同自动匹配 BOM，生成库存审核表」</div>
       <div class="card"><b>问进度</b><br>「项目 B 现在到哪一步了？有没有逾期的？」</div>
     </div>
     <p class="muted">写之前 AI 会把完整内容念给你确认，你点头它才落库——不会稀里糊涂改了你的数据。</p>
     <div class="okbox">💡 <b>在网页里建数据（一键发起，仍需确认）：</b>驾驶舱网页按角色自带不同的「新建」向导，写入口只开放给该角色——<b>老板 / 仓库 / 采购页没有新建、也没有补录**（补录缺失数据、新建均为项目经理职责）。具体分流：<br>· <b>销售</b>：看到「🆕 新建项目」向导，提交后写入 SeaTable「<b>项目</b>」表（即销售立项表单）；<br>· <b>生产经理</b>：看到「🆕 新建生产计划」向导，提交后写入「<b>生产计划</b>」表。<br>填产品/数量/交期，点「🚀 一键发起 → WorkBuddy 预填待确认」——它会把信息整理成文字、<b>复制到剪贴板</b>，并用真实深链 <code>workbuddy://task?action=start&amp;prompt=…&amp;skills=seatable-production</code> <b>拉起本地 WorkBuddy、自动预填任务并开始执行</b>。注意：按技能铁律「任何增删改必须先向你确认」，专家会先列出完整数据<b>等你点头</b>，你确认后才会写库、算缺料、刷新驾驶舱——所以<b>不是全自动落库</b>，但仍省去了手动复制粘贴（和百度云/夸克在网页点下载、自动拉起本地客户端同理）。<br>· 「一键发起」通常<b>安装/首次启动即自动注册</b> <code>workbuddy://</code> 协议，无需手动设置；<b>仅当点击没反应时</b>，才去 WorkBuddy 桌面端 <b>Claw设置 → 协议注册</b> 开启一次（开关为一次性，开过即永久生效）。<br>· 没装桌面端 / 没启用协议：点表单里的「🌐 网页版提交（workbuddy.cn）」按钮，在浏览器打开 <code>https://www.workbuddy.cn/</code> 粘贴发送同样可以（网页版需先登录）。<br>· 也给想用命令行的人保留了「下载 JSON（备用）」按钮。</div>
+  </section>
+
+  <!-- 采购流水线 -->
+  <section>
+    <h2><span class="num">采</span>合同到正式采购单</h2>
+    <p>这是与生产驾驶舱并列的核心能力。合同进入后不会直接下单，而是经过可检查、可人工修改的工件链路：</p>
+    <div class="grid2">
+      <div class="card"><b>1. 合同与 BOM</b><br>识别产品数量，自动绑定客户本地标准 BOM；数量行缺少料号或型号时硬阻断，避免静默漏料。</div>
+      <div class="card"><b>2. 多库存源核对</b><br>支持 PartDB、REST API、MCP 与 Excel/CSV。API/MCP 可配置登录、Token、分页和嵌套字段映射。</div>
+      <div class="card"><b>3. 人工库存审核</b><br>普通库存默认属于未确认库存，不会直接抵扣生产缺口；审核人员确认采购数量、供应商和单价。</div>
+      <div class="card"><b>4. 正式采购订单</b><br>按供应商分组生成 PDF。公司抬头、地址、付款条款或单价不完整时禁止生成正式订单。</div>
+    </div>
+    <div class="step"><b>首次配置</b><br><code>python pipeline/run.py init</code> → 填写 <code>pipeline/rules.local.yaml</code> 和本地 <code>config.yaml</code> → <code>python pipeline/run.py preflight</code>。</div>
+    <div class="step"><b>执行链路</b><br><code>prepare</code> → <code>audit</code> → 人工审核 → <code>plan</code> → <code>pdf</code>。若同步 SeaTable，<code>submit</code> 还需要显式 <code>--yes</code>。</div>
   </section>
 
   <!-- 角色口令 -->
@@ -179,7 +199,7 @@
       <div class="card"><b>核心指标概览</b><br>项目数、交期达成率、良品率、单片成本、应收等 KPI 卡片，可左右滑动。</div>
       <div class="card"><b>下一步行动建议</b><br>按角色推送待办（如「采购：A 物料逾期，需跟进」）。</div>
       <div class="card"><b>生产甘特图</b><br>各项目计划与实际进度横向时间轴。</div>
-      <div class="card"><b>物料库存预警</b><br>缺料、零库存、安全库存不足实时提示（来自 PartDB）。</div>
+      <div class="card"><b>物料库存预警</b><br>缺料、零库存、安全库存不足提示；数据可来自 PartDB 或客户 ERP 的 API/MCP/文件库存源。</div>
       <div class="card"><b>快速导航 + 分页</b><br>长页面顶部吸顶导航，长表格分页，不再一拉到底。</div>
       <div class="card"><b>一键分享</b><br>老板 / 销售视图可点按钮复制带口令的微信文案，直接转发。</div>
     </div>
@@ -202,7 +222,7 @@
     <h2><span class="num">?</span>常见问题</h2>
     <details>
       <summary>数据存在哪里？安全吗？</summary>
-      <p>业务数据存在你自己的 SeaTable / PartDB 环境，截图和汇总网页也只部署在你自己的云端实例。本 GitHub 仓库只放「生成器代码」，不放任何真实业务数据，可安全公开。</p>
+      <p>业务台账保存在你自己的本地 CSV 或 SeaTable；库存可来自 PartDB、客户 ERP API/MCP 或导出文件。公开仓库只放通用代码、规则模板和示例配置，不放公司抬头、BOM、库存、流程文件、ERP 地址或凭证。</p>
     </details>
     <details>
       <summary>别人改网址里的 #role 能看别人的数据吗？</summary>
@@ -217,18 +237,22 @@
       <p>用管理员口令进入 → 页面右上「口令管理」→「轮换全部口令」立即生成新口令并复制；然后重新部署，旧口令即刻作废。</p>
     </details>
     <details>
-      <summary>想改驾驶舱内容（加模块 / 调口径）？</summary>
-      <p>在 WorkBuddy 里对「生产驾驶舱」专家提需求即可，它内置了生成脚本，改完重新生成部署。</p>
+      <summary>已有金蝶、简道云、禅道或自建 ERP，必须先导出 Excel 吗？</summary>
+      <p>不必须。优先使用 <code>api</code> 或 <code>mcp</code> 在线读取库存；配置接口地址、鉴权、分页、响应路径和字段映射即可。只有 ERP 没有可用接口或现场网络受限时，才使用 Excel/CSV 文件源。</p>
+    </details>
+    <details>
+      <summary>API/MCP 读到的库存会自动承诺生产吗？</summary>
+      <p>不会。API、MCP 和文件源中的通用库存默认列为未确认库存，必须经过人工审核后才可用于生产承诺。</p>
     </details>
     <details>
       <summary>我没有 SeaTable / PartDB，能用吗？</summary>
-      <p>能。默认就是「本地 CSV」模式，零配置、不需要任何账号，用内置演示数据就能看完整效果（见顶部「★ 零基础也能用」一节）。等你真要接自己公司的云端数据，再填凭证切换即可。</p>
+      <p>能。业务台账默认使用本地 CSV；采购库存可以先使用 Excel/CSV 文件源。已有 ERP 时优先接 API/MCP，没有 ERP 时再考虑部署 PartDB。</p>
     </details>
   </section>
 
   <footer>
-    生产交付协同 · 使用指南 ｜ 本页为公开模板，不含任何真实业务数据与口令<br>
-    仓库：seatable-production ｜ 数据每天 9:00 自动更新
+    生产经理第二大脑 · 使用指南 ｜ 本页为公开模板，不含任何真实业务数据与口令<br>
+    仓库：seatable-production ｜ 生产协同 + 合同到采购订单
   </footer>
 
 </div>

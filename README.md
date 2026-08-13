@@ -8,15 +8,7 @@
 
 <sub>↑ 生产经理视角首屏实拍。数据为**虚构演示数据**。首屏只放 3-4 块：「今天要处理」置顶 → 4 张核心指标 → 行动建议，其余分析收在「更多分析」里，点开才展开。</sub>
 
-**想直接点开玩玩？** → 🖥️ **[交互式使用指南（在线，无需安装）](https://darling5.github.io/seatable-production/usage-guide.html)**
-
-<details>
-<summary>🎬 展开看 60 秒演示视频</summary>
-
-<video src="https://darling5.github.io/seatable-production/demo.mp4" controls muted loop playsinline width="100%" style="max-width:960px;border-radius:12px"></video>
-
-视频与截图均使用**完全虚构的演示数据**，不含任何真实业务信息与口令。
-</details>
+**想直接点开玩玩？** → **[交互式使用指南（在线，无需安装）](https://darling5.github.io/seatable-production/usage-guide.html)**
 
 ---
 
