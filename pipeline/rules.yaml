@@ -1,0 +1,44 @@
+company:
+  name: 深圳市____电子有限公司
+  buyer: 采购部
+  phone: ""
+  address: ""
+  payment_terms: 款到发货，含税含运。
+  remark: 请按订单数量、型号、税率供货，如有交期异常请第一时间反馈。
+products:
+  - name: 无GPS版
+    bom: ""
+    aliases: ["无GPS版", "458张", "458套"]
+  - name: 无UWB版
+    bom: ""
+    aliases: ["无UWB版", "542张", "542套"]
+passive_keywords:
+  - 电阻
+  - 电容
+  - 电感
+  - 磁珠
+  - LED
+  - 晶振
+  - 跳线帽
+  - 排针
+  - 排母
+  - 连接器
+  - TVS
+  - 保险丝
+supplier_blacklist:
+  - 华之安
+contract_quantity_patterns:
+  - '(?P<name>无GPS版)[^0-9]{0,20}(?P<qty>\d{2,6})'
+  - '(?P<qty>\d{2,6})[^\n]{0,20}(?P<name>无GPS版)'
+  - '(?P<name>无UWB版)[^0-9]{0,20}(?P<qty>\d{2,6})'
+  - '(?P<qty>\d{2,6})[^\n]{0,20}(?P<name>无UWB版)'
+seatable:
+  ic_table: IC采购记录
+  plan_table: 生产计划
+  field_candidates:
+    material: ["物料名称", "物料清单", "采购清单"]
+    supplier: ["供应商"]
+    amount: ["采购花销"]
+    status: ["状态"]
+    order_date: ["下单时间"]
+    lead_days: ["交期", "交期（天）"]

@@ -25,6 +25,7 @@ _DEST = os.path.join(_HERE, "expert", "production-cockpit", "skills", "seatable-
 FILES = [
     "SKILL.md", "README.md", "LICENSE",
     "cockpit.py", "op.py", "setup.py", "seed_demo.py", "test_smoke.py",
+    "intake.py", "doctor.py",
     "seatable_sync.py", "partdb_sync.py", "backfill_seatable.py",
     "config.yaml.example",
     "adapters/__init__.py", "adapters/factory.py", "adapters/schema.py",

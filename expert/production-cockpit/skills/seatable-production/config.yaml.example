@@ -18,9 +18,27 @@ seatable:
   base_uuid: ""          # 你的 Base 的 dtable_uuid（不要写 access_token）
   # 不填 api_token / base_uuid → 自动退回 local 模式
 
-# ── PartDB 模式（可选，仅用于缺料检查）────────────────────
-# 没自己的 PartDB 就保持 enabled: false，技能会自动跳过缺料检查并提示用户
+# ── PartDB（物料主数据后端，强烈建议配置）────────────────
+# 本工具把「物料 / BOM / 库存」整块托管给 PartDB（开源免费，自己部署）。
+# 不配的话，这条链会断在第一步：
+#     订单量 × BOM单台用量 − 现有库存 = 缺口 → 最晚下单日
+# 也就无法回答「今天必须下单哪些料」——那正是本工具最核心的能力。
+#
+# 一行起服务：
+#   docker run -d --name partdb -p 8080:80 jbtronics/part-db1:latest
+# 然后在 PartDB 里生成 API Token 填到下面，再跑 python partdb_sync.py
 partdb:
   enabled: false
-  url: ""                # 如 http://host:port/api
+  url: ""                # 如 http://localhost:8080/api
   token: ""              # PartDB API Token
+
+# ── 你公司的默认值（可选，但建议填）──────────────────────
+# 供应商 / 贴片厂 / 组装厂每家公司都不一样，代码里不写死。
+# 这里填了，录入时就自动带上；不填就每次问你（或从历史记录里选）。
+# defaults:
+#   外壳采购记录:
+#     供应商: 你常用的外壳厂
+#   PCBA半成品采购记录:
+#     供应商: 你常用的 PCBA 厂
+#   组装记录:
+#     组装厂: 你常用的组装厂
