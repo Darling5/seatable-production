@@ -77,9 +77,14 @@ def load_config(path: str = None) -> dict:
 
 def get_adapter(config: dict = None):
     config = config or load_config()
+    if not isinstance(config, dict):
+        raise SystemExit("[错误] 配置文件格式不对（顶层应为 key: value）。"
+                         "请检查 config.yaml，或运行 python setup.py 重新生成。")
     backend = (config.get("backend") or "local").lower()
     if backend == "seatable":
-        sc = config.get("seatable") or {}
+        sc = config.get("seatable")
+        if not isinstance(sc, dict):
+            sc = {}
         token = sc.get("api_token") or ""
         uuid = sc.get("base_uuid") or ""
         server = sc.get("server") or "https://cloud.seatable.cn"
@@ -92,12 +97,19 @@ def get_adapter(config: dict = None):
         else:
             print("[warn] 未配置 seatable.api_token/base_uuid，退回 local 模式", file=sys.stderr)
     # 默认 / 兜底：本地
-    lc = config.get("local") or {}
+    lc = config.get("local")
+    if not isinstance(lc, dict):
+        # 配置写坏了（例如 local: 后面跟了字符串而非缩进子项）时，
+        # 与其抛 AttributeError，不如说清楚哪写错了。
+        if lc is not None:
+            print("[warn] config 的 local 段格式不对（应为缩进的 data_dir: ...），"
+                  "已退回默认 data/ 目录", file=sys.stderr)
+        lc = {}
     data_dir = lc.get("data_dir") or "data"
     if not os.path.isabs(data_dir):
         data_dir = os.path.join(_SKILL_DIR, data_dir)
     from .local import LocalAdapter
-    return LocalAdapter(data_dir)
+    return LocalAdapter(data_dir, config)
 
 
 def get_partdb(config: dict = None):

@@ -21,7 +21,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from adapters.factory import get_adapter  # noqa: E402
+from adapters.factory import get_adapter, load_config  # noqa: E402
 
 _TZ = timezone(timedelta(hours=8))
 # 默认输出到「当前工作目录/项目管理驾驶舱.html」；可用参数或环境变量 COCKPIT_OUT 覆盖。
@@ -2310,8 +2310,27 @@ window.addEventListener("DOMContentLoaded",()=>{
 
 
 def main():
-    out = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_OUT
-    adapter = get_adapter()
+    # 支持 --config，使其能对指定的库生成驾驶舱。缺了它的话，
+    # op.py 写入 A 库后刷新出来的却是默认库的驾驶舱（写 A 看 B）。
+    argv = sys.argv[1:]
+    cfg_path = None
+    rest = []
+    n = 0
+    while n < len(argv):
+        a = argv[n]
+        if a == "--config" and n + 1 < len(argv):
+            cfg_path = argv[n + 1]
+            n += 2
+            continue
+        if a.startswith("--config="):
+            cfg_path = a.split("=", 1)[1]
+            n += 1
+            continue
+        rest.append(a)
+        n += 1
+
+    out = rest[0] if rest else DEFAULT_OUT
+    adapter = get_adapter(load_config(cfg_path) if cfg_path else None)
     adapter.auth()
     today = datetime.now(_TZ).date()
     model = compute(adapter, today)

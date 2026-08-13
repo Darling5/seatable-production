@@ -37,8 +37,9 @@ def _save_json(path: str, data) -> None:
 
 
 class LocalAdapter(BaseAdapter):
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, config: dict = None):
         self.data_dir = data_dir
+        self.config = config or {}
         os.makedirs(self.data_dir, exist_ok=True)
         self._links_path = os.path.join(self.data_dir, "__links__.json")
         self._counters_path = os.path.join(self.data_dir, "__counters__.json")
@@ -123,7 +124,7 @@ class LocalAdapter(BaseAdapter):
 
     # ── 写 ─────────────────────────────────────────────
     def append_row(self, table: str, data: Dict[str, Any]) -> str:
-        defaults = schema.TABLE_DEFAULTS.get(table, {})
+        defaults = schema.merged_defaults(table, self.config)
         merged: Dict[str, Any] = {}
         for k, v in defaults.items():
             merged[k] = _today() if v == "__TODAY__" else v

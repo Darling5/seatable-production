@@ -263,6 +263,138 @@ def cmd_res_load(adapter, args):
             print(f"  · {p['plan']:<24} {p['people']} 人  投入 {p['qty']}  ¥{p['cost']:,.0f}")
 
 
+def cmd_doctor(adapter, args):
+    """开局体检：把「你还缺什么」一次说清，每条附下一步命令。"""
+    import doctor as _doc
+    cfg = load_config(args.config)
+    findings = _doc.run(adapter, cfg)
+    print(_doc.render(findings))
+    if _doc.has_blocker(findings) and getattr(args, "strict", False):
+        sys.exit(2)
+
+
+def cmd_intake(adapter, args):
+    """执行一份意图清单（JSON）。低风险自动写，高风险需 --yes 或逐条确认。
+
+    意图 JSON 由上层 AI 依据 SKILL.md 从自然语言提取，格式见 intake.py。
+    """
+    import intake
+    with open(args.file, encoding="utf-8") as f:
+        payload = json.load(f)
+    raw = payload.get("原话") or payload.get("raw") or ""
+    actor = payload.get("记录人") or payload.get("actor") or ""
+    items = payload.get("intents") or payload.get("意图") or []
+    if not items:
+        print("意图清单为空，未做任何写入。")
+        return
+
+    intents = []
+    for it in items:
+        i = intake.Intent(it.get("op"), it.get("table"), it.get("data"),
+                          it.get("row_id"), it.get("reason", ""))
+        intents.append(intake.assess(i, adapter))
+
+    print(intake.render_plan(intents))
+    auto, confirm = intake.split(intents)
+
+    if confirm and not args.yes:
+        print("")
+        print("以上 %d 条高风险改动**尚未执行**。" % len(confirm))
+        print("确认无误后，重新执行并加 --yes；或修改 JSON 后重跑。")
+        if auto and not args.only_confirmed:
+            print("（%d 条低风险项也一并暂停了，避免数据半写半不写）" % len(auto))
+        return
+
+    todo = intents if args.yes else auto
+    if not todo:
+        print("没有可执行的条目。")
+        return
+    print("")
+    print("── 开始执行 %d 条 ──" % len(todo))
+    for ok, msg in intake.execute(adapter, todo, actor=actor, raw_text=raw):
+        print(("OK " if ok else "!! ") + msg)
+    _refresh_cockpit(args)
+
+
+def _refresh_cockpit(args):
+    try:
+        import subprocess
+        here = os.path.dirname(os.path.abspath(__file__))
+        cockpit = os.path.join(here, "cockpit.py")
+        out = getattr(args, "out", None) or os.path.join(here, "项目管理驾驶舱.html")
+        cmd = [sys.executable, cockpit, out]
+        # 必须沿用同一个 --config，否则会拿另一个库的数据去刷新驾驶舱，
+        # 出现「写了 A 库、看到 B 库」的错觉。
+        cfg = getattr(args, "config", None)
+        if cfg:
+            cmd += ["--config", cfg]
+        subprocess.run(cmd, check=False)
+        print("OK 驾驶舱已刷新：%s" % out)
+    except Exception as e:
+        print("[warn] 驾驶舱刷新失败（手动跑 python cockpit.py 即可）：%s" % e)
+
+
+def cmd_stage(adapter, args):
+    """查看/推进项目阶段。不带 --to 时只显示当前阶段与停留天数。"""
+    import intake
+    from adapters import schema as _s
+    table = args.table
+    key = "生产产品" if table == "生产计划" else "项目"
+
+    if not args.to:
+        print("%-28s %-8s %s" % ("项目", "阶段", "停留"))
+        print("-" * 52)
+        trace = {}
+        try:
+            for t in adapter.list_rows("阶段轨迹"):
+                trace[(t.get("项目") or "").strip()] = t.get("日期")
+        except Exception:
+            pass
+        import datetime as _dt
+        today = _dt.date.today()
+        for r in adapter.list_rows(table):
+            nm = (r.get(key) or "").strip()
+            if not nm:
+                continue
+            st = (r.get("阶段") or "").strip() or "(未设置)"
+            days = ""
+            if trace.get(nm):
+                try:
+                    d0 = _dt.date.fromisoformat(str(trace[nm])[:10])
+                    days = "%d 天" % (today - d0).days
+                except Exception:
+                    pass
+            print("%-28s %-8s %s" % (nm[:26], st, days))
+        print("")
+        print("标准阶段：" + " → ".join(_s.STAGES))
+        return
+
+    # 关键：必须先把「当前阶段」查出来，再做风险判定。
+    # 否则 stage_jump_warning(None, 目标) 永远返回 None —— 跳步检查会全线失效。
+    cur, found = "", False
+    for r in adapter.list_rows(table):
+        if (r.get(key) or "").strip() == (args.project or "").strip():
+            cur, found = (r.get("阶段") or "").strip(), True
+            break
+    if not found:
+        print("未找到「%s」（在表「%s」的「%s」列）。先用 op.py stage 查看可选项目。"
+              % (args.project, table, key))
+        sys.exit(1)
+
+    i = intake.Intent("stage", table,
+                      {"项目": args.project, "原阶段": cur,
+                       "新阶段": args.to, "_table": table},
+                      reason=args.note or "")
+    intake.assess(i, adapter)
+    print(intake.render_plan([i]))
+    if i.risk == intake.CONFIRM and not args.yes:
+        print("\n未执行。确认无误后加 --yes 重跑。")
+        return
+    for ok, msg in intake.execute(adapter, [i], actor=args.actor or "",
+                                  raw_text=args.note or ""):
+        print(("OK " if ok else "!! ") + msg)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", default=None)
@@ -307,6 +439,26 @@ def main():
     sp.add_argument("--note", default="")
 
     sub.add_parser("res-load", help="资源负载报表：超载/闲置/冲突/人工成本")
+
+    sp = sub.add_parser("doctor", help="开局体检：检查表/列/数据/PartDB，列出缺什么与怎么办")
+    sp.add_argument("--strict", action="store_true",
+                    help="存在严重问题时以退出码 2 结束（供 CI / 安装脚本使用）")
+
+    # ── 录入闭环（第二大脑）──────────────────────────────────
+    sp = sub.add_parser("intake", help="执行意图清单 JSON（低风险自动写，高风险需 --yes）")
+    sp.add_argument("file", help="意图清单 JSON 路径")
+    sp.add_argument("--yes", action="store_true", help="批准所有高风险改动并执行")
+    sp.add_argument("--only-confirmed", action="store_true",
+                    help="有待确认项时，仍先执行低风险项")
+    sp.add_argument("--out", default=None)
+
+    sp = sub.add_parser("stage", help="查看/推进项目阶段")
+    sp.add_argument("project", nargs="?", default="", help="项目名；省略则列出全部")
+    sp.add_argument("--to", default="", help="推进到的目标阶段")
+    sp.add_argument("--table", default="项目", choices=["项目", "生产计划"])
+    sp.add_argument("--note", default="", help="说明/依据")
+    sp.add_argument("--actor", default="", help="记录人")
+    sp.add_argument("--yes", action="store_true", help="批准跳步/回退")
 
     args = p.parse_args()
     cfg = load_config(args.config)
@@ -399,6 +551,12 @@ def main():
         cmd_alloc_add(adapter, args)
     elif args.cmd == "res-load":
         cmd_res_load(adapter, args)
+    elif args.cmd == "intake":
+        cmd_intake(adapter, args)
+    elif args.cmd == "stage":
+        cmd_stage(adapter, args)
+    elif args.cmd == "doctor":
+        cmd_doctor(adapter, args)
 
 
 if __name__ == "__main__":
