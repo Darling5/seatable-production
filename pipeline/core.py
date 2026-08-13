@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""流水线公共层：配置、PartDB/SeaTable 客户端、工件读写。
+"""流水线公共层：配置、可选服务客户端、工件读写。
 
 凭证只从技能根目录 config.yaml 读，脚本内不写死任何 token/UUID/IP。
 所有中间产物落 pipeline/out/<run_id>/，每一步可单独重跑、可人工改后续跑。
@@ -22,13 +22,35 @@ OUT_DIR = os.path.join(PIPE_DIR, "out")
 def load_cfg():
     p = os.path.join(SKILL_DIR, "config.yaml")
     if not os.path.exists(p):
-        die("找不到 config.yaml，请先配置 partdb 与 seatable 凭证")
+        die("找不到 config.yaml，请先运行 python setup.py --local 或复制 config.yaml.example")
     return yaml.safe_load(open(p, encoding="utf-8")) or {}
+
+
+def _merge(base, override):
+    """递归合并字典；客户本地列表整体覆盖公共默认列表。"""
+    out = dict(base or {})
+    for key, value in (override or {}).items():
+        if isinstance(out.get(key), dict) and isinstance(value, dict):
+            out[key] = _merge(out[key], value)
+        else:
+            out[key] = value
+    return out
 
 
 def load_rules():
-    p = os.path.join(PIPE_DIR, "rules.yaml")
-    return yaml.safe_load(open(p, encoding="utf-8")) or {}
+    """加载公开默认规则，并叠加被忽略的客户本地规则。"""
+    default_path = os.path.join(PIPE_DIR, "rules.yaml")
+    local_path = os.path.join(PIPE_DIR, "rules.local.yaml")
+    base = yaml.safe_load(open(default_path, encoding="utf-8")) or {}
+    if not os.path.exists(local_path):
+        return base
+    local = yaml.safe_load(open(local_path, encoding="utf-8")) or {}
+    return _merge(base, local)
+
+
+def pipeline_path(path):
+    """把客户规则中的相对路径稳定解析为 pipeline/ 下的文件。"""
+    return path if os.path.isabs(path) else os.path.join(PIPE_DIR, path)
 
 
 def die(msg, code=1):

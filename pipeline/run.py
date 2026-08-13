@@ -3,8 +3,9 @@
 
 设计原则：人工审核关卡不可绕过；写 SeaTable 必须 --yes。
 
-  python run.py prepare  <run_id> --contract 合同.pdf --bom 无GPS版=a.xlsx --bom 无UWB版=b.xlsx
-  python run.py audit    <run_id>                     # 生成库存审核表（人工改）
+  python run.py prepare  <run_id> --contract 合同.pdf --bom 示例产品=bom.xlsx
+  python run.py init                                  # 创建本地客户配置模板
+  python run.py audit    <run_id>                     # 使用已选库存源生成审核表（人工改）
   python run.py plan     <run_id>                     # 读审核结果 → 采购预览
   python run.py submit   <run_id> --plan 4G小卡 --yes  # 写 SeaTable + 双向关联
   python run.py pdf      <run_id>                     # 生成采购订单 PDF
@@ -21,6 +22,7 @@ import plan as plan_mod  # noqa: E402
 import po_pdf  # noqa: E402
 import preflight  # noqa: E402
 import prepare  # noqa: E402
+import init_customer  # noqa: E402
 
 
 def main():
@@ -28,6 +30,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("preflight", help="体检是否已具备只丢合同的条件")
+    sub.add_parser("init", help="创建被忽略的客户配置模板与资料目录")
 
     p = sub.add_parser("prepare", help="解析合同+BOM，合并备料")
     p.add_argument("run_id")
@@ -35,7 +38,7 @@ def main():
     p.add_argument("--bom", action="append", default=[],
                    help="产品名=BOM文件，可多次")
 
-    p = sub.add_parser("audit", help="PartDB 逐零件核库存，出人工审核表")
+    p = sub.add_parser("audit", help="按已配置库存源核库存，出人工审核表")
     p.add_argument("run_id")
 
     p = sub.add_parser("plan", help="按供应商分组，出采购预览")
@@ -57,7 +60,12 @@ def main():
     p.add_argument("--bom", action="append", default=[])
 
     a = ap.parse_args()
-    if a.cmd == "prepare":
+    if a.cmd == "init":
+        init_customer.run()
+    elif a.cmd == "preflight":
+        if not preflight.run():
+            raise SystemExit(1)
+    elif a.cmd == "prepare":
         prepare.run(a.run_id, a.contract, a.bom)
     elif a.cmd == "audit":
         inventory.run(a.run_id)

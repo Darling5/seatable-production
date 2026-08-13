@@ -119,36 +119,61 @@ def check_data(adapter):
     return out
 
 
-def check_partdb(config):
-    """PartDB 是物料/BOM/库存的唯一来源，未配置 = 缺料推算整块失效。"""
+def check_inventory(config):
+    """采购库存可来自 PartDB、ERP API/MCP 或客户维护的 Excel/CSV。"""
     out = []
-    pc = (config or {}).get("partdb") or {}
-    if not isinstance(pc, dict):
-        pc = {}
-    enabled = bool(pc.get("enabled"))
-    url = (pc.get("url") or "").strip()
-    token = (pc.get("token") or "").strip()
+    inventory = (config or {}).get("inventory") or {}
+    source = str(inventory.get("source") or "").strip().lower()
+    partdb = (config or {}).get("partdb") or {}
+    if not source and partdb.get("enabled"):
+        source = "partdb"
 
-    if not enabled or not url or not token:
-        out.append(Finding(
-            BLOCK, "PartDB 未配置 —— 缺料推算、BOM 展开、库存预警全部不可用",
-            "本工具把物料主数据托管给 PartDB（开源免费）。没有它，\n"
-            "      「订单量 × BOM 用量 − 库存 = 缺口」这条链断在第一步，\n"
-            "      也就无法回答「今天必须下单哪些料」。",
-            "1) 起服务：docker run -d --name partdb -p 8080:80 jbtronics/part-db1:latest\n"
-            "        2) 在 PartDB 里生成 API Token\n"
-            "        3) 填进 config.yaml 的 partdb 段并设 enabled: true\n"
-            "        4) 拉取快照：python partdb_sync.py"))
+    if source == "partdb":
+        if not partdb.get("url") or not partdb.get("token"):
+            out.append(Finding(
+                BLOCK, "PartDB 库存源缺 URL 或 Token",
+                "已选择 PartDB 作为库存源，但连接信息不完整。",
+                "填写 config.yaml 的 partdb.url / partdb.token，或改用 inventory.source: file。"))
         return out
 
-    snap = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "data", "partdb_snapshot.json")
-    if not os.path.exists(snap):
-        out.append(Finding(
-            WARN, "PartDB 已配置，但还没拉过快照",
-            "驾驶舱读的是 data/partdb_snapshot.json，没有它就退回「库存核对记录」的粗略判断。",
-            "python partdb_sync.py"))
+    if source in ("file", "excel", "csv", "erp-export", "kingdee-export",
+                  "jiandaoyun-export", "zentao-export"):
+        file_cfg = inventory.get("file") or {}
+        if not file_cfg.get("path"):
+            out.append(Finding(
+                BLOCK, "文件库存源未配置导出文件路径",
+                "采购缺口无法计算，直到客户提供 Excel/CSV 库存导出。",
+                "运行 python pipeline/run.py init，把导出文件放进 pipeline/customer/inventory/，再填写 inventory.file.path。"))
+        return out
+
+    if source in ("api", "http", "rest", "kingdee-api", "jiandaoyun-api", "zentao-api"):
+        api = inventory.get("api") or {}
+        if not api.get("base_url") or not api.get("list_path"):
+            out.append(Finding(
+                BLOCK, "HTTP API 库存源缺少接口地址",
+                "已有 ERP 的 API 接入需要基础地址和库存列表接口路径。",
+                "填写 inventory.api.base_url / list_path，并按 ERP 文档配置 auth、data_path、pagination 和 fields。"))
+        return out
+
+    if source in ("mcp", "mcp-tool"):
+        mcp = inventory.get("mcp") or {}
+        if not mcp.get("command") or not mcp.get("tool"):
+            out.append(Finding(
+                BLOCK, "MCP 库存源缺少服务命令或工具名",
+                "MCP 接入需要客户本地 MCP 服务命令和库存查询工具名。",
+                "填写 inventory.mcp.command / tool，并按工具返回结构配置 data_path 和 fields。"))
+        return out
+
+    out.append(Finding(
+        BLOCK, "未配置采购库存源",
+        "合同采购量无法与库存核对，不能安全地产生缺口。",
+        "在 config.yaml 设置 inventory.source: partdb、api、mcp 或 file；已有 ERP 优先配置 API/MCP，文件导出作为兜底。"))
     return out
+
+
+# 保留旧函数名，兼容外部脚本调用。
+def check_partdb(config):
+    return check_inventory(config)
 
 
 def check_localization(config):
@@ -169,7 +194,7 @@ def check_localization(config):
 
 def run(adapter, config):
     findings = []
-    findings += check_partdb(config)
+    findings += check_inventory(config)
     findings += check_tables(adapter)
     findings += check_columns(adapter)
     findings += check_data(adapter)
@@ -180,7 +205,7 @@ def run(adapter, config):
 
 def render(findings):
     if not findings:
-        return "体检通过：表结构完整、数据齐全、PartDB 正常。\n可以直接跑 python cockpit.py 看驾驶舱。"
+        return "体检通过：表结构完整、数据齐全、库存源已配置。\n可以直接跑 python cockpit.py 看驾驶舱。"
 
     lines = []
     n_block = sum(1 for f in findings if f.level == BLOCK)
@@ -201,7 +226,7 @@ def render(findings):
     lines.append("")
     lines.append("-" * 64)
     if n_block:
-        lines.append("有 %d 项严重问题，核心能力（缺料推算 / 下一步建议）目前不可用。" % n_block)
+        lines.append("有 %d 项严重问题，核心能力（库存核对 / 下一步建议）目前不可用。" % n_block)
         lines.append("建议先解决它们，再看驾驶舱 —— 否则看到的数是不完整的。")
     else:
         lines.append("没有致命问题，可以开始用了：python cockpit.py")

@@ -12,7 +12,7 @@ import csv
 import os
 import re
 
-from core import die, load_rules, save, save_csv
+from core import die, load_rules, pipeline_path, save, save_csv
 
 
 def norm(s):
@@ -67,8 +67,8 @@ def read_bom(path):
 
 
 ALIASES = {
-    "ipn": ["IPN", "内部料号", "物料编码", "料号", "零件编号", "PARTDB"],
-    "model": ["型号", "物料型号", "规格型号", "PART NUMBER", "MPN", "NAME", "物料名称"],
+    "ipn": ["IPN", "ID", "内部料号", "物料编码", "料号", "零件编号", "PARTDB"],
+    "model": ["型号", "物料型号", "规格型号", "值", "PART NUMBER", "MPN", "NAME", "物料名称"],
     "footprint": ["封装", "FOOTPRINT", "PACKAGE", "规格"],
     "qty": ["数量", "用量", "单板数量", "QTY", "QUANTITY", "PCS"],
     "description": ["描述", "品名", "物料描述", "DESCRIPTION", "类型"],
@@ -101,11 +101,12 @@ def normalize_bom(rows, source, multiplier):
         return []
     cols = {k: find_col(rows[0], k) for k in ALIASES}
     if not cols["ipn"] and not cols["model"]:
-        die(f"BOM {source} 找不到 IPN 或型号列；现有列：{list(rows[0])}")
+        die(f"BOM {source} 找不到 IPN/ID 或型号列；现有列：{list(rows[0])}")
     if not cols["qty"]:
         die(f"BOM {source} 找不到数量/用量列；现有列：{list(rows[0])}")
     out = []
-    for r in rows:
+    missing_identity = []
+    for row_num, r in enumerate(rows, 2):
         q = number(r.get(cols["qty"]))
         if q <= 0:
             continue
@@ -113,6 +114,7 @@ def normalize_bom(rows, source, multiplier):
         model = str(r.get(cols["model"]) or "").strip() if cols["model"] else ""
         key = norm(ipn or model)
         if not key:
+            missing_identity.append(row_num)
             continue
         out.append({
             "key": key, "ipn": ipn, "model": model,
@@ -121,6 +123,9 @@ def normalize_bom(rows, source, multiplier):
             "unit_qty": q, "multiplier": multiplier,
             "need": q * multiplier, "source": os.path.basename(source),
         })
+    if missing_identity:
+        die(f"BOM {source} 有 {len(missing_identity)} 行数量大于 0 但缺 IPN/ID/型号："
+            + ", ".join(map(str, missing_identity[:10])))
     return out
 
 
@@ -139,21 +144,20 @@ def merge_boms(items):
 
 
 def configured_boms(products, rules):
-    """合同识别出的产品自动映射 rules.yaml 的标准 BOM。"""
+    """合同识别出的产品自动映射本地客户规则中的标准 BOM。"""
     configured = {p.get("name"): p.get("bom") for p in rules.get("products", [])}
     specs, missing = [], []
     for p in products:
         path = configured.get(p["name"])
         if path:
-            if not os.path.isabs(path):
-                path = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+            path = pipeline_path(path)
             if os.path.exists(path):
                 specs.append(f"{p['name']}={path}")
                 continue
         missing.append(p["name"])
     if missing:
         die("以下合同产品未配置标准 BOM：" + "、".join(missing)
-            + "。请在 pipeline/rules.yaml 的 products[].bom 填文件路径，"
+            + "。请在 pipeline/rules.local.yaml 的 products[].bom 填文件路径，"
               "或本次用 --bom 产品名=文件路径。")
     return specs
 
@@ -173,7 +177,7 @@ def run(run_id, contract, bom_specs):
     specs_out = []
     for spec in bom_specs:
         if "=" not in spec:
-            die("--bom 格式必须是 产品名=文件路径，例如 无GPS版=bom.xlsx")
+            die("--bom 格式必须是 产品名=文件路径，例如 示例产品=bom.xlsx")
         name, path = spec.split("=", 1)
         qty = product_qty.get(name)
         if qty is None:

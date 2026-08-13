@@ -6,11 +6,12 @@
 """
 import re
 
-from core import PartDB, load, load_cfg, load_rules, part_price, save, save_csv, split_stock
+from core import load, load_cfg, load_rules, save, save_csv
+from inventory_sources import get_inventory_source
 
 
 def n(s):
-    return re.sub(r"[^A-Z0-9]+", "", str(s or "").upper())
+    return re.sub(r"[^A-Z0-9\u4e00-\u9fff]+", "", str(s or "").upper())
 
 
 def is_passive(row, rules):
@@ -42,9 +43,9 @@ def match_part(mat, parts):
 def run(run_id):
     cfg, rules = load_cfg(), load_rules()
     mats = load(run_id, "prepared.json")["materials"]
-    db = PartDB(cfg)
-    parts = db.all_parts()
-    print(f"[PartDB] 已拉取 {len(parts)} 个零件索引，开始逐个查详情/批次")
+    source = get_inventory_source(cfg)
+    parts = source.load_parts()
+    print(f"[{source.name}] 已加载 {len(parts)} 个零件索引，开始逐个核对")
     out = []
     for i, mat in enumerate(mats, 1):
         p, method = match_part(mat, parts)
@@ -55,34 +56,32 @@ def run(run_id):
                     "supplier": "", "purchase_qty": 0, "amount": 0,
                     "审核决定": "待人工审核", "审核备注": ""})
         if p:
-            detail, lots = db.part_lots(p["id"])
-            ok, unk, locs = split_stock(lots)
-            # 部分 PartDB 版本详情不内嵌批次：保留 total_instock 为未确认，绝不当承诺库存
-            if not lots and detail.get("total_instock"):
-                unk = float(detail.get("total_instock") or 0)
-                row["审核备注"] = "详情无批次明细；total_instock仅列为未确认"
-            price, supplier, _ = part_price(detail)
-            gap = max(0, float(mat["need"]) - ok)
+            p = source.enrich(p)
+            confirmed = float(p.get("confirmed_stock") or 0)
+            unconfirmed = float(p.get("unconfirmed_stock") or 0)
+            price = p.get("unit_price")
+            supplier = p.get("supplier") or ""
+            gap = max(0, float(mat["need"]) - confirmed)
             passive = is_passive(mat, rules)
             black = supplier and any(x in supplier for x in rules.get("supplier_blacklist", []))
             decision = "排除-无源器件" if passive else ("排除-独立供应商流程" if black else
                        ("无需采购" if gap <= 0 else "建议采购"))
-            row.update({"part_id": p["id"], "match": method,
-                        "ipn": detail.get("ipn") or mat.get("ipn"),
-                        "model": detail.get("name") or mat.get("model"),
-                        "footprint": ((detail.get("footprint") or {}).get("name")
-                                      if isinstance(detail.get("footprint"), dict) else mat.get("footprint")),
-                        "location": ",".join(sorted(set(locs))),
-                        "confirmed_stock": ok, "unconfirmed_stock": unk,
+            row.update({"part_id": p.get("id"), "match": method,
+                        "ipn": p.get("ipn") or mat.get("ipn"),
+                        "model": p.get("name") or mat.get("model"),
+                        "footprint": p.get("footprint") or mat.get("footprint"),
+                        "location": ",".join(sorted(set(p.get("locations") or []))),
+                        "confirmed_stock": confirmed, "unconfirmed_stock": unconfirmed,
                         "gap": gap, "unit_price": price,
-                        "price_supplier": supplier or "", "supplier": supplier or "",
+                        "price_supplier": supplier, "supplier": supplier,
                         "purchase_qty": gap if decision == "建议采购" else 0,
                         "amount": gap * price if decision == "建议采购" and price else 0,
-                        "审核决定": decision})
+                        "审核决定": decision,
+                        "审核备注": p.get("note") or ""})
         out.append(row)
         if i % 10 == 0 or i == len(mats):
             print(f"  已核对 {i}/{len(mats)}")
-    payload = {"instructions": [
+    payload = {"inventory_source": source.name, "instructions": [
         "人工审核 confirmed_stock 与 unconfirmed_stock；未确认库存不得用于生产承诺。",
         "将需要下单的行审核决定改为 已批准，并核对 supplier/purchase_qty/unit_price。",
         "不采购的行改为 已排除；后续 plan 仅接收审核决定=已批准。",

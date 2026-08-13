@@ -1,9 +1,8 @@
 # 生产交付协同助手
 
-**用大白话说：你在对话里说「帮我建个生产计划，4G 小卡 100 台，交期 30 天」，它就把数据落库；
-然后一句「生成驾驶舱」，给你一个网页——老板、生产经理、采购、仓库、销售各看各的那一屏。**
+**用大白话说：这是生产经理的“第二大脑”。你在对话里说「帮我建个生产计划，4G 小卡 100 台，交期 30 天」，它会在确认后把数据落库并生成分角色驾驶舱；把采购合同交给它，还能自动匹配标准 BOM、核对库存，经人工审核后生成可发供应商的正式采购订单。**
 
-不需要 SeaTable 账号，不需要 PartDB，**下载完直接能跑**（数据存本地 CSV）。
+业务台账不需要 SeaTable 账号，下载后即可用本地 CSV；采购库存可选一键部署的 PartDB，也可接客户已有 ERP 的 API、MCP 或 Excel/CSV 导出。
 
 ![生产项目管理驾驶舱 · 生产经理视角](docs/cockpit-hero.png)
 
@@ -68,10 +67,11 @@ python setup.py --local    # 或直接零配置
 小批量电子制造的活儿，数据散在一堆地方：项目在 SeaTable、物料在 PartDB、发货记录在某个 Excel 里。
 每个人都要问别人「那个单子到哪一步了」。
 
-这个技能做两件事：
+这个技能做三件事：
 
-1. **统一读写**——`op.py` 一个入口管 14 张业务表（项目 / 生产计划 / 采购 / 发货 / 维修…），不管后端是本地 CSV 还是 SeaTable 云。
+1. **统一读写**——`op.py` 一个入口管业务表，不管后端是本地 CSV 还是 SeaTable 云。
 2. **按角色出网页**——`cockpit.py` 把数据算成 KPI、甘特图、缺料预警，生成**单文件 HTML**，5 个角色各一套视图，可设口令分享给同事。
+3. **采购合同变采购订单**——合同解析 → 标准 BOM 扩量 → PartDB/ERP API/MCP/文件库存源 → 人工审核 → 供应商分组 → 正式采购订单 PDF。
 
 ```mermaid
 flowchart LR
@@ -105,20 +105,22 @@ seatable:
 
 命令一行都不用改。想退回本地，`backend` 改回 `local`。
 
-**③ 接 PartDB 做缺料检查**（有实例才需要）：
+**③ 采购库存源：按客户现状选一种**：
 
 ```yaml
+inventory:
+  source: partdb      # 也可选 api / mcp / file
 partdb:
   enabled: true
   url: "http://你的PartDB:端口/api"
   token: "你的PartDBToken"
 ```
 
-```bash
-python3 op.py partdb-shortage 22 100       # 生产100套→缺什么料
-```
+- 没有 ERP：可部署 PartDB，使用 `partdb`。
+- 已有金蝶、简道云、禅道或自建 ERP：优先使用 `api` 或 `mcp`，通过配置完成鉴权、分页与字段映射。
+- 暂时无法在线连接：使用 `file` 读取 Excel/CSV 导出。
 
-没配 PartDB 时缺料场景会提示「未配置，跳过」，不报错。
+完整配置见 [`config.yaml.example`](config.yaml.example)。所有通用库存默认属于“未确认库存”，必须经过人工库存审核才可抵扣生产需求。
 
 ---
 
@@ -132,12 +134,11 @@ python3 op.py partdb-shortage 22 100       # 生产100套→缺什么料
 
 ## 分享与安全
 
-技能里**不含任何凭证**——`config.yaml` 在 `.gitignore` 里，`data/` 也是。
-打包整个文件夹发给同事，对方零配置即用，或填自己的配置。
+公共仓库只包含通用代码、规则模板和示例配置，不保存客户数据或凭证。`config.yaml`、`data/`、`pipeline/customer/`、`pipeline/rules.local.yaml` 与 `pipeline/out/` 都在 `.gitignore` 内。
 
-驾驶舱网页支持按角色设口令分享（`口令管理`），敏感财务数据只有老板视图可见。
+首次使用采购流水线：运行 `python pipeline/run.py init`，把客户 BOM 和流程文件放入 `pipeline/customer/`，再填写本地 `rules.local.yaml`。库存可来自一键部署的 PartDB；客户已有金蝶、简道云、禅道或自建 ERP 时，优先通过通用 HTTP API 或 MCP 连接器在线接入，Excel/CSV 导出作为离线兜底。
 
-> 分享前请注意：驾驶舱网页里嵌的是**你的真实业务数据**。要公开演示请先用演示数据重新生成。
+驾驶舱网页里嵌的是你的真实业务数据。公开演示前必须用演示数据重新生成。
 
 <details>
 <summary>目录结构</summary>
@@ -148,7 +149,10 @@ seatable-production/
 ├── config.yaml.example   # 配置模板（复制为 config.yaml 后填写）
 ├── op.py                 # 统一数据操作 CLI（模型与用户都只调它）
 ├── cockpit.py            # 驾驶舱网页生成器（单文件 HTML）
-├── adapters/             # 后端适配器（可插拔）
+├── pipeline/             # 合同 → BOM → 库存审核 → 正式采购订单
+│   ├── inventory_sources.py # PartDB / API / MCP / Excel·CSV 适配器
+│   └── rules.yaml        # 无客户信息的公共采购规则模板
+├── adapters/             # 业务台账后端适配器（可插拔）
 │   ├── local.py          #   本地 CSV（默认，零依赖）
 │   ├── seatable.py       #   SeaTable（配置驱动）
 │   ├── partdb.py         #   PartDB（可选）
