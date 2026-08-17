@@ -29,3 +29,6 @@ pipeline/rules.local.yaml
 .DS_Store
 .vscode/
 .idea/
+
+# WorkBuddy 本地元数据（含自动化 memory、项目 memory、口令与业务指标，绝不提交）
+.workbuddy/
