@@ -84,6 +84,11 @@ class SeaTableAdapter(BaseAdapter):
                          json=payload, timeout=30)
         r.raise_for_status()
         resp = r.json()
+        # SeaTable add_row 响应：{"inserted_row_count":1,"row_ids":[{"_id":...}],"first_row":{...}}
+        if resp.get("row_ids"):
+            return resp["row_ids"][0].get("_id")
+        if resp.get("first_row"):
+            return resp["first_row"].get("_id")
         new = resp.get("rows") or []
         return (new[0].get("_id") if new else None)
 
