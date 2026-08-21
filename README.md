@@ -64,6 +64,8 @@ python setup.py --local    # 或直接零配置
 1. **统一读写**——`op.py` 一个入口管业务表，不管后端是本地 CSV 还是 SeaTable 云。
 2. **按角色出网页**——`cockpit.py` 把数据算成 KPI、甘特图、缺料预警，生成**单文件 HTML**，5 个角色各一套视图，可设口令分享给同事。
 3. **采购合同变采购订单**——合同解析 → 标准 BOM 扩量 → PartDB/ERP API/MCP/文件库存源 → 人工审核 → 供应商分组 → 正式采购订单 PDF。
+4. **微信消息变业务情报**——接入 `win-wechat-summary` 生成的本地 `merge_all.db`，按监控群拉取新消息，提取交期、价格、停产、催货、进度和库存事件，确认后才写回业务表。
+5. **物料行情可追踪**——从采购记录生成物料监控清单，记录渠道价快照、采购价偏差、环比涨跌和 NRND/EOL 生命周期状态，在驾驶舱里集中显示趋势与告警。
 
 ```mermaid
 flowchart LR
@@ -73,7 +75,94 @@ flowchart LR
     C --> E[一键发起 → 写回<br/>先确认再落库]
 ```
 
+### 微信情报与行情监控
+
+新增能力采用“本地专用数据 + 业务表确认写入”的方式，避免每日同步时覆盖监控信息：
+
+```text
+win-wechat-summary / PyWxDump
+        ↓ 只读本地微信数据库
+merge_all.db → wechat_intake.py pull
+        ↓
+微信事件.csv（待确认） → 用户确认 → SeaTable 业务表 + 工作日志
+
+采购记录 → market.py watchlist
+        ↓
+物料监控清单.csv + 物料行情记录.csv
+        ↓
+价格涨跌 / NRND / EOL → 驾驶舱告警
+```
+
+> 个人微信没有开放读取 API。本项目不会连接微信服务器；`win-wechat-summary` 需要用户在 Windows 本机完成微信数据库同步。涉及交期、价格、数量、金额或采购下单的微信事件，默认只进入“待确认”，不会自动改业务表。
+
 ---
+
+## 微信情报反哺
+
+先安装并运行 [win-wechat-summary](https://github.com/yanyan1115/win-wechat-summary)，让它在本机微信登录状态下生成 `merge_all.db`。然后配置 `config.yaml`：
+
+```yaml
+wechat:
+  enabled: true
+  db_path: "C:/Users/你的用户名/.../merge_all.db"
+  watch_groups: [供应商群, 项目群]
+  max_hours: 48
+```
+
+检查数据库并列出群：
+
+```bash
+python wechat_intake.py doctor
+python wechat_intake.py groups
+python wechat_intake.py pull
+```
+
+`pull` 使用 `data/wechat_intake/bookmark.json` 按群记录读取位置，重复执行不会反复拉取同一批消息。AI 提取事件后登记为待确认：
+
+```bash
+python wechat_intake.py add-event \
+  --group 供应商群 --sender 供应商A \
+  --category 价格变动 \
+  --text "FR8018HD 下周报价可能上涨 12%" \
+  --intent '{"op":"log","table":"工作日志","data":{"原话":"FR8018HD 下周报价可能上涨 12%"}}'
+
+python wechat_intake.py list --status 待确认
+python wechat_intake.py approve WX20260821-001
+python wechat_intake.py ignore WX20260821-002
+```
+
+可识别分类：交期变更、价格变动、停产通知、催货、进度、库存、其他。驾驶舱的「微信情报台」展示原文、来源群、分类、待确认状态和最终写入结果。
+
+## 物料行情监控
+
+从 IC、组装料、成品、外壳和 PCBA 采购记录提取型号与历史采购价，生成监控清单：
+
+```bash
+python market.py watchlist
+python market.py watchlist --refresh
+python market.py add FR8018HD --price 3.10 --category IC
+```
+
+每周检查后写入行情快照；没有可靠价格或生命周期来源时填“未知”，不要猜测。NRND/EOL 需要保留来源链接：
+
+```bash
+python market.py snapshot \
+  --model FR8018HD --price 3.50 \
+  --channel 立创商城 --lifecycle 在产 \
+  --source "https://example.com/source"
+
+python market.py report
+python market.py alerts
+```
+
+默认 `market.alert_threshold: 10`：
+
+- 最新价相对上次采购价达到 ±10% 时预警；
+- 最新快照环比达到 ±10% 时预警；
+- `NRND`（不推荐继续使用）和 `EOL停产` 立即预警；
+- 驾驶舱「物料行情」展示采购价、最新行情、偏差、生命周期和内联 SVG 趋势。
+
+数据保存在 `data/物料监控清单.csv` 与 `data/物料行情记录.csv`，均为本地专用文件，不会被 `seatable_sync.py` 覆盖。
 
 ## 三种用法，按需选
 
@@ -141,6 +230,8 @@ seatable-production/
 ├── config.yaml.example   # 配置模板（复制为 config.yaml 后填写）
 ├── op.py                 # 统一数据操作 CLI（模型与用户都只调它）
 ├── cockpit.py            # 驾驶舱网页生成器（单文件 HTML）
+├── wechat_intake.py      # 微信本地库 → 待确认事件 → 业务表
+├── market.py             # 物料监控清单 / 价格涨跌 / NRND-EOL
 ├── pipeline/             # 合同 → BOM → 库存审核 → 正式采购订单
 │   ├── inventory_sources.py # PartDB / API / MCP / Excel·CSV 适配器
 │   └── rules.yaml        # 无客户信息的公共采购规则模板
