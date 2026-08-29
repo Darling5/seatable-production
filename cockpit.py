@@ -53,6 +53,13 @@ def _num(v):
         return 0.0
     if isinstance(v, (int, float)):
         return float(v)
+    if isinstance(v, list):
+        # 多选/链接列：逐个尝试，取第一个能转成数字的值
+        for x in v:
+            n = _num(x)
+            if n:
+                return n
+        return 0.0
     s = str(v).replace("¥", "").replace(",", "").replace(" ", "").strip()
     if s == "":
         return 0.0
@@ -62,10 +69,46 @@ def _num(v):
         return 0.0
 
 
+def _text(v):
+    """SeaTable 云端直连时，链接列/多选列返回 list（或 dict）；
+    本地 CSV 是字符串。统一压平成可显示、可做字典键的字符串。"""
+    if v is None:
+        return ""
+    if isinstance(v, list):
+        return "/".join(t for t in (_text(x) for x in v) if t)
+    if isinstance(v, dict):
+        return str(v.get("name") or v.get("text") or v.get("display_value") or "")
+    return str(v).strip()
+
+
+def _norm_rows(rows):
+    """把云端返回的 list/dict 单元格统一压平为标量，下游按本地 CSV 习惯处理。"""
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        out.append({k: (_text(v) if isinstance(v, (list, dict)) else v)
+                    for k, v in row.items()})
+    return out
+
+
+class _NormAdapter:
+    """归一化代理：list_rows 结果经过 _norm_rows；其余方法原样透传。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def list_rows(self, name, *args, **kwargs):
+        return _norm_rows(self._inner.list_rows(name, *args, **kwargs))
+
+    def __getattr__(self, item):
+        return getattr(self._inner, item)
+
+
 def _date(v):
     if not v:
         return None
-    s = str(v).strip()
+    s = _text(v)
     for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
         try:
             return datetime.strptime(s, fmt).date()
@@ -77,7 +120,7 @@ def _date(v):
 def _supplier(row):
     for c in SUPPLIER_COLS:
         if row.get(c):
-            return str(row[c]).strip()
+            return _text(row[c]) or "未知"
     return "未知"
 
 
@@ -386,7 +429,7 @@ def compute(adapter, today):
             if amt <= 0:
                 continue
             category_cost[cat] += amt
-            pn = row.get("生产计划", "")
+            pn = _text(row.get("生产计划", "")) or "(未关联)"
             plan_cost[pn] = plan_cost.get(pn, 0.0) + amt
             sup = "PCB打板" if table == "PCB下单记录" else _supplier(row)
             # 准时率（仅对有交期与到货/逾期信息的单计入）
@@ -2521,7 +2564,7 @@ def main():
     adapter = get_adapter(load_config(cfg_path) if cfg_path else None)
     adapter.auth()
     today = datetime.now(_TZ).date()
-    model = compute(adapter, today)
+    model = compute(_NormAdapter(adapter), today)
     html = HTML.replace("__MODEL__", json.dumps(model, ensure_ascii=False))
     for k, v in ICONS.items():
         html = html.replace("__" + k + "__", v)

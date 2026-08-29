@@ -52,6 +52,39 @@ python setup.py --local    # 或直接零配置
 ```
 </details>
 
+## 一键全自动部署（deploy.py）
+
+`setup.py` 只负责写配置；**`deploy.py` 把剩下的活全部干完**：装依赖 → 生成/更新配置 → 连通验证 → 拉云端数据 → 物料清单 → 驾驶舱 → 体检 → 部署报告。幂等可重跑，已有配置做「外科手术式」更新（口令、微信、行情段原样保留）。
+
+**你需要做的只有一件事：把资料给到下面任意一层。**
+
+| 资料给到哪层 | 命令 |
+|---|---|
+| 命令行参数 | `python deploy.py --seatable-token XXX --seatable-uuid YYY --partdb-url http://... --partdb-token K` |
+| 环境变量 | `export SEATABLE_TOKEN=... SEATABLE_UUID=...` 后跑 `python deploy.py --yes` |
+| 资料文件（推荐） | 复制 `deploy.yaml.example` 为 `deploy.yaml` 填好 → `python deploy.py --profile deploy.yaml` |
+| 什么都不给 | 终端可交互则逐项问答；加 `--yes` 走本地模式 |
+| 零资料演示 | `python deploy.py --demo`（60 秒全链路跑通，不需要任何账号） |
+
+部署结果长这样：
+
+```text
+步骤    名称              结果
+----------------------------------------------
+S1    环境检测            [OK]  完成   Python 3.13.14
+S2    依赖自装            [OK]  完成   已安装 requests, pyyaml
+S3    生成 config.yaml  [OK]  完成   全新生成配置，backend=seatable
+S4    连通验证            [OK]  完成   SeaTable ✓；PartDB ✓（HTTP 200）
+S5    数据初始化           [OK]  完成   云端业务表已同步到本地 data/；物料监控清单已生成
+S6    驾驶舱生成           [OK]  完成   项目管理驾驶舱.html（145.5 KB）
+S7    开局体检            [OK]  完成   体检完成（BLOCK 项才需要立即处理）
+S8    部署报告            [OK]  完成   已写入 data/deploy-report.md
+```
+
+常用参数：`--dry-run` 只预览不落盘 · `--skip-deps / --skip-sync / --skip-doctor / --no-cockpit` 跳步 · `--yes` 免交互（CI 友好）。
+
+> 🔒 `deploy.yaml` 含凭证，已被 `.gitignore` 排除；`config.yaml` 同理，两者都不会进仓库。
+
 ---
 
 ## 它到底解决什么问题

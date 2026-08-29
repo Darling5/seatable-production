@@ -1,0 +1,22 @@
+# ============================================================
+# 部署资料文件 — 复制为 deploy.yaml 填好后执行：
+#   python deploy.py --profile deploy.yaml
+# 本文件只在本机使用，deploy.yaml 已被 .gitignore 排除，不会提交。
+# 不填的项直接留空或删掉即可（SeaTable 不填 = 本地 CSV 演示模式）。
+# ============================================================
+
+# ── SeaTable 云端业务表（推荐）─────────────────────────────
+# 获取路径：SeaTable Base → 右上角 … → 高级 → API Token（勾选全部表读写权限）
+seatable_token: ""
+# 获取路径：同页面顶部 dtable_uuid（一串 32 位十六进制，不是 access_token）
+seatable_uuid: ""
+# 服务器地址（国内公有云默认即可；自建 SeaTable 填自己的域名）
+seatable_server: "https://cloud.seatable.cn"
+
+# ── PartDB 库存源（可选，不填则用本地库存文件）─────────────
+partdb_url: ""
+partdb_token: ""
+
+# ── 微信情报反哺（可选，需要先跑 win-wechat-summary）───────
+# 生成 merge_all.db 后把绝对路径填在这里；留空则自动探测常见位置
+wechat_db_path: ""
