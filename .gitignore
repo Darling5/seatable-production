@@ -32,3 +32,8 @@ pipeline/rules.local.yaml
 
 # WorkBuddy 本地元数据（含自动化 memory、项目 memory、口令与业务指标，绝不提交）
 .workbuddy/
+
+# 部署资料文件（含凭证，勿提交；只提交 .example）
+deploy.yaml
+deploy.*.yaml
+!deploy.yaml.example

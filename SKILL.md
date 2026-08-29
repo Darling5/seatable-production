@@ -1,4 +1,4 @@
-# 生产交付协同助手（解耦版 v1.2.0）
+# 生产交付协同助手（解耦版 v1.3.0）
 
 **描述**：通过自然语言控制「生产」业务数据的增删改查，覆盖项目立项 → 生产计划 → 采购 → 生产执行 → 库存核对 → 发货 → 维修售后的完整周期，并支持工时/成本/质量/供应链四维分析。
 
@@ -14,6 +14,13 @@
 ---
 
 ## 版本历史
+
+### v1.3.0（2026-08-29）
+- 🚀 **新增 `deploy.py` 一键全自动部署**：用户资料给到任意一层（CLI 参数 / 环境变量 / `deploy.yaml` 资料文件 / 交互问答），自动完成装依赖 → 生成/更新配置 → 连通验证 → 云端数据同步 → 物料清单 → 驾驶舱 → 体检 → 部署报告。幂等可重跑，`--demo` 零资料 60 秒跑通全链路，`--dry-run` 只预览。
+- 🔒 **`deploy.yaml`（含凭证）加入 `.gitignore`**，只提交 `deploy.yaml.example` 模板。
+- 🐞 **修复云端直连驾驶舱崩溃**：SeaTable 链接/多选列返回 list/dict 导致 `unhashable type: 'list'`；`cockpit.py` 新增 `_NormAdapter` 归一化代理与 `_text()`/`_num()` 压平逻辑（backend=seatable 直连场景，本地 CSV 模式不受影响）。
+- 🐞 **修复 `seatable_sync.py` 配置解析**：`server: "https://..."` 带引号写法导致 `unknown url type`，解析时统一剥引号。
+- 📦 新增 `requirements.txt`（requests / pyyaml）。
 
 ### v1.1.0（2026-08-08）
 - 🌙 **主题三态切换**：新增「主题」按钮（自动 / 暗色 / 亮色循环），覆盖系统设置，选择持久化到 localStorage，支持 `<head>` 无闪烁加载。
@@ -32,6 +39,10 @@
 ## 0. 后端与配置（必读）
 
 技能根目录下的 `config.yaml` 决定用哪种业务后端；采购库存源可单独选择 PartDB 或客户导出的 Excel/CSV：
+
+> 新用户可跳过手改配置：把资料（SeaTable Token / PartDB / 微信 DB 路径）交给
+> `python deploy.py`（支持 CLI 参数、环境变量、`deploy.yaml` 资料文件、交互问答四种给法，
+> `--demo` 零资料演示），它会自动生成配置并完成整套部署，详见仓库 README「一键全自动部署」。
 
 ```yaml
 backend: local          # local（默认）| seatable
