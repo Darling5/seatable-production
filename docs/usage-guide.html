@@ -149,6 +149,7 @@
     <div class="step"><b>第 1 步 · 建项目</b><br>在 WorkBuddy 里从本仓库的 GitHub 链接创建项目；项目会带上 <code>seatable-production</code> 技能和「生产驾驶舱」专家。</div>
     <div class="step"><b>第 2 步 · 接数据</b><br>业务台账选择本地 CSV 或 SeaTable；采购库存选择 PartDB、ERP API、MCP 或 Excel/CSV。全部客户字段和凭证只填本地配置，不进入公开仓库。</div>
     <div class="step"><b>第 3 步 · 生成与采购</b><br>可以生成生产驾驶舱并分享；也可以只上传采购合同，自动匹配标准 BOM、生成库存审核表，人工批准后输出按供应商分组的正式采购订单 PDF。</div>
+    <div class="step"><b>可选 · 开微信情报</b><br>微信 4.x 保持 PC 版登录即可（<code>pip install cryptography</code>），AI 自动从本地加密库拉监控群消息；用 <code>python wechat_intake.py doctor</code> 体检、<code>groups</code> 挑监控群。</div>
     <div class="okbox">✅ 驾驶舱可按需设置自动更新；采购链路始终保留人工库存审核，SeaTable 写入也必须显式确认。</div>
   </section>
 
@@ -218,6 +219,8 @@
       <div class="card"><b>下一步行动建议</b><br>按角色推送待办（如「采购：A 物料逾期，需跟进」）。</div>
       <div class="card"><b>生产甘特图</b><br>各项目计划与实际进度横向时间轴。</div>
       <div class="card"><b>物料库存预警</b><br>缺料、零库存、安全库存不足提示；数据可来自 PartDB 或客户 ERP 的 API/MCP/文件库存源。</div>
+      <div class="card"><b>微信情报台</b><br>监控群消息自动提取为「待确认事件」（交期变更 / 价格变动 / 催货 / 进度 / 停产…），你确认后才写入业务表，全程留痕。微信 4.x 直接读本地库，无需第三方工具。</div>
+      <div class="card"><b>物料行情监控</b><br>采购价 vs 渠道价偏差、环比涨跌、NRND / EOL 停产生命周期告警，趋势集中展示。</div>
       <div class="card"><b>快速导航 + 分页</b><br>长页面顶部吸顶导航，长表格分页，不再一拉到底。</div>
       <div class="card"><b>一键分享</b><br>老板 / 销售视图可点按钮复制带口令的微信文案，直接转发。</div>
     </div>
@@ -225,13 +228,14 @@
 
   <!-- 你的链接 -->
   <section>
-    <h2><span class="num">4</span>拿到链接后，填在这里</h2>
-    <p>部署成功后你会得到一个云端地址（形如 <code>https://xxxx.agentos-app.net</code>）。把它填到下方，发给对应的人即可：</p>
+    <h2><span class="num">4</span>拿到链接后，发给别人</h2>
+    <p>推荐用 <b>WorkBuddy 团队资料库</b>分发：<code>publish.py</code> 把驾驶舱发布为固定链接（形如 <code>https://www.workbuddy.cn/space/d/xxxx</code>），每天自动覆盖更新、链接不变，<b>谁能看由空间协作者权限决定</b>（owner / editor / reader，服务端控制，页内口令只负责分拣角色视图）。</p>
     <div class="linkbox">
       <b>你的驾驶舱地址：</b> <span id="url">______________________________（部署后替换为你自己的链接）</span><br>
       <b>老板视图：</b> 上面的地址 + <code>#role=boss</code><br>
       <b>销售视图：</b> 上面的地址 + <code>#role=sales</code>
     </div>
+    <div class="step"><b>分发口径</b><br>把同事按角色拉进团队空间（reader 即可），然后告诉他：「打开链接 → 输你的岗位口令」。<b>两层安全</b>：没进空间的人连页面都打不开（服务端拦截）；进了空间的人要再输对应岗位口令才能看到对应视图。</div>
     <p class="muted">仓库是公开模板，<b>不含你的真实链接和真实口令</b>——这些只存在于你部署出的实例里。把上面这个框替换成你自己的地址，再转发出去就行。</p>
   </section>
 
@@ -248,7 +252,11 @@
     </details>
     <details>
       <summary>每天 9 点自动更新需要我做什么？</summary>
-      <p>无需操作。系统自动拉取最新数据 → 重新生成网页 → 重新部署。你每天打开链接就是最新状态。</p>
+      <p>无需操作。系统自动拉取最新数据 → 重新生成网页 → 覆盖发布到团队资料库（链接不变）。你每天打开链接就是最新状态；微信情报同步要求本机微信 PC 版保持登录。</p>
+    </details>
+    <details>
+      <summary>微信情报会自动改我的业务数据吗？</summary>
+      <p>不会。群消息提取出的交期 / 价格 / 催货等事件一律进入「待确认」清单，你在对话里确认后才会写入业务表，原文和写入结果全程留痕。整个链路只读本地微信数据库，不连接微信服务器。</p>
     </details>
     <details>
       <summary>口令忘了 / 泄露了怎么办？</summary>
