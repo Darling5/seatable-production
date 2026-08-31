@@ -2,16 +2,21 @@
 # -*- coding: utf-8 -*-
 """wechat_intake.py — 微信情报反哺（读本地微信库 → 提取事件 → 确认后写业务表）。
 
-数据链路（零封号风险，只读本地文件，不与微信服务器通信）：
-  win-wechat-summary（PyWxDump）解密生成 merge_all.db
+数据链路（零封号风险，只读本地文件/进程内存，不与微信服务器通信）：
+  引擎A wechatauto（微信 4.x 主路径，默认）：
+    直接读 xwechat_files/db_storage 下的 SQLCipher4 加密库——
+    密钥从运行中的 Weixin.exe 内存提取（Config.Cipher 扫描 + cfg 主密钥派生），
+    无需任何第三方 GUI 工具，微信保持登录即可。
+  引擎B merge_all.db（微信 3.x 回退）：
+    win-wechat-summary（PyWxDump）解密生成的合并库。
     → 本脚本 pull 拉取监控群的新消息（书签续读，不重复）
-    → AI（自动化里的专家）把消息拆成「微信事件」add-event 登记（状态=待确认）
+    → AI（自动化里的专家）把消息拆成「微信事件」add-event 登记（状态=���确认）
     → 驾驶舱「微信情报台」展示待确认清单
     → 你在对话里说「确认第 N 条」→ approve 直接写 SeaTable 云端业务表
     → 写入结果回填事件行，全程留痕
 
 命令：
-  python wechat_intake.py doctor            # 体检：找库、看表结构、给指引
+  python wechat_intake.py doctor            # 体检：找库、提密钥、给指引
   python wechat_intake.py groups            # 列出所有群聊（挑监控对象）
   python wechat_intake.py pull              # 拉监控群新消息 -> data/wechat_intake/latest.json/.md
   python wechat_intake.py add-event --group 群 --sender 人 --category 分类
@@ -24,6 +29,8 @@
 事件分类：交期变更 / 价格变动 / 停产通知 / 催货 / 进度 / 库存 / 其他
 意图格式（同 op.py intake）：{"op":"update|append|log","table":"项目","row_id":"...",
                             "reason":"依据原话","data":{列:值}}
+
+依赖（引擎A）：pip install cryptography
 """
 import argparse
 import csv
@@ -43,6 +50,7 @@ INTAKE_DIR = os.path.join(DATA, "wechat_intake")
 BOOKMARK = os.path.join(INTAKE_DIR, "bookmark.json")
 EVENTS_PATH = os.path.join(DATA, "微信事件.csv")
 GROUPS_CACHE = os.path.join(INTAKE_DIR, "groups.json")
+KEYS_CACHE = os.path.join(INTAKE_DIR, "master_key.json")  # 引擎A主密钥缓存
 
 EVENT_COLS = ["事件编号", "日期", "时间", "来源群", "发送人", "分类", "原文",
               "意图", "状态", "确认时间", "写入结果"]
@@ -169,21 +177,164 @@ def _find_contact_map(con):
     return mapping
 
 
+# ---------------------------------------------------------------- 引擎A：微信4.x 直读（主路径）
+_WX4 = None  # WeChatDB 单例（进程内复用，避免重复解密 19 个库）
+
+
+def _load_wx4():
+    """加载 wechatauto 引擎（微信 4.x）。返回 WeChatDB 单例；不可用返回 None。"""
+    global _WX4
+    if _WX4 is not None:
+        return _WX4
+    try:
+        sys.path.insert(0, os.path.join(HERE, "wxengine"))
+        import wa_db  # noqa: E402
+    except Exception as e:
+        print("[warn] 引擎A(wechatauto)加载失败：%s" % e)
+        return None
+    cfg = _wechat_cfg()
+    kwargs = {}
+    db_dir = (cfg.get("db_dir") or "").strip()   # 微信4.x数据根目录（含 wxid_xxx 子目录）
+    if db_dir:
+        kwargs["db_dir"] = db_dir
+    # 主密钥缓存：微信没在运行时也能解密
+    master = None
+    if os.path.exists(KEYS_CACHE):
+        try:
+            with open(KEYS_CACHE, "r", encoding="utf-8") as f:
+                master = json.load(f).get("master_key")
+        except Exception:
+            master = None
+    if master:
+        kwargs["master_key"] = master
+    # keys.json 缓存放 data 目录（默认在 temp，重启易丢）
+    kwargs["workdir"] = os.path.join(INTAKE_DIR, "wx4_work")
+    try:
+        db = wa_db.WeChatDB(**kwargs)
+    except Exception as e:
+        print("[warn] 引擎A初始化失败（微信未登录或版本不支持）：%s" % e)
+        return None
+    # 提取成功后回存主密钥
+    try:
+        if db.master_key:
+            os.makedirs(INTAKE_DIR, exist_ok=True)
+            with open(KEYS_CACHE, "w", encoding="utf-8") as f:
+                json.dump({"master_key": db.master_key, "wxid": db.wxid,
+                           "saved_at": _now().strftime("%Y-%m-%d %H:%M")}, f, ensure_ascii=False)
+    except Exception:
+        pass
+    _WX4 = db
+    return db
+
+
+def _wx4_member_names(wdb):
+    """群成员 username -> 昵称映射（来自全部群成员表，群里非好友也能显示昵称）。"""
+    cache_path = os.path.join(INTAKE_DIR, "member_names.json")
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if _now().timestamp() - os.path.getmtime(cache_path) < 86400 * 3:
+                return d
+        except Exception:
+            pass
+    mapping = {}
+    try:
+        for g in wdb.get_groups():
+            for m in g.get("members") or []:
+                if m.get("username") and m.get("nick_name"):
+                    mapping[m["username"]] = m["nick_name"]
+    except Exception:
+        pass
+    try:
+        os.makedirs(INTAKE_DIR, exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(mapping, f, ensure_ascii=False)
+    except Exception:
+        pass
+    return mapping
+
+
+def _wx4_pull(wdb, watch, max_hours, bm):
+    """引擎A拉取：书签按 sort_seq(毫秒) 续读，不重复、不漏。"""
+    members = _wx4_member_names(wdb)
+    groups = wdb.get_groups()
+    wanted = []
+    for g in groups:
+        if not watch or g["name"] in watch or g["username"] in watch \
+                or any(w in g["name"] for w in watch if isinstance(w, str)):
+            wanted.append(g)
+    now_ms = _now().timestamp() * 1000
+    result = {"engine": "wx4(微信4.x直读)", "pulled_at": _now().strftime("%Y-%m-%d %H:%M:%S"),
+              "groups": []}
+    for g in wanted:
+        key = g["username"]
+        marks = bm.get(key) or {}
+        last_seq = int(marks.get("seq", 0) or 0)
+        if last_seq:
+            msgs_raw = wdb.get_new_messages(key, since_seq=last_seq, limit=2000)
+        else:
+            # 首次拉取：只回看 max_hours 小时
+            msgs_raw = wdb.get_messages(key, limit=500)
+            msgs_raw = [m for m in msgs_raw
+                        if (m.get("create_time") or 0) >= now_ms / 1000 - max_hours * 3600]
+            msgs_raw.reverse()
+        msgs = []
+        max_seq = last_seq
+        for m in msgs_raw:
+            if m.get("type") != "文本":
+                continue
+            text = (m.get("content") or "").strip()
+            if not text or text.startswith("<") or "sysmsg" in text[:30].lower():
+                continue
+            su = m.get("sender_username") or ""
+            sender = members.get(su) or (su if su else "群友")
+            ts = m.get("create_time") or 0
+            dt = datetime.fromtimestamp(ts) if ts else _now()
+            seq = m.get("sort_seq") or 0
+            msgs.append({"ts": int(ts), "time": dt.strftime("%H:%M"),
+                         "date": dt.strftime("%Y-%m-%d"), "sender": sender,
+                         "text": text[:2000]})
+            if seq > max_seq:
+                max_seq = seq
+        if max_seq > last_seq:
+            bm[key] = {"seq": max_seq, "name": g["name"]}
+        result["groups"].append({
+            "id": key, "name": g["name"], "count": len(msgs), "messages": msgs})
+    return result
+
+
 # ---------------------------------------------------------------- doctor/groups
 def cmd_doctor():
     cfg = _wechat_cfg()
     print("== 微信情报体检 ==")
     print("config.wechat.enabled = %s" % cfg.get("enabled", "(未配置，默认开)"))
-    print("config.wechat.db_path = %s" % (cfg.get("db_path") or "(空 → 自动搜索)"))
+    print("config.wechat.db_dir   = %s（引擎A：微信4.x数据根目录，空=自动探测）"
+          % (cfg.get("db_dir") or "(空)"))
+    print("config.wechat.db_path  = %s（引擎B：merge_all.db 路径，空=自动搜索）"
+          % (cfg.get("db_path") or "(空)"))
     print("config.wechat.watch_groups = %s" % (cfg.get("watch_groups") or "(空 → 所有群)"))
+    # 引擎A
+    print("\n-- 引擎A：微信4.x 直读（主路径，无需第三方工具）--")
+    wdb = _load_wx4()
+    if wdb:
+        keyed = sum(1 for rel, _, _ in wdb._db_files if rel in wdb._keys)
+        print("[ok] 账号：%s（%s）" % (wdb.account, wdb.wxid))
+        print("     数据目录：%s" % wdb.account_dir)
+        print("     数据库：%d 个，已解密 %d 个" % (len(wdb._db_files), keyed))
+        if keyed < len(wdb._db_files):
+            print("     [!] 部分库未解密：微信需保持登录运行（密钥从进程内存提取）")
+        gs = wdb.get_groups()
+        print("     群聊：%d 个" % len(gs))
+        print("\n下一步：python wechat_intake.py groups  挑监控群")
+        return
+    print("[!] 引擎A不可用（微信4.x未登录 / 版本不支持 / 缺 cryptography）")
+    # 引擎B
+    print("\n-- 引擎B：merge_all.db（微信3.x 回退）--")
     dbs = _candidate_dbs()
     if not dbs:
-        print("\n[!] 没找到 merge_all.db。请先完成 win-wechat-summary 安装：")
-        print("    1) https://github.com/yanyan1115/win-wechat-summary/releases 下载 WeChat-Summary.exe")
-        print("    2) 微信 PC 版保持登录，双击运行，UAC 提权点「是」")
-        print("    3) 首次向导里点「自动检测微信账号」，然后点「同步」生成合并库")
-        print("    4) 把 merge_all.db 的完整路径填到本技能 config.yaml 的 wechat.db_path")
-        print("       （或把 win-wechat-summary 装到上面脚本会自动搜索的位置）")
+        print("[!] 没找到 merge_all.db。引擎B需要 win-wechat-summary（只支持微信3.x）。")
+        print("    微信4.x 用户请走引擎A：保持微信 PC 版登录后重跑 doctor。")
         return
     for db in dbs:
         print("\n[ok] 找到库：%s（%.1f MB，修改于 %s）" % (
@@ -224,6 +375,23 @@ def _all_groups(con):
 
 
 def cmd_groups():
+    # 优先引擎A
+    wdb = _load_wx4()
+    if wdb:
+        gs = [{"id": g["username"], "name": g["name"], "count": g.get("member_count", 0)}
+              for g in wdb.get_groups()]
+        gs.sort(key=lambda x: x["name"])
+        os.makedirs(INTAKE_DIR, exist_ok=True)
+        with open(GROUPS_CACHE, "w", encoding="utf-8") as f:
+            json.dump(gs, f, ensure_ascii=False, indent=1)
+        print("引擎A(微信4.x直读) · 共 %d 个群（已缓存到 groups.json）。" % len(gs))
+        print("把要监控的群名/群id 填进 config.yaml 的 wechat.watch_groups，留空=全部群：")
+        for g in gs[:60]:
+            print("  %-40s %6d 人  %s" % (g["name"][:40], g["count"], g["id"]))
+        if len(gs) > 60:
+            print("  …（其余 %d 个群见 groups.json）" % (len(gs) - 60))
+        return
+    # 引擎B回退
     dbs = _candidate_dbs()
     if not dbs:
         print("[!] 未找到微信库，先运行 python wechat_intake.py doctor 看指引")
@@ -293,115 +461,129 @@ def cmd_pull():
     if str(cfg.get("enabled", True)).lower() in ("false", "0", "no"):
         print("[skip] config.yaml wechat.enabled=false，微信情报未启用")
         return
-    dbs = _candidate_dbs()
-    if not dbs:
-        print("[skip] 未找到微信数据库（先装 win-wechat-summary 并同步一次）——不影响其余步骤")
-        return
-    db = dbs[0]
     watch = cfg.get("watch_groups") or []
     max_hours = float(cfg.get("max_hours") or 48)
-    con, tmp = _open_ro(db)
-    try:
-        t, cl = _find_msg_table(con)
-        if not t:
-            print("[skip] 库里没有消息表，请在 win-wechat-summary 里点「同步」")
+    bm = _bookmarks()
+    result = None
+    # ---- 引擎A：微信4.x 直读（主路径）----
+    wdb = _load_wx4()
+    if wdb:
+        try:
+            result = _wx4_pull(wdb, watch, max_hours, bm)
+        except Exception as e:
+            print("[warn] 引擎A拉取失败，回退引擎B：%s" % e)
+            result = None
+    # ---- 引擎B：merge_all.db（微信3.x 回退）----
+    if result is None:
+        dbs = _candidate_dbs()
+        if not dbs:
+            print("[skip] 微信数据源均不可用（引擎A需微信4.x登录中；引擎B需 merge_all.db）"
+                  "——不影响其余步骤")
             return
-        contact = _find_contact_map(con)
-        talker_c, content_c = cl["strtalker"], cl["strcontent"]
-        time_c = cl.get("createtime") or cl.get("createtime")
-        if not time_c:
-            for k in cl:
-                if "time" in k:
-                    time_c = cl[k]
-                    break
-        localid_c = cl.get("localid") or cl.get("id")
-        type_c = cl.get("type")
-        extra_c = cl.get("bytesextra")
-        talkerid_c = cl.get("talkerid")
-        bm = _bookmarks()
-        groups = _all_groups(con)
-        wanted = []
-        for g in groups:
-            if not watch or g["name"] in watch or g["id"] in watch \
-                    or any(w in g["name"] for w in watch if isinstance(w, str)):
-                wanted.append(g)
-        now_ts = _now().timestamp()
-        result = {"pulled_at": _now().strftime("%Y-%m-%d %H:%M:%S"), "db": db, "groups": []}
-        for g in wanted:
-            key = g["id"]
-            marks = bm.get(key) or {}
-            last_ts = float(marks.get("ts", 0) or 0)
-            if not last_ts:
-                last_ts = now_ts - max_hours * 3600
-            last_lid = int(marks.get("lid", 0) or 0)
-            sel = "%s, %s" % (_q(time_c), _q(content_c))
-            sel += (", " + _q(localid_c)) if localid_c else ""
-            sel += (", " + _q(talkerid_c)) if talkerid_c else ""
-            sel += (", " + _q(extra_c)) if extra_c else ""
-            cond = "%s=? AND %s>?" % (_q(talker_c), _q(time_c))
-            params = [key, last_ts]
-            if last_lid:
-                cond += " AND (%s IS NULL OR %s>?)" % (_q(localid_c), _q(localid_c))
-                params.append(last_lid)
-            if type_c:
-                cond += " AND %s=1" % _q(type_c)  # 只取文本消息
-            order = "%s ASC" % (_q(localid_c) if localid_c else _q(time_c))
-            msgs = []
-            max_ts, max_lid = last_ts, last_lid
-            for row in con.execute(
-                    "SELECT %s FROM %s WHERE %s ORDER BY %s LIMIT 2000" % (sel, _q(t), cond, order),
-                    params):
-                ts = float(row[0] or 0)
-                text = (row[1] or "").strip()
-                lid = int(row[2]) if localid_c and row[2] else 0
-                if not text or text.startswith("<") or "sysmsg" in text[:30].lower():
-                    continue
-                talkerid_val = None
-                extra_val = None
-                idx = 2 + (1 if localid_c else 0)
-                if talkerid_c:
-                    talkerid_val = row[idx]
-                    idx += 1
-                if extra_c:
-                    extra_val = row[idx]
-                sender = _sender_name(talkerid_val, extra_val, contact)
-                dt = datetime.fromtimestamp(ts)
-                msgs.append({
-                    "ts": int(ts), "time": dt.strftime("%H:%M"),
-                    "date": dt.strftime("%Y-%m-%d"), "sender": sender, "text": text[:2000]})
-                if (ts, lid) > (max_ts, max_lid):
-                    max_ts, max_lid = ts, lid
-            if msgs:
-                bm[key] = {"ts": max_ts, "lid": max_lid, "name": g["name"]}
-            result["groups"].append({
-                "id": key, "name": g["name"], "count": len(msgs), "messages": msgs})
-        _save_bookmarks(bm)
-        # 落盘 latest.json + latest.md
-        os.makedirs(INTAKE_DIR, exist_ok=True)
-        with open(os.path.join(INTAKE_DIR, "latest.json"), "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=1)
-        lines = ["# 微信情报拉取 %s" % result["pulled_at"], ""]
-        total = 0
-        for g in result["groups"]:
-            total += g["count"]
-            lines.append("## %s（%d 条）" % (g["name"], g["count"]))
-            for m in g["messages"]:
-                lines.append("- [%s %s] %s：%s" % (m["date"], m["time"], m["sender"], m["text"]))
-            lines.append("")
-        with open(os.path.join(INTAKE_DIR, "latest.md"), "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-        print("[ok] 拉取完成：%d 个监控群 · 新消息 %d 条" % (
-            len(result["groups"]), total))
-        print("     明细：data/wechat_intake/latest.json / latest.md（书签已推进，下次续读）")
-        if total == 0:
-            print("     （无新消息）")
-    finally:
-        con.close()
-        if tmp:
-            try:
-                os.remove(tmp)
-            except Exception:
-                pass
+        db = dbs[0]
+        con, tmp = _open_ro(db)
+        try:
+            t, cl = _find_msg_table(con)
+            if not t:
+                print("[skip] 库里没有消息表，请在 win-wechat-summary 里点「同步」")
+                return
+            contact = _find_contact_map(con)
+            talker_c, content_c = cl["strtalker"], cl["strcontent"]
+            time_c = cl.get("createtime") or cl.get("createtime")
+            if not time_c:
+                for k in cl:
+                    if "time" in k:
+                        time_c = cl[k]
+                        break
+            localid_c = cl.get("localid") or cl.get("id")
+            type_c = cl.get("type")
+            extra_c = cl.get("bytesextra")
+            talkerid_c = cl.get("talkerid")
+            groups = _all_groups(con)
+            wanted = []
+            for g in groups:
+                if not watch or g["name"] in watch or g["id"] in watch \
+                        or any(w in g["name"] for w in watch if isinstance(w, str)):
+                    wanted.append(g)
+            now_ts = _now().timestamp()
+            result = {"engine": "merge_all.db(微信3.x)", "pulled_at":
+                      _now().strftime("%Y-%m-%d %H:%M:%S"), "db": db, "groups": []}
+            for g in wanted:
+                key = g["id"]
+                marks = bm.get(key) or {}
+                last_ts = float(marks.get("ts", 0) or 0)
+                if not last_ts:
+                    last_ts = now_ts - max_hours * 3600
+                last_lid = int(marks.get("lid", 0) or 0)
+                sel = "%s, %s" % (_q(time_c), _q(content_c))
+                sel += (", " + _q(localid_c)) if localid_c else ""
+                sel += (", " + _q(talkerid_c)) if talkerid_c else ""
+                sel += (", " + _q(extra_c)) if extra_c else ""
+                cond = "%s=? AND %s>?" % (_q(talker_c), _q(time_c))
+                params = [key, last_ts]
+                if last_lid:
+                    cond += " AND (%s IS NULL OR %s>?)" % (_q(localid_c), _q(localid_c))
+                    params.append(last_lid)
+                if type_c:
+                    cond += " AND %s=1" % _q(type_c)  # 只取文本消息
+                order = "%s ASC" % (_q(localid_c) if localid_c else _q(time_c))
+                msgs = []
+                max_ts, max_lid = last_ts, last_lid
+                for row in con.execute(
+                        "SELECT %s FROM %s WHERE %s ORDER BY %s LIMIT 2000" % (
+                            sel, _q(t), cond, order),
+                        params):
+                    ts = float(row[0] or 0)
+                    text = (row[1] or "").strip()
+                    lid = int(row[2]) if localid_c and row[2] else 0
+                    if not text or text.startswith("<") or "sysmsg" in text[:30].lower():
+                        continue
+                    talkerid_val = None
+                    extra_val = None
+                    idx = 2 + (1 if localid_c else 0)
+                    if talkerid_c:
+                        talkerid_val = row[idx]
+                        idx += 1
+                    if extra_c:
+                        extra_val = row[idx]
+                    sender = _sender_name(talkerid_val, extra_val, contact)
+                    dt = datetime.fromtimestamp(ts)
+                    msgs.append({
+                        "ts": int(ts), "time": dt.strftime("%H:%M"),
+                        "date": dt.strftime("%Y-%m-%d"), "sender": sender, "text": text[:2000]})
+                    if (ts, lid) > (max_ts, max_lid):
+                        max_ts, max_lid = ts, lid
+                if msgs:
+                    bm[key] = {"ts": max_ts, "lid": max_lid, "name": g["name"]}
+                result["groups"].append({
+                    "id": key, "name": g["name"], "count": len(msgs), "messages": msgs})
+        finally:
+            con.close()
+            if tmp:
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+    _save_bookmarks(bm)
+    # 落盘 latest.json + latest.md
+    os.makedirs(INTAKE_DIR, exist_ok=True)
+    with open(os.path.join(INTAKE_DIR, "latest.json"), "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=1)
+    lines = ["# 微信情报拉取 %s（%s）" % (result["pulled_at"], result.get("engine", "")), ""]
+    total = 0
+    for g in result["groups"]:
+        total += g["count"]
+        lines.append("## %s（%d 条）" % (g["name"], g["count"]))
+        for m in g["messages"]:
+            lines.append("- [%s %s] %s：%s" % (m["date"], m["time"], m["sender"], m["text"]))
+        lines.append("")
+    with open(os.path.join(INTAKE_DIR, "latest.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print("[ok] 拉取完成（%s）：%d 个监控群 · 新消息 %d 条" % (
+        result.get("engine", ""), len(result["groups"]), total))
+    print("     明细：data/wechat_intake/latest.json / latest.md（书签已推进，下次续读）")
+    if total == 0:
+        print("     （无新消息）")
 
 
 # ---------------------------------------------------------------- 事件登记与确认
