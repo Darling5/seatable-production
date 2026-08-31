@@ -114,7 +114,7 @@ python publish.py --status                                     # 查看当前发
 1. **统一读写**——`op.py` 一个入口管业务表，不管后端是本地 CSV 还是 SeaTable 云。
 2. **按角色出网页**——`cockpit.py` 把数据算成 KPI、甘特图、缺料预警，生成**单文件 HTML**，5 个角色各一套视图，可设口令分享给同事。
 3. **采购合同变采购订单**——合同解析 → 标准 BOM 扩量 → PartDB/ERP API/MCP/文件库存源 → 人工审核 → 供应商分组 → 正式采购订单 PDF。
-4. **微信消息变业务情报**——接入 `win-wechat-summary` 生成的本地 `merge_all.db`，按监控群拉取新消息，提取交期、价格、停产、催货、进度和库存事件，确认后才写回业务表。
+4. **微信消息变业务情报**——双引擎只读本地微信数据库（4.x 直读加密库 / 3.x 走 merge_all.db），按监控群拉取新消息，提取交期、价格、停产、催货、进度和库存事件，确认后才写回业务表。
 5. **物料行情可追踪**——从采购记录生成物料监控清单，记录渠道价快照、采购价偏差、环比涨跌和 NRND/EOL 生命周期状态，在驾驶舱里集中显示趋势与告警。
 
 ```mermaid
@@ -282,7 +282,8 @@ seatable-production/
 ├── config.yaml.example   # 配置模板（复制为 config.yaml 后填写）
 ├── op.py                 # 统一数据操作 CLI（模型与用户都只调它）
 ├── cockpit.py            # 驾驶舱网页生成器（单文件 HTML）
-├── wechat_intake.py      # 微信本地库 → 待确认事件 → 业务表
+├── wechat_intake.py      # 微信本地库 → 待确认事件 → 业务表（双引擎）
+├── wxengine/wa_db.py     # 微信 4.x 解密引擎（SQLCipher4 直读，主密钥从进程内存提取）
 ├── market.py             # 物料监控清单 / 价格涨跌 / NRND-EOL
 ├── pipeline/             # 合同 → BOM → 库存审核 → 正式采购订单
 │   ├── inventory_sources.py # PartDB / API / MCP / Excel·CSV 适配器
