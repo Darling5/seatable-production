@@ -130,9 +130,10 @@ flowchart LR
 新增能力采用“本地专用数据 + 业务表确认写入”的方式，避免每日同步时覆盖监控信息：
 
 ```text
-win-wechat-summary / PyWxDump
-        ↓ 只读本地微信数据库
-merge_all.db → wechat_intake.py pull
+微信 4.x：wxengine/wa_db.py 直读本地加密库（主密钥从进程内存提取）
+微信 3.x：win-wechat-summary 生成 merge_all.db（回退路径）
+        ↓ 只读，不连接微信服务器
+wechat_intake.py pull（引擎A优先，自动回退引擎B）
         ↓
 微信事件.csv（待确认） → 用户确认 → SeaTable 业务表 + 工作日志
 
@@ -143,19 +144,20 @@ merge_all.db → wechat_intake.py pull
 价格涨跌 / NRND / EOL → 驾驶舱告警
 ```
 
-> 个人微信没有开放读取 API。本项目不会连接微信服务器；`win-wechat-summary` 需要用户在 Windows 本机完成微信数据库同步。涉及交期、价格、数量、金额或采购下单的微信事件，默认只进入“待确认”，不会自动改业务表。
+> 个人微信没有开放读取 API。本项目不会连接微信服务器；微信 4.x 用户保持 PC 版登录即可（引擎A 自动从进程内存提取密钥），微信 3.x 用户需在 Windows 本机用 win-wechat-summary 生成 `merge_all.db`。涉及交期、价格、数量、金额或采购下单的微信事件，默认只进入“待确认”，不会自动改业务表。
 
 ---
 
 ## 微信情报反哺
 
-先安装并运行 [win-wechat-summary](https://github.com/yanyan1115/win-wechat-summary)，让它在本机微信登录状态下生成 `merge_all.db`。然后配置 `config.yaml`：
+**微信 4.x（推荐，零工具依赖）**：保持微信 PC 版登录，安装 `pip install cryptography` 即可。**微信 3.x**：安装运行 [win-wechat-summary](https://github.com/yanyan1115/win-wechat-summary) 生成 `merge_all.db`。配置 `config.yaml`：
 
 ```yaml
 wechat:
   enabled: true
-  db_path: "C:/Users/你的用户名/.../merge_all.db"
-  watch_groups: [供应商群, 项目群]
+  db_dir: ""                          # 引擎A：微信4.x数据根目录，留空=自动探测
+  db_path: "C:/.../merge_all.db"      # 引擎B：3.x回退路径，留空=自动搜索
+  watch_groups: [供应商群, 项目群]     # 留空=所有群（群多时首拉很慢）
   max_hours: 48
 ```
 

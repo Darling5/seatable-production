@@ -1,4 +1,4 @@
-# 生产交付协同助手（解耦版 v1.3.2）
+# 生产交付协同助手（解耦版 v1.3.3）
 
 **描述**：通过自然语言控制「生产」业务数据的增删改查，覆盖项目立项 → 生产计划 → 采购 → 生产执行 → 库存核对 → 发货 → 维修售后的完整周期，并支持工时/成本/质量/供应链四维分析。
 
@@ -8,12 +8,17 @@
 - ✅ **凭证不再写死**。旧的 `API Token` / `Base UUID` / PartDB 内网 IP 已全部移除，统一由 `config.yaml` 配置；分发技能不再泄露你的账号。
 - ✅ **SeaTable / PartDB 改为可选**。有自己 Base 的，在 `config.yaml` 填 token/uuid 即切换；有 PartDB 的，开启 `partdb.enabled` 才有缺料检查。
 - ✅ **所有数据操作走 `op.py` 这一统一入口**，模型与用户都不碰具体存储和凭证。
-- ✅ **新增微信情报反哺**：通过 `win-wechat-summary` 只读本地 `merge_all.db`，拉取监控群消息 → 事件待确认 → 确认后写入 SeaTable 业务表，全程留痕。
+- ✅ **新增微信情报反哺（v1.3.3 双引擎）**：引擎A 直读微信 4.x 本地加密库（`wxengine/wa_db.py`，主密钥从运行中的 Weixin.exe 内存提取，无需第三方工具）；引擎B 回退 `merge_all.db`（微信3.x + win-wechat-summary）。拉监控群消息 → 事件待确认 → 确认后写入 SeaTable 业务表，全程留痕。
 - ✅ **新增物料行情监控**：从采购记录自动生成物料监控清单，保存价格快照，计算涨跌幅并跟踪 NRND/EOL 停产状态，驾驶舱展示趋势和告警。
 
 ---
 
 ## 版本历史
+
+### v1.3.3（2026-08-31）
+- 🚀 **微信情报引擎A：微信 4.x 直读**（`wxengine/wa_db.py`，vendored 自 PyPI `wechatauto-replica`）：直接解密 `xwechat_files/db_storage` 的 SQLCipher4 加密库，主密钥从运行中 Weixin.exe 进程内存提取（Config.Cipher 扫描 + cfg 派生 + HMAC 强校验），微信保持登录即可，彻底告别只支持 3.x 的 win-wechat-summary（PyWxDump 系已因律师函全面下架）。主密钥缓存到 `data/wechat_intake/master_key.json`（已 gitignore），解密库缓存 + WAL 增量合并，二次拉取仅 ~8 秒。
+- 🔄 **`wechat_intake.py` 双引擎 pull**：A（4.x 直读，主路径）失败自动回退 B（merge_all.db）；书签按 sort_seq 毫秒续读；群成员昵称解析（1 万人映射，非好友也显示昵称）；`config.yaml` 新增 `wechat.db_dir` 配置项。
+- 🐎 **实测**：379 群首拉 860 条（28 分钟，含全量解密 855MB），配置 `watch_groups` 盯 11 个生产群后日常拉取秒级完成。
 
 ### v1.3.2（2026-08-31）
 - 🚀 **新增 `publish.py` 驾驶舱发布器**：把本地生成的驾驶舱 HTML 覆盖发布到 WorkBuddy 团队资料库，固定链接 + 服务端协作者权限（owner/editor/reader）+ 自动版本历史。首次 `--setup --space-id <空间ID>` 发布并回写 `config.yaml` 的 `publish` 段（space_id/node_id/url，已 gitignore），日常一条 `publish.py --token-stdin` 覆盖更新、链接不变；`--status` 查看目标；发布失败保留本地 HTML 兜底（退出码 2，自动化可识别为"仅发布失败"）。
