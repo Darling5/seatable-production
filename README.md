@@ -85,6 +85,23 @@ S8    部署报告            [OK]  完成   已写入 data/deploy-report.md
 
 > 🔒 `deploy.yaml` 含凭证，已被 `.gitignore` 排除；`config.yaml` 同理，两者都不会进仓库。
 
+## 发布到团队资料库（publish.py）
+
+本地生成的驾驶舱是给构建用的，**分发**走 WorkBuddy 团队资料库：固定链接、服务端权限（owner/editor/reader）、每日覆盖更新自动留版本历史。
+
+```bash
+python publish.py --setup --space-id <空间ID> --token-stdin   # 首次发布，node_id 回写 config.yaml
+python publish.py --token-stdin                                # 之后每天覆盖更新，链接不变
+python publish.py --status                                     # 查看当前发布目标
+```
+
+- 首次发布前先建团队空间（如「生产交付」），把同事按角色拉为协作者。
+- token 在 WorkBuddy 会话中由 AI 调 `connect_open_platform`（skill_id=library）取得，经 stdin 传入，不落盘。
+- 发布目标存 `config.yaml` 的 `publish` 段（space_id / node_id / url），已 gitignore。
+- 发布失败保留本地 HTML 兜底，退出码 2 可被自动化流程识别为"仅发布失败"。
+
+> 混合架构建议：**生成在本地**（凭证与数据源都在本机，快、可离线重跑），**分发在库内**（一个 URL 永远最新）。不要砍掉本地生成环节。
+
 ---
 
 ## 它到底解决什么问题
