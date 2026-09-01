@@ -185,6 +185,32 @@ python wechat_intake.py ignore WX20260821-002
 
 可识别分类：交期变更、价格变动、停产通知、催货、进度、库存、其他。驾驶舱的「微信情报台」展示原文、来源群、分类、待确认状态和最终写入结果。
 
+## 实时哨兵 · 异常检测 · 站会摘要（第二大脑三件套）
+
+数据不再等你看，而是主动找你：
+
+```bash
+# 🌉 耳朵：实时监听（1 秒轮询，监控群命中关键词自动登记事件+写通知发件箱）
+python wxwatch.py watch              # 常驻监听（微信保持登录）
+python wxwatch.py once --minutes 60  # 低频模式：扫描过去 N 分钟（配合定时任务）
+python wxwatch.py status             # 哨兵状态/最近命中
+
+# 🧠 神经：异常检测（超期项目/逾期应收/采购在途/计划停滞/行情异动/数据体检）
+python alerts.py run                 # 跑全部规则 → data/alerts.json
+python alerts.py show                # 查看上次结果
+
+# 📋 嘴巴：站会摘要（合成异常+微信情报+业务面，一段话说完今天要管什么）
+python daily_brief.py --push         # 生成 data/daily_brief.md / _short.md 并写发件箱
+
+# 📬 发件箱（进程解耦：生产者只管写，AI 会话经 agent-mail 发送）
+python notify.py dump                # 取未发送通知（JSON 行）
+python notify.py mark-sent --ids 1,2 # 发送后标记
+```
+
+关键词分两级：**高危**（交期/延期/涨价/停产/缺料/催货，命中即通知）和**一般**（价格/库存/到货/进度等，仅登记事件）。通知走发件箱，由每日 9 点自动化或对话中的 AI 经 Agent Mail 发送。
+
+**异常规则一览**：A1 交期逼近（≤7 天未完货）· A2 项目已超期 · A3 逾期应收（交期过 + 待收>0）· A4 采购在途逐条 · A5 计划停滞（超 2 周无推进）· A6 行情异动（±10%）与 NRND/EOL 停产 · A7 数据体检（空状态/#VALUE! 脏值）。
+
 ## 物料行情监控
 
 从 IC、组装料、成品、外壳和 PCBA 采购记录提取型号与历史采购价，生成监控清单：
@@ -284,6 +310,10 @@ seatable-production/
 ├── cockpit.py            # 驾驶舱网页生成器（单文件 HTML）
 ├── wechat_intake.py      # 微信本地库 → 待确认事件 → 业务表（双引擎）
 ├── wxengine/wa_db.py     # 微信 4.x 解密引擎（SQLCipher4 直读，主密钥从进程内存提取）
+├── wxwatch.py            # 实时哨兵：监听监控群，关键词命中自动登记事件+通知
+├── alerts.py             # 异常检测引擎：超期/应收/在途/停滞/行情 → data/alerts.json
+├── daily_brief.py        # 站会摘要：异常+微信情报+业务面 合成一段话
+├── notify.py             # 通知发件箱：进程解耦，AI 会话经 agent-mail 发送
 ├── market.py             # 物料监控清单 / 价格涨跌 / NRND-EOL
 ├── pipeline/             # 合同 → BOM → 库存审核 → 正式采购订单
 │   ├── inventory_sources.py # PartDB / API / MCP / Excel·CSV 适配器
