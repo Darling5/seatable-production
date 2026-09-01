@@ -16,6 +16,11 @@
 
 ## 版本历史
 
+### v1.4.1（2026-09-01）
+- 🐞 **修复 `update_row` 静默失败（高危）**：`PUT /rows/` 传**列 key** 时 SeaTable 返回 `{"success":true}` + HTTP 200，但数据**不落库**，不报错、不提示。实测必须用**中文列名**才生效。此前 `_row_with_keys()` 把列名全部转成 key，导致**所有 update 操作实际都没写进去**，而调用方看到的是 OK——已改回直接传列名，`_row_with_keys` 保留但 update 不再调用。
+- 📌 附带确认：`append_row` 同样按中文列名匹配（传 key 会 `inserted_row_count=0`）；`batch-update-rows` 端点在本 Base 返回 404，不可用。
+- 🧭 新增 §12「在自定义脚本里调 adapter」踩坑记录（auth 时机、选项 ID 读取、long-text 列解析）。
+
 ### v1.4.0（2026-09-01）
 - 🌉 **`wxwatch.py` 实时哨兵（耳朵）**：基于 wxengine Listener（1 秒轮询 + WAL 增量 + 自动发现新会话）监听 11 个监控群；关键词两级——高危（交期/延期/涨价/停产/缺货/催货等 24 个，命中即写通知发件箱）与一般（价格/库存/到货/进度等，仅登记事件）；`watch` 常驻 / `once --minutes N` 低频扫描 / `status` 状态。事件自动进「微信事件.csv」待确认，不自动写业务表。
 - 🧠 **`alerts.py` 异常检测引擎（神经）**：A1 交期逼近（≤7天未完货）/ A2 项目已超期 / A3 逾期应收 / A4 采购在途 / A5 计划停滞（超2周）/ A6 行情异动（±10%）与 NRND/EOL / A7 数据体检（空状态、#VALUE!）。输出 `data/alerts.json` 供摘要和自动化消费。首跑即挖出 13 个高危（5 个超期项目 + 8 笔逾期应收，最长 133 天）。
@@ -451,6 +456,47 @@ python3 op.py partdb-shortage <项目ID> <生产数量>
 ```
 
 **价格导入（采购合同 PDF → PartDB）**：批量把合同型号与含税单价录入 PartDB 的流程——PDF 文本提取、全量零件结构化匹配、Hydra API 写价的关键坑（派生字段 / PATCH 内容类型 / MOQ 唯一约束）、以及新建料号的 IPN 命名约定——见 `references/price-import.md`。
+
+---
+
+## 12. 在自定义脚本里调 adapter（踩坑记录）
+
+`op.py` 内部会自己调 `adapter.auth()`，**但外部脚本不会**。直接 `get_adapter(cfg).list_rows(...)` 会报
+`MissingSchema: Invalid URL 'None/api/v2/dtables/...'`，因为 `self._server` 要等 `auth()` 之后才有值。
+正确写法：
+
+```python
+import sys; sys.path.insert(0, r'<技能目录>')
+from adapters.factory import load_config, get_adapter
+a = get_adapter(load_config(None)); a.auth()      # ← 这行不能少
+rows = a.list_rows('发货清单')                     # 返回 dict 列表，含 __row_id__
+```
+
+**为什么值得自己写脚本**：`op.py list` 是 TSV 输出，`long-text` 列（如「发货内容」）里的换行会把一行拆成多行，
+没法解析出完整记录；需要读/比对整条记录时走 adapter 拿 dict 更可靠。
+
+**single-select / multiple-select**：`list_rows` 返回的是**选项 ID**（如发货清单「类型」的销售=`909350`），
+`op.py meta` 的 `data.options` 又是 `None`。要拿 ID↔中文名映射，从 metadata 直接读：
+
+```python
+a._ensure_meta()
+tbl = next(t for t in a._meta['tables'] if t['name'] == '发货清单')
+opts = {o['id']: o['name'] for c in tbl['columns']
+        if c['type'] == 'single-select' for o in c['data']['options']}
+```
+
+写入时**直接传中文名即可**（adapter 内部会翻译），不要自己查 ID 再传。
+
+**⚠️ 写入后必须读回验证**（这是本次最大的教训）：
+
+```python
+a.update_row("成品采购记录", rid, {"交期（天）": 39})
+# 必须重新读一次确认，不能只看有没有报错
+```
+
+`PUT /rows/` 在传错列标识（列 key 而非中文列名）时会返回 `{"success": true}` 且 HTTP 200，**数据却不落库**——
+`op.py update` 因此会打印 `OK`，让你以为写入成功。凡是走 adapter 的写操作，写完后用新的 adapter 实例
+`list_rows` 读回比对一次；只有读回值等于写入值才算真的成功。
 
 ---
 

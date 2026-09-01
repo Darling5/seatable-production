@@ -152,6 +152,19 @@ wechat_intake.py pull（引擎A优先，自动回退引擎B）
 
 **微信 4.x（推荐，零工具依赖）**：保持微信 PC 版登录，安装 `pip install cryptography` 即可。**微信 3.x**：安装运行 [win-wechat-summary](https://github.com/yanyan1115/win-wechat-summary) 生成 `merge_all.db`。配置 `config.yaml`：
 
+> **⚠️ 依赖装在哪个 venv 就用哪个 venv 跑**（`python wechat_intake.py doctor` 自检）。本仓库自带的 `.venv-pipeline` 可能缺 `cryptography`，症状是：
+> ```
+> [warn] 引擎A(wechatauto)加载失败：No module named 'cryptography'
+> [!] 引擎A不可用（微信4.x未登录 / 版本不支持 / 缺 cryptography）
+> ```
+> 这条报错里"微信4.x未登录 / 版本不支持"是**误导项**——真正原因几乎总是当前解释器缺包。修复：
+> ```bash
+> .venv-pipeline/Scripts/python.exe -m pip install cryptography pyyaml
+> ```
+> 自检通过的标准输出是 `数据库：19 个，已解密 19 个` + 群聊数量，而不是任何 `[!]`。
+
+> **⚠️ 微信 4.x 用户不要用 win-wechat-summary / WeChat-Summary 类工具**：这类工具（含网络上的 GUI 版）通过 `psutil.process_iter` 精确匹配进程名 `WeChat.exe` 来检测微信，而微信 4.x 的主程序已改名为 `Weixin.exe`，必然报"未检测到微信进程"。其内置 PyWxDump 偏移表也只支持到 **3.9.12.55**，对 4.x 无解。本项目引擎A 直读 4.x `db_storage` 加密库，是 4.x 唯一可行路径。
+
 ```yaml
 wechat:
   enabled: true
