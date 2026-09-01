@@ -476,47 +476,6 @@ python3 op.py partdb-shortage <项目ID> <生产数量>
 
 ---
 
-## 12. 在自定义脚本里调 adapter（踩坑记录）
-
-`op.py` 内部会自己调 `adapter.auth()`，**但外部脚本不会**。直接 `get_adapter(cfg).list_rows(...)` 会报
-`MissingSchema: Invalid URL 'None/api/v2/dtables/...'`，因为 `self._server` 要等 `auth()` 之后才有值。
-正确写法：
-
-```python
-import sys; sys.path.insert(0, r'<技能目录>')
-from adapters.factory import load_config, get_adapter
-a = get_adapter(load_config(None)); a.auth()      # ← 这行不能少
-rows = a.list_rows('发货清单')                     # 返回 dict 列表，含 __row_id__
-```
-
-**为什么值得自己写脚本**：`op.py list` 是 TSV 输出，`long-text` 列（如「发货内容」）里的换行会把一行拆成多行，
-没法解析出完整记录；需要读/比对整条记录时走 adapter 拿 dict 更可靠。
-
-**single-select / multiple-select**：`list_rows` 返回的是**选项 ID**（如发货清单「类型」的销售=`909350`），
-`op.py meta` 的 `data.options` 又是 `None`。要拿 ID↔中文名映射，从 metadata 直接读：
-
-```python
-a._ensure_meta()
-tbl = next(t for t in a._meta['tables'] if t['name'] == '发货清单')
-opts = {o['id']: o['name'] for c in tbl['columns']
-        if c['type'] == 'single-select' for o in c['data']['options']}
-```
-
-写入时**直接传中文名即可**（adapter 内部会翻译），不要自己查 ID 再传。
-
-**⚠️ 写入后必须读回验证**（这是本次最大的教训）：
-
-```python
-a.update_row("成品采购记录", rid, {"交期（天）": 39})
-# 必须重新读一次确认，不能只看有没有报错
-```
-
-`PUT /rows/` 在传错列标识（列 key 而非中文列名）时会返回 `{"success": true}` 且 HTTP 200，**数据却不落库**——
-`op.py update` 因此会打印 `OK`，让你以为写入成功。凡是走 adapter 的写操作，写完后用新的 adapter 实例
-`list_rows` 读回比对一次；只有读回值等于写入值才算真的成功。
-
----
-
 ## 11. 辅助命令速查
 
 | 命令 | 作用 |
@@ -580,3 +539,71 @@ python wechat_intake.py summary --group "群名" --hours 72 --json --out sum.jso
 - 微信把发送者账号冗余拼在正文前，分隔符是**换行不是空格**（`"wxid_xxx:\n正文"`，全角冒号也见过），
   必须剥掉，否则每条都显示成「昵称：helei270640: 正文」。
 - `type == "系统消息"` 和 content 为 `[文本]`（解析失败的空占位）要过滤，否则混进撤回提示等噪声。
+
+#### 11.1.1 群聊 AI 总结（脚本取数 + AI 提炼）
+
+`summary` 只负责**取数和结构化**，真正的"总结"由 AI（你）完成——**不需要接任何 LLM API，你就是 LLM**。
+完整提示词模板见 `references/wx-ai-summary-prompt.md`，核心要求：
+
+- 输出结构：一句话结论 → 待办事项表（**事项|负责人|提出时间|状态**）→ 决策共识 → 分话题要点 → 风险 → ❓ 悬而未决
+- **待办必须带负责人**，从 @提及、指派语句（「明天一早查一下」）推断
+- **必须单独列出「提问后无人回复 / 被追问仍未闭环」**——这是人工翻聊天最容易漏的，也是这一步最大的价值
+- 消息数 < 5 条直接跳过；超 300 条先分段摘要再合并（map-reduce）
+- 不臆造，每条结论可追溯到原文
+
+参考耗时：全量监控群（31 群）扫 24 小时窗口约 **3 分 20 秒**，每日任务可接受。
+
+长中文正文入队一律用 `notify.py send --body-file <文件>`，**不要用 `--body` 命令行传参**
+（Windows 命令行有长度上限，且引号转义会毁掉内容）。
+
+```bash
+python wechat_intake.py summary --hours 24 --out data/wechat_intake/summary_24h.md
+# → AI 读文件生成 data/wechat_intake/ai_summary_24h.md
+python notify.py send --subject "💬 群聊总结 <日期>" \
+    --body-file data/wechat_intake/ai_summary_24h.md --level info
+```
+
+> 每日 9 点自动化已内置此流程（步骤 4），产物随发件箱一并推企微。
+
+---
+
+## 12. 在自定义脚本里调 adapter（踩坑记录）
+
+`op.py` 内部会自己调 `adapter.auth()`，**但外部脚本不会**。直接 `get_adapter(cfg).list_rows(...)` 会报
+`MissingSchema: Invalid URL 'None/api/v2/dtables/...'`，因为 `self._server` 要等 `auth()` 之后才有值。
+正确写法：
+
+```python
+import sys; sys.path.insert(0, r'<技能目录>')
+from adapters.factory import load_config, get_adapter
+a = get_adapter(load_config(None)); a.auth()      # ← 这行不能少
+rows = a.list_rows('发货清单')                     # 返回 dict 列表，含 __row_id__
+```
+
+**为什么值得自己写脚本**：`op.py list` 是 TSV 输出，`long-text` 列（如「发货内容」）里的换行会把一行拆成多行，
+没法解析出完整记录；需要读/比对整条记录时走 adapter 拿 dict 更可靠。
+
+**single-select / multiple-select**：`list_rows` 返回的是**选项 ID**（如发货清单「类型」的销售=`909350`），
+`op.py meta` 的 `data.options` 又是 `None`。要拿 ID↔中文名映射，从 metadata 直接读：
+
+```python
+a._ensure_meta()
+tbl = next(t for t in a._meta['tables'] if t['name'] == '发货清单')
+opts = {o['id']: o['name'] for c in tbl['columns']
+        if c['type'] == 'single-select' for o in c['data']['options']}
+```
+
+写入时**直接传中文名即可**（adapter 内部会翻译），不要自己查 ID 再传。
+
+**⚠️ 写入后必须读回验证**（这是本次最大的教训）：
+
+```python
+a.update_row("成品采购记录", rid, {"交期（天）": 39})
+# 必须重新读一次确认，不能只看有没有报错
+```
+
+`PUT /rows/` 在传错列标识（列 key 而非中文列名）时会返回 `{"success": true}` 且 HTTP 200，**数据却不落库**——
+`op.py update` 因此会打印 `OK`，让你以为写入成功。凡是走 adapter 的写操作，写完后用新的 adapter 实例
+`list_rows` 读回比对一次；只有读回值等于写入值才算真的成功。
+
+---

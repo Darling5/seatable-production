@@ -109,6 +109,9 @@ def _enqueue_notify(subject, body, level="hot"):
         except Exception:
             box = []
     box.append({
+        # 必须带 id，与 notify.py 的 _next_id 逻辑一致。缺 id 的条目一旦未发送，
+        # `notify.py mark-sent --ids` 就定位不到它，会永远卡在发件箱里。
+        "id": max([b.get("id", 0) for b in box], default=0) + 1,
         "subject": subject,
         "body": body,
         "level": level,
