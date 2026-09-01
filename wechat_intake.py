@@ -758,8 +758,10 @@ def _match_focus(text):
 
 
 def _resolve_sender(wdb, members, su, cache):
-    """wxid -> 可读昵称。群成员表优先，缺失再查联系人表，都拿不到才退回 wxid。
+    """wxid -> 可读昵称。别名映射 > 群成员表 > 联系人表 > 退回 wxid。
 
+    sender_aliases（config.yaml wechat 段）优先级最高：同一人多个账号/多个昵称
+    （如企微号显示刘俊良、个人号昵称 Dylan-刘）时，统一聚合到一个名字下。
     member_names.json 只覆盖 get_groups() 返回的群成员，群里不活跃/非好友的人
     经常查不到，所以必须用 get_nickname 兜底（实测可把 wxid_xxx 解成人名）。
     结果按会话缓存，避免同一发言人反复查库。
@@ -768,6 +770,10 @@ def _resolve_sender(wdb, members, su, cache):
         return "群友"
     if su in cache:
         return cache[su]
+    alias = (_wechat_cfg().get("sender_aliases") or {}).get(su)
+    if alias:
+        cache[su] = alias
+        return alias
     name = members.get(su)
     if not name:
         try:

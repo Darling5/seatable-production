@@ -539,8 +539,11 @@ python wechat_intake.py summary --group "群名" --hours 72 --json --out sum.jso
 `summary` 是一次性回溯（按小时窗口、保留全部消息类型、供人工或 AI 速读）。两者不冲突。
 
 **已踩过的坑（别再改回去）**：
-- 发言人名解析要走「群成员表 → `wdb.get_nickname()` 兜底」两级。只用 `member_names.json`
-  缓存会漏掉非好友/不活跃成员，摘要里显示成一串 `wxid_xxx`。
+- 发言人名解析要走「**别名映射 → 群成员表 → `wdb.get_nickname()` 兜底」三级**。
+  别名映射（config.yaml `wechat.sender_aliases`，wxid → 显示名）优先级最高，
+  用于同一人多账号/多昵称的场景（实例：`jixu911: 刘俊良`——其昵称 Dylan-刘，
+  企微互通号却显示刘俊良且从不发言，两个化身靠别名聚合成一个人）。
+  只用 `member_names.json` 缓存会漏掉非好友/不活跃成员，摘要里显示成一串 `wxid_xxx`。
 - 微信把发送者账号冗余拼在正文前，分隔符是**换行不是空格**（`"wxid_xxx:\n正文"`，全角冒号也见过），
   必须剥掉，否则每条都显示成「昵称：helei270640: 正文」。
 - `type == "系统消息"` 和 content 为 `[文本]`（解析失败的空占位）要过滤，否则混进撤回提示等噪声。

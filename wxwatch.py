@@ -158,7 +158,10 @@ def _handle_message(msg, group_names, member_names, st, notify_hot=True):
         return None
     cat = _classify(text)
     su = msg.get("sender_username") or ""
-    sender = member_names.get(su) or (su if su else "群友")
+    # 别名映射优先（config.yaml wechat.sender_aliases）：同一人多账号/多昵称
+    # 统一成一个名字（如 jixu911 昵称 Dylan-刘 -> 刘俊良），便于推送里一眼认人
+    aliases = (wi.load_config().get("wechat") or {}).get("sender_aliases") or {}
+    sender = aliases.get(su) or member_names.get(su) or (su if su else "群友")
     ts = msg.get("create_time") or 0
     dt = datetime.fromtimestamp(ts) if ts else datetime.now()
     # 登记事件（复用 wechat_intake 的事件表，待确认状态）
