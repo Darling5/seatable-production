@@ -819,20 +819,31 @@ def _summary_targets(wdb, group_args, all_groups):
     return picked, None
 
 
-def _render_summary_md(res):
-    """把 summary 结果渲染成 Markdown（给人看，也方便 AI 直接读）。"""
+def _render_summary_md(res, skip_empty=True):
+    """把 summary 结果渲染成 Markdown（给人看，也方便 AI 直接读）。
+
+    skip_empty（默认 True）：0 条消息的群不单独出章节，改为末尾一行汇总。
+    监控群动辄几十个，绝大多数当天没消息——逐个输出空章节会占掉近三成篇幅，
+    而 AI 读这些内容时纯属噪声。
+    """
+    groups = res["groups"]
+    empty = [g for g in groups if not g["messages"]]
+    nonempty = [g for g in groups if g["messages"]]
+    shown = nonempty if skip_empty else groups
     L = ["# 微信群聊摘要",
          "",
          "- 时间窗口：%s ~ %s（近 %s 小时）" % (res["from"], res["to"], res["window_hours"]),
          "- 生成时间：%s" % res["generated_at"],
-         "- 群数：%d" % len(res["groups"]),
+         # 注意用 nonempty 而非 shown：--keep-empty 时 shown 就是全量群，
+         # 拿它当有消息数会把 0 条群也算进去（实测显示成「有消息 4 / 无消息 3」）。
+         "- 群数：%d（有消息 %d / 无消息 %d）" % (len(groups), len(nonempty), len(empty)),
          ""]
-    total_msg = sum(g["count"] for g in res["groups"])
-    total_focus = sum(len(g["focus"]) for g in res["groups"])
+    total_msg = sum(g["count"] for g in groups)
+    total_focus = sum(len(g["focus"]) for g in groups)
     L.append("- 消息总数：%d，其中需关注 %d 条" % (total_msg, total_focus))
     L.append("")
 
-    for g in res["groups"]:
+    for g in shown:
         L.append("---")
         L.append("")
         L.append("## %s（%d 条）" % (g["name"], g["count"]))
@@ -865,15 +876,26 @@ def _render_summary_md(res):
                 m["date"], m["time"], m["sender"], tag,
                 m["text"].replace("\n", " ")))
         L.append("")
+
+    if skip_empty and empty:
+        L.append("---")
+        L.append("")
+        names = "、".join(g["name"] for g in empty)
+        if len(names) > 400:
+            names = names[:400] + "…"
+        L.append("_另有 %d 个监控群在该窗口内无消息：%s_" % (len(empty), names))
+        L.append("")
     return "\n".join(L)
 
 
 def cmd_summary(group=None, hours=24, limit=2000, all_groups=False,
-                as_json=False, out=None):
+                as_json=False, out=None, keep_empty=False):
     """群聊摘要：按时间窗口导出指定群的对话记录 + 统计 + 需关注标注。
 
     与 pull 的区别：pull 是增量事件流（书签续读，只取文本、只进待确认），
     summary 是一次性回溯（按小时窗口，保留全部消息类型，供人工/AI 速读）。
+
+    keep_empty=False（默认）时，0 条消息的群不单独出章节，只在末尾汇总。
     """
     wdb = _load_wx4()
     if not wdb:
@@ -949,7 +971,8 @@ def cmd_summary(group=None, hours=24, limit=2000, all_groups=False,
     if as_json:
         payload = json.dumps(res, ensure_ascii=False, indent=2)
     else:
-        payload = _render_summary_md(res)
+        # JSON 始终保留全部群（程序消费要完整数据）；Markdown 默认折叠空群
+        payload = _render_summary_md(res, skip_empty=not keep_empty)
     if out:
         os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
         with open(out, "w", encoding="utf-8") as f:
@@ -992,6 +1015,8 @@ def main():
                    help="摘要全部群（忽略 watch_groups）")
     p.add_argument("--json", dest="as_json", action="store_true",
                    help="输出 JSON 而非 Markdown")
+    p.add_argument("--keep-empty", action="store_true",
+                   help="保留 0 条消息的群章节（默认折叠为末尾汇总一行）")
     p.add_argument("--out", default=None, help="写入文件（默认打印到 stdout）")
     a = ap.parse_args()
     {"doctor": cmd_doctor, "groups": cmd_groups, "pull": cmd_pull,
@@ -1002,7 +1027,7 @@ def main():
      "ignore": lambda: cmd_ignore(a.no),
      "clear-demo": cmd_clear_demo,
      "summary": lambda: cmd_summary(a.group, a.hours, a.limit, a.all_groups,
-                                    a.as_json, a.out)}[a.cmd]()
+                                    a.as_json, a.out, a.keep_empty)}[a.cmd]()
 
 
 if __name__ == "__main__":
