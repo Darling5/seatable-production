@@ -198,7 +198,11 @@ def main():
     sub.add_parser("test")
     p = sub.add_parser("push")
     p.add_argument("--subject", required=True)
-    p.add_argument("--body", required=True)
+    # --body 与 --body-file 二选一；长中文正文一律走 --body-file，
+    # 命令行传参在 Windows 上会踩长度上限和引号转义坑。
+    p.add_argument("--body", default=None)
+    p.add_argument("--body-file", default=None,
+                   help="从文件读取正文（UTF-8），长文本请用这个")
     sub.add_parser("flush-outbox")
     a = ap.parse_args()
     if a.cmd == "check":
@@ -213,7 +217,13 @@ def main():
     elif a.cmd == "test":
         cmd_test()
     elif a.cmd == "push":
-        cmd_push(a.subject, a.body)
+        body = a.body
+        if a.body_file:
+            with open(a.body_file, encoding="utf-8") as f:
+                body = f.read().strip()
+        if not body:
+            ap.error("需要 --body 或 --body-file（且内容不能为空）")
+        cmd_push(a.subject, body)
     else:
         cmd_flush_outbox()
 

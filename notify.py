@@ -103,7 +103,11 @@ def main():
     p.add_argument("--ids", required=True, help="逗号分隔的通知 id")
     p = sub.add_parser("send")
     p.add_argument("--subject", required=True)
-    p.add_argument("--body", required=True)
+    # --body 与 --body-file 二选一。长文本（中文上千字）走命令行传参会踩
+    # Windows 命令行长度限制和引号转义坑，必须用 --body-file。
+    p.add_argument("--body", default=None)
+    p.add_argument("--body-file", default=None,
+                   help="从文件读取正文（UTF-8），长文本请用这个")
     p.add_argument("--level", default="info", choices=["hot", "warm", "info"])
     sub.add_parser("status")
     a = ap.parse_args()
@@ -112,7 +116,13 @@ def main():
     elif a.cmd == "mark-sent":
         cmd_mark_sent([int(x) for x in a.ids.split(",") if x.strip().isdigit()])
     elif a.cmd == "send":
-        cmd_send(a.subject, a.body, a.level)
+        body = a.body
+        if a.body_file:
+            with open(a.body_file, encoding="utf-8") as f:
+                body = f.read().strip()
+        if not body:
+            ap.error("需要 --body 或 --body-file（且内容不能为空）")
+        cmd_send(a.subject, body, a.level)
     else:
         cmd_status()
 
