@@ -1,4 +1,4 @@
-# 生产交付协同助手（解耦版 v1.3.3）
+# 生产交付协同助手（解耦版 v1.4.0）
 
 **描述**：通过自然语言控制「生产」业务数据的增删改查，覆盖项目立项 → 生产计划 → 采购 → 生产执行 → 库存核对 → 发货 → 维修售后的完整周期，并支持工时/成本/质量/供应链四维分析。
 
@@ -9,13 +9,19 @@
 - ✅ **SeaTable / PartDB 改为可选**。有自己 Base 的，在 `config.yaml` 填 token/uuid 即切换；有 PartDB 的，开启 `partdb.enabled` 才有缺料检查。
 - ✅ **所有数据操作走 `op.py` 这一统一入口**，模型与用户都不碰具体存储和凭证。
 - ✅ **新增微信情报反哺（v1.3.3 双引擎）**：引擎A 直读微信 4.x 本地加密库（`wxengine/wa_db.py`，主密钥从运行中的 Weixin.exe 内存提取，无需第三方工具）；引擎B 回退 `merge_all.db`（微信3.x + win-wechat-summary）。拉监控群消息 → 事件待确认 → 确认后写入 SeaTable 业务表，全程留痕。
+- ✅ **新增第二大脑三件套（v1.4.0）**：`wxwatch.py` 实时哨兵（1 秒轮询监听，关键词命中自动登记事件+通知）、`alerts.py` 异常检测引擎（A1-A7 七条规则，让数据主动喊）、`daily_brief.py` 站会摘要（四路数据合成一段话）+ `notify.py` 发件箱（Agent Mail 触达）。
 - ✅ **新增物料行情监控**：从采购记录自动生成物料监控清单，保存价格快照，计算涨跌幅并跟踪 NRND/EOL 停产状态，驾驶舱展示趋势和告警。
 
 ---
 
 ## 版本历史
 
-### v1.3.3（2026-08-31）
+### v1.4.0（2026-09-01）
+- 🌉 **`wxwatch.py` 实时哨兵（耳朵）**：基于 wxengine Listener（1 秒轮询 + WAL 增量 + 自动发现新会话）监听 11 个监控群；关键词两级——高危（交期/延期/涨价/停产/缺货/催货等 24 个，命中即写通知发件箱）与一般（价格/库存/到货/进度等，仅登记事件）；`watch` 常驻 / `once --minutes N` 低频扫描 / `status` 状态。事件自动进「微信事件.csv」待确认，不自动写业务表。
+- 🧠 **`alerts.py` 异常检测引擎（神经）**：A1 交期逼近（≤7天未完货）/ A2 项目已超期 / A3 逾期应收 / A4 采购在途 / A5 计划停滞（超2周）/ A6 行情异动（±10%）与 NRND/EOL / A7 数据体检（空状态、#VALUE!）。输出 `data/alerts.json` 供摘要和自动化消费。首跑即挖出 13 个高危（5 个超期项目 + 8 笔逾期应收，最长 133 天）。
+- 📋 **`daily_brief.py` 站会摘要（嘴巴）**：合成异常+微信情报待确认+业务面（在产/待收/昨日发货）+行情异动，输出完整版 `daily_brief.md` 和 200 字精简版 `daily_brief_short.md`，`--push` 写发件箱。
+- 📬 **`notify.py` 发件箱（进程解耦触达）**：生产者只写 `data/wechat_intake/notify_outbox.json`；AI 会话 `dump` 取件 → agent-mail 发送 → `mark-sent`。实测全链路闭环（邮件已发出）。
+- 🤖 **每日 9 点自动化扩到 8 步**：同步 → 异常检测 → 站会摘要 → 驾驶舱 → 发布 → 邮件通知 → 播报（含高/中异常数）→ 口令清单。
 - 🚀 **微信情报引擎A：微信 4.x 直读**（`wxengine/wa_db.py`，vendored 自 PyPI `wechatauto-replica`）：直接解密 `xwechat_files/db_storage` 的 SQLCipher4 加密库，主密钥从运行中 Weixin.exe 进程内存提取（Config.Cipher 扫描 + cfg 派生 + HMAC 强校验），微信保持登录即可，彻底告别只支持 3.x 的 win-wechat-summary（PyWxDump 系已因律师函全面下架）。主密钥缓存到 `data/wechat_intake/master_key.json`（已 gitignore），解密库缓存 + WAL 增量合并，二次拉取仅 ~8 秒。
 - 🔄 **`wechat_intake.py` 双引擎 pull**：A（4.x 直读，主路径）失败自动回退 B（merge_all.db）；书签按 sort_seq 毫秒续读；群成员昵称解析（1 万人映射，非好友也显示昵称）；`config.yaml` 新增 `wechat.db_dir` 配置项。
 - 🐎 **实测**：379 群首拉 860 条（28 分钟，含全量解密 855MB），配置 `watch_groups` 盯 11 个生产群后日常拉取秒级完成。
