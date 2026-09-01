@@ -255,8 +255,8 @@ def cmd_watch():
     for g in wanted:
         listener.add_listener(g["username"], on_msg)
     listener.add_all(on_msg, discover=True)
-    print("[ok] 哨兵启动：%d 个监控群 · 1 秒轮询 · Ctrl+C 退出" % len(wanted))
-    print("     高危关键词=%d 个（命中即通知）；日志 data/wechat_intake/wxwatch.log" % len(HOT_KEYWORDS))
+    print("[ok] 哨兵启动：%d 个监控群 · 1 秒轮询 · Ctrl+C 退出" % len(wanted), flush=True)
+    print("     高危关键词=%d 个（命中即通知）；日志 data/wechat_intake/wxwatch.log" % len(HOT_KEYWORDS), flush=True)
     listener.start()
     try:
         while True:
