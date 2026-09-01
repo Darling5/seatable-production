@@ -19,6 +19,9 @@
   python wechat_intake.py doctor            # 体检：找库、提密钥、给指引
   python wechat_intake.py groups            # 列出所有群聊（挑监控对象）
   python wechat_intake.py pull              # 拉监控群新消息 -> data/wechat_intake/latest.json/.md
+  python wechat_intake.py summary           # 群聊摘要：按时间窗口导出对话+统计+需关注
+                      [--group 群名] [--hours 24] [--limit 2000] [--all] [--json] [--out FILE]
+                      # --group 可多次/逗号分隔、支持部分匹配；不给则用 watch_groups
   python wechat_intake.py add-event --group 群 --sender 人 --category 分类
                       --text "原文" [--intent '{"op":"update",...}']
   python wechat_intake.py list [--status 待确认]
@@ -731,6 +734,232 @@ def cmd_clear_demo():
     print("[ok] 已清除 %d 条示例事件" % removed)
 
 
+# ---------------------------------------------------------------- summary
+# 「需关注」关键词：命中即在摘要里单独拎出来，避免人工翻全量对话。
+# 只做粗分类标注，不下结论——是否真需要处理由 AI/人判断。
+FOCUS_RULES = [
+    ("交期", ["交期", "延期", "delay", "推迟", "发货", "出货", "几号到",
+             "什么时候到", "交付", "排产"]),
+    ("价格", ["涨价", "降价", "报价", "单价", "调价", "含税", "税点", "结算",
+             "付款", "尾款"]),
+    ("供应", ["缺料", "缺货", "停产", "断供", "备货", "库存", "到料", "催货",
+             "催单", "补料", "欠料"]),
+    ("决策", ["确认", "定下来", "就这样", "拍板", "同意", "批准", "驳回",
+             "改单", "按这个", "可以了"]),
+    ("风险", ["不良", "返工", "退货", "投诉", "异常", "故障", "报废", "客诉",
+             "报废", "问题", "报错"]),
+]
+
+
+def _match_focus(text):
+    """返回该条消息命中的关注类别（可能多个）。"""
+    low = (text or "").lower()
+    return [cat for cat, kws in FOCUS_RULES if any(k in low for k in kws)]
+
+
+def _resolve_sender(wdb, members, su, cache):
+    """wxid -> 可读昵称。群成员表优先，缺失再查联系人表，都拿不到才退回 wxid。
+
+    member_names.json 只覆盖 get_groups() 返回的群成员，群里不活跃/非好友的人
+    经常查不到，所以必须用 get_nickname 兜底（实测可把 wxid_xxx 解成人名）。
+    结果按会话缓存，避免同一发言人反复查库。
+    """
+    if not su:
+        return "群友"
+    if su in cache:
+        return cache[su]
+    name = members.get(su)
+    if not name:
+        try:
+            name = (wdb.get_nickname(su) or "").strip()
+        except Exception:
+            name = ""
+    name = name or su
+    cache[su] = name
+    return name
+
+
+# 微信把「发送者账号」冗余拼在正文前，形如 "helei270640: 你告诉他拆不了"。
+# 摘要里再显示一遍发言人就没必要了，这里剥掉。
+# 只匹配纯 ASCII 账号（无中文、无空格），避免误伤 "OK: 收到" 这类正常文本。
+# 实测分隔符是换行不是空格（"wxid_xxx:\n正文"），全角冒号也见过，两种都收。
+_SENDER_PREFIX = re.compile(r"^[A-Za-z0-9_.\-@]{3,40}[:：]\s*")
+
+
+def _strip_sender_prefix(text):
+    m = _SENDER_PREFIX.match(text or "")
+    if not m:
+        return text
+    rest = text[m.end():].strip()
+    return rest or text
+
+
+def _summary_targets(wdb, group_args, all_groups):
+    """解析要摘要的群。返回 (群列表, 空则报错原因)。"""
+    groups = wdb.get_groups()
+    if all_groups:
+        return groups, None
+    want = []
+    for g in (group_args or []):
+        want.extend([w.strip() for w in str(g).split(",") if w.strip()])
+    if not want:
+        want = [w for w in (_wechat_cfg().get("watch_groups") or []) if w]
+        if not want:
+            return [], "未指定群且 config.yaml 的 watch_groups 为空。"\
+                       "用 --group 指定，或 --all 扫全部群。"
+    picked = []
+    for g in groups:
+        name = g.get("name") or ""
+        if name in want or g.get("username") in want \
+                or any(w in name for w in want):
+            picked.append(g)
+    if not picked:
+        return [], "没有匹配到任何群（要匹配：%s）。"\
+                   "用 python wechat_intake.py groups 看准确群名。" % "、".join(want)
+    return picked, None
+
+
+def _render_summary_md(res):
+    """把 summary 结果渲染成 Markdown（给人看，也方便 AI 直接读）。"""
+    L = ["# 微信群聊摘要",
+         "",
+         "- 时间窗口：%s ~ %s（近 %s 小时）" % (res["from"], res["to"], res["window_hours"]),
+         "- 生成时间：%s" % res["generated_at"],
+         "- 群数：%d" % len(res["groups"]),
+         ""]
+    total_msg = sum(g["count"] for g in res["groups"])
+    total_focus = sum(len(g["focus"]) for g in res["groups"])
+    L.append("- 消息总数：%d，其中需关注 %d 条" % (total_msg, total_focus))
+    L.append("")
+
+    for g in res["groups"]:
+        L.append("---")
+        L.append("")
+        L.append("## %s（%d 条）" % (g["name"], g["count"]))
+        if g.get("truncated"):
+            L.append("")
+            L.append("> ⚠️ 已达扫描上限（--limit %d），窗口内可能还有更早消息未覆盖，"
+                     "如需完整请调大 --limit。" % g["limit"])
+        L.append("")
+        if not g["messages"]:
+            L.append("_该时间窗口内没有消息。_")
+            L.append("")
+            continue
+        L.append("**发言分布**：" + "、".join(
+            "%s %d" % (n, c) for n, c in g["stats"].items()))
+        L.append("")
+        if g["focus"]:
+            L.append("### 需关注")
+            L.append("")
+            for m in g["focus"]:
+                L.append("- [%s %s] **%s**（%s）：%s" % (
+                    m["date"], m["time"], m["sender"],
+                    "/".join(m["focus"]),
+                    m["text"][:200].replace("\n", " ")))
+            L.append("")
+        L.append("### 对话记录")
+        L.append("")
+        for m in g["messages"]:
+            tag = "" if m["type"] == "文本" else " <%s>" % m["type"]
+            L.append("- `[%s %s]` **%s**%s：%s" % (
+                m["date"], m["time"], m["sender"], tag,
+                m["text"].replace("\n", " ")))
+        L.append("")
+    return "\n".join(L)
+
+
+def cmd_summary(group=None, hours=24, limit=2000, all_groups=False,
+                as_json=False, out=None):
+    """群聊摘要：按时间窗口导出指定群的对话记录 + 统计 + 需关注标注。
+
+    与 pull 的区别：pull 是增量事件流（书签续读，只取文本、只进待确认），
+    summary 是一次性回溯（按小时窗口，保留全部消息类型，供人工/AI 速读）。
+    """
+    wdb = _load_wx4()
+    if not wdb:
+        print("[!] 引擎A不可用：保持微信 PC 版登录后重试；"
+              "若报缺 cryptography，请给当前解释器 pip install cryptography pyyaml")
+        return
+    groups, err = _summary_targets(wdb, group, all_groups)
+    if err:
+        print("[!] " + err)
+        return
+
+    members = _wx4_member_names(wdb)
+    nick_cache = {}                         # wxid -> 昵称，按本次运行缓存
+    now = _now()
+    cutoff = now.timestamp() - hours * 3600
+    res = {
+        "engine": "wx4(微信4.x直读)",
+        "window_hours": hours,
+        "from": datetime.fromtimestamp(cutoff).strftime("%Y-%m-%d %H:%M"),
+        "to": now.strftime("%Y-%m-%d %H:%M"),
+        "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "groups": [],
+    }
+
+    for g in groups:
+        try:
+            raw = wdb.get_messages(g["username"], limit=limit)
+        except Exception as e:
+            print("[warn] 读取群「%s」失败：%s" % (g.get("name"), e))
+            continue
+        msgs = []
+        for m in raw:                      # get_messages 返回倒序（最新在前）
+            ts = int(m.get("create_time") or 0)
+            if ts < cutoff:
+                break
+            if ts > now.timestamp() + 3600:   # 未来时间戳 = 脏数据
+                continue
+            mtype = m.get("type") or ""
+            text = (m.get("content") or "").strip()
+            # 系统提示、「[文本]」空占位一律不进摘要（后者是解析失败的脏行）
+            if mtype == "系统消息" or not text or text == "[文本]":
+                continue
+            if mtype == "文本" and (
+                    text.startswith("<") or "sysmsg" in text[:30].lower()):
+                continue                    # 撤回提示 / 系统 XML
+            text = _strip_sender_prefix(text)
+            su = m.get("sender_username") or ""
+            dt = datetime.fromtimestamp(ts)
+            msgs.append({
+                "ts": ts,
+                "time": dt.strftime("%H:%M"),
+                "date": dt.strftime("%Y-%m-%d"),
+                "sender": _resolve_sender(wdb, members, su, nick_cache),
+                "type": mtype,
+                "text": text[:2000],
+                "focus": _match_focus(text),
+            })
+        truncated = bool(raw) and len(raw) >= limit and bool(msgs) \
+            and msgs[-1]["ts"] >= cutoff
+        msgs.reverse()                      # 正序：从早到晚
+
+        stats = {}
+        for m in msgs:
+            stats[m["sender"]] = stats.get(m["sender"], 0) + 1
+        res["groups"].append({
+            "id": g["username"], "name": g["name"], "count": len(msgs),
+            "limit": limit, "truncated": truncated,
+            "stats": dict(sorted(stats.items(), key=lambda kv: -kv[1])),
+            "focus": [m for m in msgs if m["focus"]],
+            "messages": msgs,
+        })
+
+    if as_json:
+        payload = json.dumps(res, ensure_ascii=False, indent=2)
+    else:
+        payload = _render_summary_md(res)
+    if out:
+        os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(payload)
+        print("[ok] 已写入 %s（%d 群 / %d 条消息）" % (
+            out, len(res["groups"]), sum(g["count"] for g in res["groups"])))
+    else:
+        print(payload)
+
+
 def main():
     ap = argparse.ArgumentParser(description="微信情报反哺")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -752,6 +981,18 @@ def main():
     p = sub.add_parser("ignore")
     p.add_argument("no")
     sub.add_parser("clear-demo")
+    p = sub.add_parser("summary")
+    p.add_argument("--group", action="append", default=[],
+                   help="群名（可多次指定，也可逗号分隔，支持部分匹配）；"
+                        "不给则用 config.yaml 的 watch_groups")
+    p.add_argument("--hours", type=float, default=24, help="时间窗口小时数，默认 24")
+    p.add_argument("--limit", type=int, default=2000,
+                   help="每群最多扫描的消息条数，默认 2000")
+    p.add_argument("--all", dest="all_groups", action="store_true",
+                   help="摘要全部群（忽略 watch_groups）")
+    p.add_argument("--json", dest="as_json", action="store_true",
+                   help="输出 JSON 而非 Markdown")
+    p.add_argument("--out", default=None, help="写入文件（默认打印到 stdout）")
     a = ap.parse_args()
     {"doctor": cmd_doctor, "groups": cmd_groups, "pull": cmd_pull,
      "add-event": lambda: cmd_add_event(a.group, a.sender, a.category, a.text,
@@ -759,7 +1000,9 @@ def main():
      "list": lambda: cmd_list(a.status),
      "approve": lambda: cmd_approve(a.no),
      "ignore": lambda: cmd_ignore(a.no),
-     "clear-demo": cmd_clear_demo}[a.cmd]()
+     "clear-demo": cmd_clear_demo,
+     "summary": lambda: cmd_summary(a.group, a.hours, a.limit, a.all_groups,
+                                    a.as_json, a.out)}[a.cmd]()
 
 
 if __name__ == "__main__":

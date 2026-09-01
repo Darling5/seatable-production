@@ -16,6 +16,18 @@
 
 ## 版本历史
 
+### v1.4.4（2026-09-01）
+- 📝 **新增 `wechat_intake.py summary` 群聊摘要**：按时间窗口（默认 24h）回溯任意群的完整对话，输出统计 → 发言分布 → **需关注**（交期/价格/供应/决策/风险五类关键词自动标注）→ 正序对话记录（含图片/文件等非文本标注）。支持 `--group`（部分匹配、可多次/逗号分隔）、`--hours`、`--limit`、`--all`、`--json`、`--out`。这是 4.x 上替代已失效的 WeChat-Summary 类 GUI 工具的能力。
+- 🐞 摘要人名解析补兜底：只用 `member_names.json` 会漏掉非好友/不活跃成员（显示成 `wxid_xxx`），改为「群成员表 → `wdb.get_nickname()`」两级解析（实测把 `wxid_5671886676312` 解成 `Ling玲玲`）。
+- 🐞 剥掉微信正文里冗余的发送者账号前缀。分隔符是**换行不是空格**（`wxid_xxx:\n正文`），全角冒号也兼容。
+- 🐞 过滤 `type=="系统消息"` 与 content 为 `[文本]` 的解析失败空占位（此前会把撤回提示当消息输出）。
+- 📖 §11.1 新增微信命令速查；README 补充 venv 依赖陷阱与「WeChat-Summary 类工具在 4.x 上必死」的结论。
+
+### v1.4.3（2026-09-01）
+- 🐞 **修复 `update_row` 静默失败（高危）**：`PUT /rows/` 传**列 key** 时 SeaTable 返回 `{"success":true}` + HTTP 200，但数据**不落库**，不报错、不提示。实测必须用**中文列名**才生效。此前 `_row_with_keys()` 把列名全部转成 key，导致**所有 update 操作实际都没写进去**，而调用方看到的是 OK——已改回直接传列名，`_row_with_keys` 保留但 update 不再调用。
+- 📌 附带确认：`append_row` 同样按中文列名匹配（传 key 会 `inserted_row_count=0`）；`batch-update-rows` 端点在本 Base 返回 404，不可用。
+- 🧭 新增 §12「在自定义脚本里调 adapter」踩坑记录（auth 时机、选项 ID 读取、long-text 列解析）。
+
 ### v1.4.1（2026-09-01）
 - 🐞 **修复 `update_row` 静默失败（高危）**：`PUT /rows/` 传**列 key** 时 SeaTable 返回 `{"success":true}` + HTTP 200，但数据**不落库**，不报错、不提示。实测必须用**中文列名**才生效。此前 `_row_with_keys()` 把列名全部转成 key，导致**所有 update 操作实际都没写进去**，而调用方看到的是 OK——已改回直接传列名，`_row_with_keys` 保留但 update 不再调用。
 - 📌 附带确认：`append_row` 同样按中文列名匹配（传 key 会 `inserted_row_count=0`）；`batch-update-rows` 端点在本 Base 返回 404，不可用。
@@ -517,3 +529,49 @@ a.update_row("成品采购记录", rid, {"交期（天）": 39})
 | `op.py partdb-search / partdb-shortage` | PartDB 缺料（可选） |
 
 > 完整业务流程速查、BOM 成本算法、分析公式明细见 `references/` 目录。
+
+### 11.1 微信情报命令速查（`wechat_intake.py`）
+
+先跑 `doctor` 自检（**用装了 cryptography 的那个解释器**，缺包会报误导性的「引擎A不可用」）。
+自检通过的标准是出现 `数据库：19 个，已解密 19 个`，而不是任何 `[!]`。
+
+```bash
+python wechat_intake.py doctor      # 体检：找库 / 提密钥 / 给指引
+python wechat_intake.py groups      # 列全部群聊（挑监控对象）
+python wechat_intake.py pull        # 增量事件流：书签续读 -> 微信事件.csv 待确认
+python wechat_intake.py summary     # 群聊摘要：按时间窗口回溯对话（见下）
+python wechat_intake.py list --status 待确认
+python wechat_intake.py approve <编号>   # 确认事件并写 SeaTable 云端
+```
+
+**`summary` 群聊摘要**（替代已失效的 WeChat-Summary 类 GUI 工具）：
+
+```bash
+# 单个/多个群，72 小时窗口
+python wechat_intake.py summary --group "智环未来生产" --hours 72
+python wechat_intake.py summary --group "采购群A,生产群B" --hours 168
+
+# 不指定 --group = config.yaml 的 watch_groups；--all = 全部群
+python wechat_intake.py summary --hours 24
+python wechat_intake.py summary --all --hours 24 --limit 5000
+
+# 写文件 / 输出 JSON（供 AI 直接消费）
+python wechat_intake.py summary --hours 24 --out data/wechat_intake/summary_24h.md
+python wechat_intake.py summary --group "群名" --hours 72 --json --out sum.json
+```
+
+参数：`--group` 可多次指定也可逗号分隔、**支持部分匹配**；`--hours` 时间窗口（默认 24）；
+`--limit` 每群最多扫描条数（默认 2000，触顶会在输出里提示可能截断）。
+
+输出结构：时间窗口与统计 → 每群发言分布 → **需关注**（按交期/价格/供应/决策/风险
+五类关键词自动标注，避免人工翻全量）→ 完整对话记录（正序，含图片/文件等非文本类型标注）。
+
+**与 `pull` 的分工**：`pull` 是增量事件流（书签续读、只收文本、进「待确认」队列、可写业务表）；
+`summary` 是一次性回溯（按小时窗口、保留全部消息类型、供人工或 AI 速读）。两者不冲突。
+
+**已踩过的坑（别再改回去）**：
+- 发言人名解析要走「群成员表 → `wdb.get_nickname()` 兜底」两级。只用 `member_names.json`
+  缓存会漏掉非好友/不活跃成员，摘要里显示成一串 `wxid_xxx`。
+- 微信把发送者账号冗余拼在正文前，分隔符是**换行不是空格**（`"wxid_xxx:\n正文"`，全角冒号也见过），
+  必须剥掉，否则每条都显示成「昵称：helei270640: 正文」。
+- `type == "系统消息"` 和 content 为 `[文本]`（解析失败的空占位）要过滤，否则混进撤回提示等噪声。
