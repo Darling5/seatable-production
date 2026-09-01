@@ -282,28 +282,37 @@ def _wx4_pull(wdb, watch, max_hours, bm):
             msgs_raw = [m for m in msgs_raw
                         if (m.get("create_time") or 0) >= now_ms / 1000 - max_hours * 3600]
             msgs_raw.reverse()
-        msgs = []
-        max_seq = last_seq
-        for m in msgs_raw:
-            if m.get("type") != "文本":
-                continue
-            text = (m.get("content") or "").strip()
-            if not text or text.startswith("<") or "sysmsg" in text[:30].lower():
-                continue
-            su = m.get("sender_username") or ""
-            sender = members.get(su) or (su if su else "群友")
-            ts = m.get("create_time") or 0
-            dt = datetime.fromtimestamp(ts) if ts else _now()
-            seq = m.get("sort_seq") or 0
-            msgs.append({"ts": int(ts), "time": dt.strftime("%H:%M"),
-                         "date": dt.strftime("%Y-%m-%d"), "sender": sender,
-                         "text": text[:2000]})
-            if seq > max_seq:
-                max_seq = seq
-        if max_seq > last_seq:
-            bm[key] = {"seq": max_seq, "name": g["name"]}
-        result["groups"].append({
-            "id": key, "name": g["name"], "count": len(msgs), "messages": msgs})
+    msgs = []
+    max_seq = last_seq
+    nick_cache = {}                     # wxid -> 显示名，本次运行缓存
+    for m in msgs_raw:
+        if m.get("type") != "文本":
+            continue
+        text = (m.get("content") or "").strip()
+        if not text or text.startswith("<") or "sysmsg" in text[:30].lower():
+            continue
+        if text == "[文本]":          # 解析失败的空占位，summary 侧同款过滤
+            continue
+        # pull 与 summary 一样要剥掉微信拼在正文前的发送者账号前缀，
+        # 否则每条都读成「昵称: helei270640: 正文」（见 v1.4.4 的同类修复）
+        text = _strip_sender_prefix(text)
+        if not text:
+            continue
+        su = m.get("sender_username") or ""
+        # 走统一的三级解析（别名 > 群成员表 > contact 兜底），与 summary 一致
+        sender = _resolve_sender(wdb, members, su, nick_cache)
+        ts = m.get("create_time") or 0
+        dt = datetime.fromtimestamp(ts) if ts else _now()
+        seq = m.get("sort_seq") or 0
+        msgs.append({"ts": int(ts), "time": dt.strftime("%H:%M"),
+                     "date": dt.strftime("%Y-%m-%d"), "sender": sender,
+                     "text": text[:2000]})
+        if seq > max_seq:
+            max_seq = seq
+    if max_seq > last_seq:
+        bm[key] = {"seq": max_seq, "name": g["name"]}
+    result["groups"].append({
+        "id": key, "name": g["name"], "count": len(msgs), "messages": msgs})
     return result
 
 
