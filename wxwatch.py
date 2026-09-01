@@ -101,7 +101,7 @@ def _append_log(line):
 
 
 def _enqueue_notify(subject, body, level="hot"):
-    """写通知发件箱（AI 会话侧 / 自动化 经 Agent Mail 发送）。"""
+    """写通知发件箱；hot 级别同时直接推送企微（秒级触达），失败不影响发件箱。"""
     box = []
     if os.path.exists(OUTBOX):
         try:
@@ -117,6 +117,19 @@ def _enqueue_notify(subject, body, level="hot"):
     })
     os.makedirs(INTAKE_DIR, exist_ok=True)
     json.dump(box[-200:], open(OUTBOX, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    if level == "hot":
+        try:
+            import wecom_push
+            ok, _ = wecom_push.push_markdown("**%s**\n\n%s" % (subject, body))
+            if ok:
+                box[-1]["sent"] = True
+                box[-1]["sent_via"] = "wecom"
+                box[-1]["sent_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                json.dump(box[-200:], open(OUTBOX, "w", encoding="utf-8"),
+                          ensure_ascii=False, indent=1)
+                _append_log("[wecom] 高危已直推企微：%s" % subject)
+        except Exception as e:
+            _append_log("[wecom] 直推失败（保留发件箱走兜底）：%s" % e)
 
 
 def _group_names(wdb):
