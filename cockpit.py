@@ -1211,8 +1211,12 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
   .lock-card h2{margin:0 0 6px;font-size:19px;color:#1f2937}
   .lock-card p{margin:0 0 20px;font-size:13px;color:#6b7280}
   .lock-role{font-size:13px;font-weight:700;color:#3b5bdb;margin:0 0 6px}
-  .lock-input{width:100%;box-sizing:border-box;padding:12px 14px;font-size:16px;border:1.5px solid #d8dce3;border-radius:11px;outline:none;transition:border-color .15s}
+  .lock-input{width:100%;box-sizing:border-box;padding:12px 14px;font-size:16px;border:1.5px solid #d8dce3;border-radius:11px;outline:none;transition:border-color .15s;-webkit-text-security:disc;text-security:disc}
+  .lock-input.pw-plain{-webkit-text-security:none;text-security:none}
   .lock-input:focus{border-color:#3b5bdb}
+  .lock-eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:none;background:transparent;color:#9aa3af;cursor:pointer;padding:6px;border-radius:8px;display:flex;align-items:center;justify-content:center;line-height:0}
+  .lock-eye:hover{color:#3b5bdb}
+  .lock-eye svg{display:block}
   .lock-btn{margin-top:14px;width:100%;padding:12px;border:none;border-radius:11px;background:#3b5bdb;color:#fff;font-size:15px;font-weight:600;cursor:pointer}
   .lock-btn:active{background:#2f4bc4}
   .lock-err{color:#e03131;font-size:13px;min-height:18px;margin-top:10px;font-weight:600}
@@ -1323,7 +1327,7 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
     <h2>需要访问口令</h2>
     <p>生产 · 项目管理驾驶舱 · 内部业务数据</p>
     <div class="lock-role" id="lockRole"></div>
-    <input class="lock-input" id="lockInput" type="password" placeholder="请输入访问口令" autocomplete="off">
+    <div style="position:relative"><input class="lock-input" id="lockInput" type="text" placeholder="请输入访问口令" autocomplete="off" style="padding-right:48px"><button class="lock-eye" id="lockEye" type="button" tabindex="-1" aria-label="显示或隐藏口令"><svg id="lockEyeIcon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
     <button class="lock-btn" id="lockBtn">解锁查看</button>
     <div class="lock-err" id="lockErr"></div>
     <div class="lock-hint">管理员口令可看全部角色；各角色有独立口令，仅能看自己那一份。口令已 base64 混淆存储，仍非真加密，请勿泄露。</div>
@@ -2511,7 +2515,17 @@ function setupLock(){
     render(MODEL);
   };
   btn.onclick=tryU;
-  inp.addEventListener("keydown",e=>{ if(e.key==="Enter") tryU(); });
+  inp.addEventListener("keydown",e=>{ if(e.key==="Enter" && !e.isComposing && e.keyCode!==229) tryU(); });
+  const eye=document.getElementById("lockEye"), eyeIcon=document.getElementById("lockEyeIcon");
+  if(eye){ eye.onclick=()=>{
+    const p=inp.classList.toggle("pw-plain");
+    if(eyeIcon){
+      eyeIcon.innerHTML = p
+        ? '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>'
+        : '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+    }
+    inp.focus();
+  }; }
   inp.focus();
 }
 window.addEventListener("DOMContentLoaded",()=>{
