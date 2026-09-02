@@ -568,7 +568,8 @@ def cmd_lookup(model, source=None, qty=1):
             o.get("currency") or "", o.get("price"), o.get("price_cny"),
             o.get("fx_src") or ""))
         print("         库存 %s · 生命周期 %s · %s" % (
-            o.get("stock"), o.get("lifecycle"), o.get("url") or ""))
+            o.get("stock") if o.get("stock") is not None else "—",
+            o.get("lifecycle"), o.get("url") or ""))
 
 
 def cmd_compare(model, qty=1):

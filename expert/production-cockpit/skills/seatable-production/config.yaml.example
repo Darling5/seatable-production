@@ -97,13 +97,19 @@ market:
     digikey:
       client_id: ""
       client_secret: ""
+      api_version: v4        # v4=Product Information API（2026 起默认，App 订阅它）；
+                             # v3=旧 Product Search API（App 订阅的若是 Search API 才用）
       sandbox: false         # true = 连沙盒（数据是假的，仅供联调）
       site: CN               # 站点：CN/US/HK…
-      language: zh
+      language: zh           # v4 自动映射 zhs（简体）；v3 用 zh
       currency: CNY          # 请求报价币种（默认人民币）
       ship_to: CN
     mouser:
       api_key: ""
+# 订阅判别（2026-09-02 实测）：App 状态 Approved ≠ 万事大吉。
+# 得捷一个 App 可订阅多个 API 产品（Barcode/OrderStatus/ProductInformation V4/Quote/...），
+# 代码调的端点必须在订阅列表里，否则 401 "You are not subscribed to this API"。
+# V4 keyword 端点信息最全（价+库存+生命周期中文），productdetails 不返回真实库存，勿用。
 
 # ── 微信情报（可选）────────────────────────────────
 # 引擎A（微信4.x，推荐）：保持微信PC版登录，直接只读本地加密库，无需任何工具。
