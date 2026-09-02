@@ -624,11 +624,15 @@ python market.py sync [--dry-run] [--limit N] [--force]   # 按节奏批量拉�
 贸泽**有效命中 0 条**。正确用法是**选型阶段查新料号**（`lookup`/`compare` 打价、查库存、查生命周期），
 国产 BOM 的行情巡检仍以人工录入与立创商城为主 —— 别让用户误以为接上就万事大吉。
 
-**得捷「未订阅 API」的判别**：令牌能正常拿到（HTTP 200）但所有 `/Search/v3/*` 一律 401 且
-`ErrorDetails` 为 `You are not subscribed to this API` —— 这不是令牌过期，
-是 App 没在 developer.digikey.com → My Apps → **Subscribe to API Product** 订阅
-（注意选 Production 而非 Sandbox）。代码已内置识别 `_dk_subscription_hint()`，
-会直接给出指引且**不重试**（重试纯浪费配额）。
+**得捷 V4 vs v3（2026-09-02 实战定案）**：App 状态 Approved ≠ 能调通 —— **代码调的端点
+必须在 App 的订阅列表里**（My Apps 页右侧 APIs 列表）。实测用户的 App 订阅的是
+ProductInformation V4（非 Search v3），调 v3 一律 401 "not subscribed"，改调 V4 后秒通。
+默认用 **V4 keyword 端点** `POST /products/v4/search/keyword`（价 + 库存 + 中文生命周期
+全有）；**别用 productdetails 端点**——2-legged 下库存恒 0。语言码差异：v3 用 `zh`，V4 用
+`zhs`（config 写 zh 会自动映射）。判别仍保留 `_dk_subscription_hint()`：令牌 200 但查询
+401 "not subscribed" = 端点不在订阅列表，给出指引且不重试。`api_version: v3` 可切回旧端点。
+前缀变体命中：查 `2SK3541` 会命中 `2SK3541T2L`（T2L 是包装编码），desc 加 `[近似命中→...]`
+前缀，不会误报精确匹配。
 
 **凭证纪律**：得捷/贸泽凭证只存本地 `config.yaml` 的 `market.api_keys`
 （已被 `.gitignore` 排除）。报错与日志里**一律脱敏**（只显示前 4 位），

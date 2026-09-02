@@ -46,7 +46,7 @@ LIFECYCLE_UNK = "未知"
 _EOL_KEYS = ("obsolete", "eol", "end of life", "discontinued", "停产", "已停产", "停止生产")
 _NRND_KEYS = ("nrnd", "not recommended", "not for new design", "last time buy", "ltb",
               "不推荐", "不建议使用")
-_OK_KEYS = ("active", "new product", "在产", "量产", "正常")
+_OK_KEYS = ("active", "new product", "在产", "在售", "量产", "正常")
 
 
 # ------------------------------------------------------------------ 配置
@@ -210,15 +210,24 @@ def _blank_offer(source_key, source_cn, mpn, error=""):
 
 # ------------------------------------------------------------------ 得捷 DigiKey
 class DigiKeySupplier(object):
-    """DigiKey API v3：OAuth2 client_credentials + Search/v3/Products/{mpn}。
+    """DigiKey API：OAuth2 client_credentials，默认 Product Information **V4**，
+    可配置回退 Search v3。
 
-    文档要点（已实测核对）：
+    文档要点（2026-09-02 实测核对）：
       - 令牌：POST https://api.digikey.com/v1/oauth2/token
               grant_type=client_credentials&client_id=..&client_secret=..（表单）
-      - 查询：GET  https://api.digikey.com/Search/v3/Products/{mpn}
-      - 必带头：X-DIGIKEY-Client-Id / Authorization: Bearer / X-DIGIKEY-Customer-Id: 0
-      - locale 头决定币种与站点，本项目默认 CN/CN/zh/CNY（人民币）
+              生产与沙箱共用同一令牌端点路径（host 不同），令牌有效期约 10 分钟
+      - V4 查询（App 需订阅 Product Information API V4）：
+              POST /products/v4/search/keyword   body {"Keywords": mpn, "Limit": N}
+              返回 Products[]：UnitPrice / QuantityAvailable / ProductStatus.Status
+              （中文语言下直接给“在售/停产”）/ Discontinued / EndOfLife / ProductUrl
+              注意：productdetails 端点**不返回真实库存**（2-legged 下恒 0），用 keyword
+      - v3 查询（App 订阅的是旧 Product Search API 时用）：
+              GET /Search/v3/Products/{mpn}
+      - 必带头：X-DIGIKEY-Client-Id / Authorization: Bearer
+      - locale 头决定币种与站点，本项目默认 CN/CNY；语言码差异：v3 用 zh，v4 用 zhs（简体）
       - 沙盒：sandbox-api.digikey.com（数据为假，仅供联调）
+      - 订阅判别：令牌 200 但查询 401 “not subscribed” = App 没订阅对应 API 产品
     """
     key = "digikey"
     name_cn = "得捷"
@@ -230,8 +239,13 @@ class DigiKeySupplier(object):
         self.sandbox = bool(self.cfg.get("sandbox"))
         self.base = ("https://sandbox-api.digikey.com" if self.sandbox
                      else "https://api.digikey.com")
+        self.api_version = str(self.cfg.get("api_version") or "v4").lower()
         self.site = (self.cfg.get("site") or "CN")
-        self.language = (self.cfg.get("language") or "zh")
+        lang = (self.cfg.get("language") or "zh")
+        # 语言码差异：v3 用 zh，V4 用 zhs/zht（简/繁）。容忍旧配置写 zh。
+        if self.api_version == "v4" and lang.lower() == "zh":
+            lang = "zhs"
+        self.language = lang
         self.currency = (self.cfg.get("currency") or "CNY")
         self.ship_to = (self.cfg.get("ship_to") or "CN")
 
@@ -296,22 +310,140 @@ class DigiKeySupplier(object):
         if not self.configured():
             off["error"] = "未配置凭证（config.yaml market.api_keys.digikey）"
             return off
+        fn = self._lookup_v4 if self.api_version == "v4" else self._lookup_v3
+        return fn(mpn, qty)
+
+    def _headers(self, tk):
+        h = {
+            "X-DIGIKEY-Client-Id": self.client_id,
+            "Authorization": "Bearer " + tk,
+            "X-DIGIKEY-Locale-Site": self.site,
+            "X-DIGIKEY-Locale-Language": self.language,
+            "X-DIGIKEY-Locale-Currency": self.currency,
+            "Accept": "application/json",
+        }
+        if self.api_version == "v3":
+            h["X-DIGIKEY-Customer-Id"] = "0"
+            h["X-DIGIKEY-Locale-ShipToCountry"] = self.ship_to
+        return h
+
+    def _drop_token(self):
+        try:
+            if os.path.exists(TOKEN_CACHE):
+                c = json.load(open(TOKEN_CACHE, "r", encoding="utf-8"))
+                c.pop("digikey", None)
+                json.dump(c, open(TOKEN_CACHE, "w", encoding="utf-8"))
+        except Exception:
+            pass
+
+    def _request(self, method, path, tk, json_body=None, params=None):
+        """发一次查询。返回 (response, error)。401 时清令牌缓存由调用方重取。"""
+        import requests
+        try:
+            r = requests.request(method, self.base + path, headers=self._headers(tk),
+                                 json=json_body, params=params, timeout=DEFAULT_TIMEOUT)
+            if r.status_code == 401:
+                sub = _dk_subscription_hint(r.text)
+                if sub:
+                    return None, sub
+                self._drop_token()
+            return r, ""
+        except Exception as e:
+            return None, "查询异常：%s" % e
+
+    def _lookup_v4(self, mpn, qty=1):
+        """Product Information API V4 keyword 搜索（实测信息最全：价/库存/生命周期）。"""
+        off = _blank_offer(self.key, self.name_cn, mpn)
+        tk, err = self._token()
+        if not tk:
+            off["error"] = err
+            return off
+        r, err = self._request("POST", "/products/v4/search/keyword", tk,
+                               json_body={"Keywords": mpn, "Limit": 10})
+        if r is None:
+            off["error"] = err
+            return off
+        if r.status_code == 401:
+            # 令牌过期：重取一次再试
+            tk2, err2 = self._token()
+            if not tk2:
+                off["error"] = "鉴权失败（401）且刷新令牌失败：%s" % err2
+                return off
+            r, err = self._request("POST", "/products/v4/search/keyword", tk2,
+                                   json_body={"Keywords": mpn, "Limit": 10})
+            if r is None:
+                off["error"] = err
+                return off
+        if r.status_code != 200:
+            off["error"] = "查询失败 HTTP %s：%s" % (r.status_code, r.text[:180])
+            return off
+        d = r.json() or {}
+        prods = d.get("Products") or []
+        if not prods:
+            off["error"] = "得捷无此型号"
+            return off
+        # 精确匹配优先（MPN 忽略大小写）；其次「前缀变体」—— 2SK3541 → 2SK3541T2L
+        # （T2L 是包装编码，选型场景就该命中它）；同一 MPN 多个包装变体（TR/CT/Digi-Reel）
+        # 挑库存最大的那条 —— 卷带变体库存常为 0，剪切带才有货，挑错就把库存显示成 0
+        want = str(mpn).strip().lower()
+        cands = [p for p in prods
+                 if str(p.get("ManufacturerProductNumber") or "").strip().lower() == want]
+        exact = bool(cands)
+        if not cands:
+            cands = [p for p in prods
+                     if str(p.get("ManufacturerProductNumber") or "")
+                     .strip().lower().startswith(want)]
+        if not cands and (d.get("ExactMatches") or 0) > 0:
+            cands = prods[:1]
+        if not cands:
+            near = "、".join(str(p.get("ManufacturerProductNumber") or "") for p in prods[:3])
+            off["error"] = "得捷无此精确型号（最近似：%s）" % near
+            return off
+        pick = max(cands, key=lambda p: _int(p.get("QuantityAvailable")) or 0)
+        off = self._to_offer_v4(pick, mpn, qty)
+        if not exact and (off.get("mpn") or "").lower() != want:
+            # 前缀变体命中：如实提示实际型号，避免误当精确匹配
+            off["desc"] = ("[近似命中→%s] %s" % (off.get("mpn"), off.get("desc") or "")).strip()
+        return off
+
+    def _to_offer_v4(self, p, mpn, qty):
+        off = _blank_offer(self.key, self.name_cn, mpn)
+        price = _float(p.get("UnitPrice"))      # keyword 端点为 1 片单价（剪切带档）
+        cur = ((p.get("SearchLocaleUsed") or {}).get("Currency")
+               or ((p.get("SearchLocale") or {}).get("Currency")) or self.currency)
+        cny, rate, src = to_cny(price, cur)
+        status = ""
+        if isinstance(p.get("ProductStatus"), dict):
+            status = p["ProductStatus"].get("Status") or ""
+        lc = _map_lifecycle(status)
+        if p.get("Discontinued") or p.get("EndOfLife"):
+            lc = LIFECYCLE_BAD
+        off.update({
+            "ok": True,
+            "mpn": p.get("ManufacturerProductNumber") or mpn,
+            "manufacturer": ((p.get("Manufacturer") or {}).get("Name") or ""),
+            "desc": ((p.get("Description") or {}).get("ProductDescription") or ""),
+            "price": price, "currency": cur, "price_cny": cny,
+            "fx_rate": rate, "fx_src": src,
+            "stock": _int(p.get("QuantityAvailable")),
+            "lead_time": (p.get("ManufacturerLeadWeeks") or ""),
+            "lifecycle": lc,
+            "url": p.get("ProductUrl") or "",
+            "datasheet": p.get("DatasheetUrl") or "",
+            "qty": 1,
+            "error": "",
+        })
+        return off
+
+    def _lookup_v3(self, mpn, qty=1):
+        off = _blank_offer(self.key, self.name_cn, mpn)
         tk, err = self._token()
         if not tk:
             off["error"] = err
             return off
         try:
             import requests
-            headers = {
-                "X-DIGIKEY-Client-Id": self.client_id,
-                "Authorization": "Bearer " + tk,
-                "X-DIGIKEY-Customer-Id": "0",
-                "X-DIGIKEY-Locale-Site": self.site,
-                "X-DIGIKEY-Locale-Language": self.language,
-                "X-DIGIKEY-Locale-Currency": self.currency,
-                "X-DIGIKEY-Locale-ShipToCountry": self.ship_to,
-                "Accept": "application/json",
-            }
+            headers = self._headers(tk)
             r = requests.get("%s/Search/v3/Products/%s" % (self.base, mpn),
                              headers=headers, timeout=DEFAULT_TIMEOUT)
             if r.status_code == 404:
@@ -324,13 +456,7 @@ class DigiKeySupplier(object):
                     off["error"] = sub
                     return off
                 # 令牌可能过期：清缓存后重试一次
-                try:
-                    if os.path.exists(TOKEN_CACHE):
-                        c = json.load(open(TOKEN_CACHE, "r", encoding="utf-8"))
-                        c.pop("digikey", None)
-                        json.dump(c, open(TOKEN_CACHE, "w", encoding="utf-8"))
-                except Exception:
-                    pass
+                self._drop_token()
                 tk2, err2 = self._token()
                 if not tk2:
                     off["error"] = "鉴权失败（401）且刷新令牌失败：%s" % err2
@@ -581,9 +707,9 @@ def cmd_doctor(live=False, probe_mpn=None):
             print("  %-6s ✗ 未配置 —— 在 config.yaml 的 market.api_keys.%s 填写" % (cn, key))
             continue
         if key == "digikey":
-            shown = "client_id=%s secret=%s site=%s/%s" % (
+            shown = "client_id=%s secret=%s %s %s/%s" % (
                 _mask(inst.client_id), _mask(inst.client_secret),
-                inst.site, inst.currency)
+                inst.api_version, inst.site, inst.currency)
         else:
             shown = "api_key=%s" % _mask(inst.api_key)
         print("  %-6s ✓ 已配置（%s）" % (cn, shown))

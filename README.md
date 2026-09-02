@@ -306,6 +306,7 @@ market:
     digikey:             # 得捷：developer.digikey.com 注册应用
       client_id: ""
       client_secret: ""
+      api_version: v4    # 默认 v4（Product Information API，App 需订阅它）
       site: CN           # 站点/币种/语种，决定了报价币种
       currency: CNY
     mouser:              # 贸泽：My Account → APIs → Search API Key
@@ -313,6 +314,12 @@ market:
 ```
 
 从 GitHub clone 的人**自己去官网申请**，仓库里只有 `config.yaml.example` 的空占位符。
+
+> **得捷订阅坑（2026-09-02 实测）**：App 状态 Approved ≠ 能调通。一个 App 可订阅多个
+> API 产品（Barcode / OrderStatus / **ProductInformation V4** / Quote / Reference APIs），
+> **代码调的端点必须在你 App 的订阅列表里**，否则 401 "You are not subscribed to this API"。
+> 本项目默认调 **V4 keyword 端点**（`/products/v4/search/keyword`，价 + 库存 + 中文生命周期
+> 一应俱全）；如果你的 App 订阅的是旧 Search API，把 `api_version` 改成 `v3`。
 
 **自适应节奏**（省 API 配额的核心）：按「库存电子料数量」自动选复查间隔，逐型号比对上次快照日期，未到期直接跳过——
 
