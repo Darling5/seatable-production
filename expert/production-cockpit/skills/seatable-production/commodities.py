@@ -293,6 +293,58 @@ def _recalc_pct(rows):
 
 
 # ------------------------------------------------------------------ 命令
+def _spot_adapter():
+    """现货数据源适配器（ABS/PC/PS 这类没有免费 API 的品种走这里）。
+
+    目前**没有**任何可用的免费现货源，所以内置表是空的——这是有意的，
+    不编造数据比假装能查更重要。将来拿到付费授权（生意社/卓创/中塑在线/
+    同花顺 iFinD），只要在这里注册一个 `{key: fn}` 的取价函数，
+    `fetch` 就会自动带上这些品种，CSV 结构与展示层完全不用动。
+
+    config.yaml 里 `commodities.spot_source: ifind` 只是**声明**，
+    真正生效需要在下表注册同名实现，否则 fetch 会明确告诉你「未实现」而不是静默跳过。
+    """
+    return {}
+
+
+def _fetch_spot(keys, rows, today):
+    """走现货适配器补录人工品种。返回 (写入数, 提示行列表)。"""
+    cfg = _cfg()
+    want = cfg.get("spot_source")
+    manual = [k for k in (keys or list(BY_KEY)) if not BY_KEY.get(k, {}).get("auto")]
+    if not manual:
+        return 0, []
+    adapter = _spot_adapter()
+    if not want:
+        return 0, ["   · %s 无免费公开现货源，用 `raw add %s --price <单价>` 人工录入"
+                   % (BY_KEY[k]["name"], k) for k in manual]
+    fn = adapter.get(str(want).strip().lower())
+    if not fn:
+        return 0, ["   · 已配置 spot_source=%s，但尚未实现该适配器（见 _spot_adapter）" % want]
+    wrote, notes = 0, []
+    for k in manual:
+        try:
+            got = fn(k, BY_KEY[k]) or {}
+        except Exception as e:
+            notes.append("   · %s 现货源取价异常：%s" % (BY_KEY[k]["name"], str(e)[:60]))
+            continue
+        price = got.get("price")
+        if not price:
+            notes.append("   · %s 现货源未返回价格" % BY_KEY[k]["name"])
+            continue
+        prev = _prev_price(BY_KEY[k]["name"], BASIS_MANUAL, rows)
+        pct = _pct(price, prev)
+        rows.append({"日期": got.get("date") or today, "原料": BY_KEY[k]["name"],
+                     "类别": BY_KEY[k]["cat"], "单价": price, "单位": BY_KEY[k]["unit"],
+                     "涨跌幅": "" if pct is None else pct, "口径": BASIS_MANUAL,
+                     "来源": str(want), "备注": got.get("note") or BY_KEY[k]["desc"]})
+        wrote += 1
+        notes.append("   ✓ %-8s %10s %-8s %s" % (
+            BY_KEY[k]["name"], _fmt_num(price), BY_KEY[k]["unit"],
+            "" if pct is None else "%+.2f%%" % pct))
+    return wrote, notes
+
+
 def cmd_fetch(dry_run=False, keys=None):
     targets = [k for k in (keys or list(BY_KEY)) if BY_KEY.get(k, {}).get("auto")]
     print("原料行情拉取 · %d 个品种（新浪期货连续合约，人民币）" % len(targets))
@@ -330,8 +382,17 @@ def cmd_fetch(dry_run=False, keys=None):
         if pct is not None and abs(pct) >= _alert_threshold():
             alerts.append("%s %+.2f%%（%s→%s %s）" % (
                 meta["name"], pct, _fmt_num(prev), _fmt_num(price), meta["unit"]))
+
+    # 现货品种（ABS/PC/PS）：有适配器就自动补，没有就明确提示人工录入，绝不静默跳过
+    spot_wrote, spot_notes = _fetch_spot(keys, rows, today)
+    wrote += spot_wrote
+
     _write_csv(HIST_PATH, HIST_COLS, rows)
     print("\n" + "-" * 62)
+    if spot_notes:
+        print("现货品种（无免费公开源）：")
+        for n in spot_notes:
+            print(n)
     print("写入 %d 条 · 失败 %d 条 · 数据文件 data/原料行情记录.csv" % (wrote, failed))
     if alerts:
         print("\n[!] 波动超阈值（%.1f%%）%d 项：" % (_alert_threshold(), len(alerts)))
