@@ -71,6 +71,40 @@ partdb:
   url: ""                # 如 http://localhost:8080/api
   token: ""              # PartDB API Token
 
+# ── 物料行情监控（可选）────────────────────────────
+market:
+  alert_threshold: 10        # 涨跌预警阈值（%）
+  check_day: Monday          # 人工复查日（提示用）
+  channels: [立创商城, 华秋商城, 原厂公告]
+  currency: CNY              # 展示与折算币种，默认人民币 ¥
+  # 自适应复查节奏：按「库存电子料数量」自动选间隔，省 API 配额。
+  #   ≤100 种 → 每 7 天（每周） · 101~300 种 → 每 15 天（半月） · >300 种 → 每 30 天（每月）
+  # 数量取 data/partdb_snapshot.json 的 part_count；写死数字（如 cadence: 7）则不自适应。
+  cadence: auto
+  # cadence_tiers: [[100, 7], [300, 15], [9999999, 30]]
+  # 汇率兜底：联网取实时汇率失败时用（1 单位外币 = ? 人民币）
+  # fx:
+  #   static: {USD: 7.10, EUR: 7.80, HKD: 0.92}
+  #
+  # 代理商官方 API 凭证（**只读查价用**）。
+  # ⚠️ 凭证属于你个人或你的团队，请自行去官网申请后填写，**不要提交到公开仓库**。
+  #    本文件只给空占位符；真实值填进 config.yaml（已被 .gitignore 排除）。
+  #    · 得捷 DigiKey：developer.digikey.com 注册应用 → 拿 Client ID / Secret
+  #      （OAuth2 client_credentials，本项目自动取令牌并缓存，只调查询接口，不碰下单）
+  #    · 贸泽 Mouser：mouser.com → My Account → APIs → 申请 Search API Key（UUID）
+  #    配额参考：得捷约 1000 次/天，贸泽按账号；贸泽一次可查 10 个型号，代码已自动分批。
+  api_keys:
+    digikey:
+      client_id: ""
+      client_secret: ""
+      sandbox: false         # true = 连沙盒（数据是假的，仅供联调）
+      site: CN               # 站点：CN/US/HK…
+      language: zh
+      currency: CNY          # 请求报价币种（默认人民币）
+      ship_to: CN
+    mouser:
+      api_key: ""
+
 # ── 微信情报（可选）────────────────────────────────
 # 引擎A（微信4.x，推荐）：保持微信PC版登录，直接只读本地加密库，无需任何工具。
 #   依赖：pip install cryptography
