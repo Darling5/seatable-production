@@ -53,6 +53,13 @@ def _num(v):
         return 0.0
     if isinstance(v, (int, float)):
         return float(v)
+    if isinstance(v, list):
+        # 多选/链接列：逐个尝试，取第一个能转成数字的值
+        for x in v:
+            n = _num(x)
+            if n:
+                return n
+        return 0.0
     s = str(v).replace("¥", "").replace(",", "").replace(" ", "").strip()
     if s == "":
         return 0.0
@@ -62,10 +69,46 @@ def _num(v):
         return 0.0
 
 
+def _text(v):
+    """SeaTable 云端直连时，链接列/多选列返回 list（或 dict）；
+    本地 CSV 是字符串。统一压平成可显示、可做字典键的字符串。"""
+    if v is None:
+        return ""
+    if isinstance(v, list):
+        return "/".join(t for t in (_text(x) for x in v) if t)
+    if isinstance(v, dict):
+        return str(v.get("name") or v.get("text") or v.get("display_value") or "")
+    return str(v).strip()
+
+
+def _norm_rows(rows):
+    """把云端返回的 list/dict 单元格统一压平为标量，下游按本地 CSV 习惯处理。"""
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        out.append({k: (_text(v) if isinstance(v, (list, dict)) else v)
+                    for k, v in row.items()})
+    return out
+
+
+class _NormAdapter:
+    """归一化代理：list_rows 结果经过 _norm_rows；其余方法原样透传。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def list_rows(self, name, *args, **kwargs):
+        return _norm_rows(self._inner.list_rows(name, *args, **kwargs))
+
+    def __getattr__(self, item):
+        return getattr(self._inner, item)
+
+
 def _date(v):
     if not v:
         return None
-    s = str(v).strip()
+    s = _text(v)
     for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
         try:
             return datetime.strptime(s, fmt).date()
@@ -77,7 +120,7 @@ def _date(v):
 def _supplier(row):
     for c in SUPPLIER_COLS:
         if row.get(c):
-            return str(row[c]).strip()
+            return _text(row[c]) or "未知"
     return "未知"
 
 
@@ -111,6 +154,89 @@ def _load_sync_meta():
             return json.load(f)
     except Exception:
         return None
+
+
+def _read_local_csv(name):
+    """读 data/ 下的本地专用 CSV（monitor/情报数据，不受云端同步影响）。"""
+    import csv as _csv
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", name)
+    if not os.path.exists(p):
+        return []
+    try:
+        with open(p, "r", encoding="utf-8-sig", newline="") as f:
+            return [dict(r) for r in _csv.DictReader(f)]
+    except Exception:
+        return []
+
+
+def _load_market():
+    """物料行情模型（market.py 维护：监控清单 + 行情快照）。无数据返回 None。"""
+    watch = _read_local_csv("物料监控清单.csv")
+    hist = _read_local_csv("物料行情记录.csv")
+    if not watch and not hist:
+        return None
+    try:
+        th = float((load_config().get("market") or {}).get("alert_threshold") or 10)
+    except Exception:
+        th = 10.0
+    bad_lc = {"NRND", "EOL停产", "停产", "EOL"}
+    by_model = {}
+    for s in hist:
+        by_model.setdefault(s.get("物料型号", ""), []).append(s)
+    rows, alerts = [], []
+    for w in watch:
+        if str(w.get("启用", "1")) in ("0", "否", "false"):
+            continue
+        m = w.get("物料型号", "")
+        snaps = by_model.get(m, [])
+        latest = snaps[-1] if snaps else None
+        priced = [s for s in snaps if _num(s.get("单价")) > 0]
+        buy = _num(w.get("上次采购价"))
+        cur = _num((latest or {}).get("单价"))
+        vs_buy = round((cur - buy) / buy * 100, 1) if (buy > 0 and cur > 0) else None
+        lc = (latest or {}).get("生命周期", "") or "未知"
+        chg = (latest or {}).get("涨跌幅", "")
+        if lc in bad_lc:
+            alerts.append({"type": "停产", "model": m,
+                           "text": "生命周期 %s —— 确认替代料 / 最后采购窗口" % lc})
+        if vs_buy is not None and abs(vs_buy) >= th:
+            alerts.append({"type": "涨跌", "model": m,
+                           "text": "现价较上次采购价 %+.1f%%（阈值 ±%.0f%%）" % (vs_buy, th)})
+        try:
+            if chg not in ("", None) and abs(float(chg)) >= th:
+                alerts.append({"type": "涨跌", "model": m,
+                               "text": "最新快照环比 %+.1f%%" % float(chg)})
+        except (TypeError, ValueError):
+            pass
+        rows.append({
+            "model": m, "category": w.get("类别", ""),
+            "buy": w.get("上次采购价", ""), "buy_date": w.get("上次采购日期", ""),
+            "price": (latest or {}).get("单价", ""), "channel": (latest or {}).get("渠道", ""),
+            "date": (latest or {}).get("日期", ""), "lifecycle": lc, "vs_buy": vs_buy,
+            "chg": chg, "hist": [_num(s.get("单价")) for s in priced][-12:],
+        })
+    return {"rows": rows, "alerts": alerts, "threshold": th,
+            "watch_count": len(watch), "hist_count": len(hist)}
+
+
+def _load_wechat(today):
+    """微信情报模型（wechat_intake.py 维护：data/微信事件.csv）。无数据返回 None。"""
+    events = _read_local_csv("微信事件.csv")
+    if not events:
+        return None
+    pending = [e for e in events if e.get("状态") == "待确认"]
+    week_ago = (today - timedelta(days=7)).isoformat()
+    by_cat = {}
+    for e in events:
+        d = str(e.get("日期", ""))[:10]
+        if d >= week_ago and e.get("分类"):
+            by_cat[e["分类"]] = by_cat.get(e["分类"], 0) + 1
+    recent = events[-40:][::-1]
+    return {
+        "pending": pending, "pending_count": len(pending),
+        "today_count": sum(1 for e in events if str(e.get("日期", ""))[:10] == today.isoformat()),
+        "by_cat": by_cat, "recent": recent,
+    }
 
 
 def _overlap_days(a_start, a_end, b_start, b_end):
@@ -303,7 +429,7 @@ def compute(adapter, today):
             if amt <= 0:
                 continue
             category_cost[cat] += amt
-            pn = row.get("生产计划", "")
+            pn = _text(row.get("生产计划", "")) or "(未关联)"
             plan_cost[pn] = plan_cost.get(pn, 0.0) + amt
             sup = "PCB打板" if table == "PCB下单记录" else _supplier(row)
             # 准时率（仅对有交期与到货/逾期信息的单计入）
@@ -598,6 +724,20 @@ def compute(adapter, today):
             actions.append({"pri": "中", "cat": "resource",
                             "text": f"资源闲置：{nm} 本周暂无任务分配，可承接新单或支援瓶颈工序"})
 
+    # ── 微信情报 & 物料行情（本地专用数据，wechat_intake.py / market.py 维护）──
+    wechat_model = _load_wechat(today)
+    market_model = _load_market()
+    if wechat_model and wechat_model["pending_count"]:
+        cats = "/".join(sorted({e.get("分类", "") for e in wechat_model["pending"] if e.get("分类")}))
+        actions.insert(0, {"pri": "高", "cat": "wechat",
+                           "text": "微信情报待确认 %d 条（%s）：在「微信情报台」核对后写入业务表"
+                                   % (wechat_model["pending_count"], cats or "未分类")})
+    if market_model:
+        for a in market_model["alerts"]:
+            actions.insert(0 if a["type"] == "停产" else len(actions),
+                           {"pri": "高" if a["type"] == "停产" else "中", "cat": "market",
+                            "text": "物料行情：%s %s" % (a["model"], a["text"])})
+
     if not actions:
         actions.append({"pri": "提示", "cat": "boss", "text": "暂无紧急事项，保持当前节奏即可 ✔"})
 
@@ -681,6 +821,10 @@ def compute(adapter, today):
         "resource": res_model,
         # PartDB 实时（partdb_sync.py 生成；缺失则 None，渲染时回退）
         "partdb": _load_partdb(),
+        # 微信情报（wechat_intake.py 维护 data/微信事件.csv；缺失则 None）
+        "wechat": wechat_model,
+        # 物料行情（market.py 维护 监控清单+行情快照；缺失则 None）
+        "market": market_model,
     }
 
 
@@ -702,6 +846,8 @@ ICONS = {
     "IC_GANT": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 6h10"/><path d="M4 12h14"/><path d="M4 18h7"/></svg>',
     "IC_ANALYZE": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>',
     "IC_SYNC": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-8-5"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 8 5"/><path d="M21 4v5h-5"/><path d="M3 20v-5h5"/></svg>',
+    "IC_MKT": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 6-8"/><path d="M14 6h4v4"/><path d="M3 21h18"/></svg>',
+    "IC_CHAT": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-5 4V6a1 1 0 0 1 1-1z"/><path d="M8 10h8"/><path d="M8 13h5"/></svg>',
     "IC_BOX": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/><path d="M12 11v10"/></svg>',
     "IC_SHARE": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l7.8 4"/><path d="M15.4 6.5l-7.8 4"/></svg>',
     "IC_KEY": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M14 7a4 4 0 1 0-3.6 5.9L7 17v3H4v-3l5.4-5.4A4 4 0 0 0 14 7zm-1.6 2.4a2 2 0 1 1-2.8 2.8 2 2 0 0 1 2.8-2.8z"/></svg>',
@@ -1065,8 +1211,12 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
   .lock-card h2{margin:0 0 6px;font-size:19px;color:#1f2937}
   .lock-card p{margin:0 0 20px;font-size:13px;color:#6b7280}
   .lock-role{font-size:13px;font-weight:700;color:#3b5bdb;margin:0 0 6px}
-  .lock-input{width:100%;box-sizing:border-box;padding:12px 14px;font-size:16px;border:1.5px solid #d8dce3;border-radius:11px;outline:none;transition:border-color .15s}
+  .lock-input{width:100%;box-sizing:border-box;padding:12px 14px;font-size:16px;border:1.5px solid #d8dce3;border-radius:11px;outline:none;transition:border-color .15s;-webkit-text-security:disc;text-security:disc}
+  .lock-input.pw-plain{-webkit-text-security:none;text-security:none}
   .lock-input:focus{border-color:#3b5bdb}
+  .lock-eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:none;background:transparent;color:#9aa3af;cursor:pointer;padding:6px;border-radius:8px;display:flex;align-items:center;justify-content:center;line-height:0}
+  .lock-eye:hover{color:#3b5bdb}
+  .lock-eye svg{display:block}
   .lock-btn{margin-top:14px;width:100%;padding:12px;border:none;border-radius:11px;background:#3b5bdb;color:#fff;font-size:15px;font-weight:600;cursor:pointer}
   .lock-btn:active{background:#2f4bc4}
   .lock-err{color:#e03131;font-size:13px;min-height:18px;margin-top:10px;font-weight:600}
@@ -1177,7 +1327,7 @@ if(t==='dark'){r.classList.add('theme-dark');}else if(t==='light'){r.classList.a
     <h2>需要访问口令</h2>
     <p>生产 · 项目管理驾驶舱 · 内部业务数据</p>
     <div class="lock-role" id="lockRole"></div>
-    <input class="lock-input" id="lockInput" type="password" placeholder="请输入访问口令" autocomplete="off">
+    <div style="position:relative"><input class="lock-input" id="lockInput" type="text" placeholder="请输入访问口令" autocomplete="off" style="padding-right:48px"><button class="lock-eye" id="lockEye" type="button" tabindex="-1" aria-label="显示或隐藏口令"><svg id="lockEyeIcon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
     <button class="lock-btn" id="lockBtn">解锁查看</button>
     <div class="lock-err" id="lockErr"></div>
     <div class="lock-hint">管理员口令可看全部角色；各角色有独立口令，仅能看自己那一份。口令已 base64 混淆存储，仍非真加密，请勿泄露。</div>
@@ -1414,16 +1564,16 @@ function renderGantt(g, todayStr){
 const ROLES={
   // 老板：只看数据，不含任何写入口（新建/补录均为项目经理职责，不出现在老板页）
   // core = 首屏核心模块（≤4）；more = 折叠进「更多分析」的二级模块
-  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv","Rs"],
-              core:["K","A","PW"],                more:["Rs","G","T","C","Q","P","Sup","Inv"], actions:null},
+  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv","Rs","WXC","Mkt"],
+              core:["K","A","PW"],                more:["WXC","Mkt","Rs","G","T","C","Q","P","Sup","Inv"], actions:null},
   // 仓库/采购：非项目经理，不开放「新建」写入口（仅看数据 + 各自作业动作）
   warehouse: {name:"仓库",     sections:["K","A","Inv","P"],
               core:["K","A","Inv"],               more:["P"],                     actions:["warehouse"]},
-  purchase:  {name:"采购",     sections:["K","A","Sup"],
-              core:["K","A","Sup"],               more:[],                        actions:["purchase"]},
+  purchase:  {name:"采购",     sections:["K","A","Sup","Mkt"],
+              core:["K","A","Sup"],               more:["Mkt"],                   actions:["purchase","market"]},
   // 生产经理：项目经理职责 → 新建生产计划（写「生产计划」表）+ 资源排程
-  production:{name:"生产经理", sections:["K","A","WZ","Rs","G","T","Q","P","Inv"],
-              core:["K","A","Rs","WZ"],           more:["P","G","T","Q","Inv"],   actions:["production","warehouse","delivery","resource"]},
+  production:{name:"生产经理", sections:["K","A","WZ","Rs","G","T","Q","P","Inv","WXC"],
+              core:["K","A","Rs","WZ"],           more:["WXC","P","G","T","Q","Inv"],   actions:["production","warehouse","delivery","resource","wechat"]},
   // 销售：立项职责 → 新建项目（写「项目」表，对应销售立项表单）
   sales:     {name:"销售",     sections:["K","A","PW","WZ","G"],
               core:["K","A","PW","WZ"],           more:["G"],                     actions:["sales","delivery"]},
@@ -1460,6 +1610,7 @@ function supplierAvg(s){
 }
 function buildKPIs(m, role){
   const k=m.kpi, t=m.time, q=m.quality, s=m.supply, pd=m.partdb, res=m.resource;
+  const wx=m.wechat, mk=m.market;
   const b=pd?pd.bom:null;
   const M={
     projects:{l:"项目总数",v:fmt(k.projects),s:`进行中 ${k.active} · 计划 ${k.planned} · 完成 ${k.done}`,c:"",ac:"blue"},
@@ -1488,6 +1639,12 @@ function buildKPIs(m, role){
     res_conflict:{l:"排程冲突",v:fmt(res?res.conflicts.length:0),s:"同人同期多任务",
       c:(res&&res.conflicts.length)?"neg":"",ac:"red"},
     labor_cost:{l:"人工成本",v:res?yuan(res.labor_cost):"—",s:"投入量 × 日费率",c:"",ac:"amber"},
+    market_alert:{l:"物料行情预警",v:fmt(mk?mk.alerts.length:0),
+      s:mk?`停产物料 ${mk.alerts.filter(a=>a.type==="停产").length} · 阈值±${mk.threshold}%`:"未启用行情监控",
+      c:(mk&&mk.alerts.length)?"neg":"",ac:"red"},
+    wechat_pending:{l:"微信待确认",v:fmt(wx?wx.pending_count:0),
+      s:wx?`今日新事件 ${wx.today_count}`:"未接入微信情报",
+      c:(wx&&wx.pending_count)?"neg":"",ac:"amber"},
   };
   // 首屏只留最多 4 张「一眼定生死」的指标，其余下沉到「更多分析 → 更多指标」
   const sets={
@@ -1499,11 +1656,13 @@ function buildKPIs(m, role){
   };
   const setsMore={
     boss:      ["projects","cost","ontime_rate","unit_cost","exec_rate","wip"]
-                 .concat(res?["res_load","labor_cost"]:[]),
+                 .concat(res?["res_load","labor_cost"]:[])
+                 .concat(mk?["market_alert"]:[]).concat(wx?["wechat_pending"]:[]),
     warehouse: [],
-    purchase:  [],
+    purchase:  [].concat(mk?["market_alert"]:[]),
     production:["smt_yield","repair_rate","cycle"]
-                 .concat(res?["res_load","res_conflict","labor_cost"]:[]),
+                 .concat(res?["res_load","res_conflict","labor_cost"]:[])
+                 .concat(wx?["wechat_pending"]:[]),
     sales:     ["projects","wip","exec_rate"],
   };
   const pick=(arr)=>(arr||[]).map(key=>M[key]).filter(Boolean);
@@ -1561,7 +1720,7 @@ function render(m){
   // 每类事项按「候选模块」顺序找第一个当前角色可见的模块，保证「去处理」按钮总有落点
   const CAT_SEC={purchase:["Sup","Inv","P"],warehouse:["Inv","P","Sup"],
     delivery:["PW","P","G"],production:["P","G","T","PW"],sales:["PW","G"],boss:["PW","G"],
-    resource:["Rs","G","T"]};
+    resource:["Rs","G","T"],wechat:["WXC"],market:["Mkt"]};
   const visible=(kk)=>CORE.includes(kk)||MORE.includes(kk);
   const urgent=acts.filter(a=>a.pri==="高"||a.pri==="中").slice(0,6);
   const todayBody=urgent.length
@@ -1910,6 +2069,81 @@ function render(m){
     put("Rs", secRs);
   }
 
+  /* 物料行情（价格涨跌 + 停产/EOL）：market.py 维护的本地监控数据 */
+  const mk=m.market;
+  if(mk){
+    const lcBadge=(lc)=>{
+      const bad=(lc==="EOL停产"||lc==="停产");
+      const cls=(lc==="在产")?"tag-green":(lc==="NRND"?"tag-amber":(bad?"tag-red":""));
+      return cls?`<span class="pill ${cls}">${lc}</span>`:`<span class="pill">${lc||"未知"}</span>`;};
+    const spark=(pts)=>{
+      if(!pts||pts.length<2) return `<span class="rs-sub">待跟踪</span>`;
+      const mn=Math.min(...pts), mx=Math.max(...pts), rg=(mx-mn)||1;
+      const P=pts.map((v,i)=>`${(i/(pts.length-1)*86+2).toFixed(1)},${(23-(v-mn)/rg*20).toFixed(1)}`).join(" ");
+      const up=pts[pts.length-1]>=pts[0];
+      return `<svg width="90" height="26" viewBox="0 0 90 26"><polyline points="${P}" fill="none" stroke="${up?'#e03131':'#2f9e44'}" stroke-width="1.6"/></svg>`;};
+    const mktRows=mk.rows.length?mk.rows.map(r=>{
+      const vb=r.vs_buy;
+      const vbTxt=(vb!=null)
+        ?`<span style="color:${vb>=0?'var(--red)':'var(--green)'};font-weight:600">${vb>=0?"+":""}${vb.toFixed(1)}%</span>`
+        :"—";
+      return `<tr><td><b>${r.model}</b><div class="rs-sub">${r.category}</div></td>
+        <td class="num">${r.buy?("¥"+r.buy):"—"}<div class="rs-sub">${r.buy_date||""}</div></td>
+        <td class="num">${r.price?("¥"+r.price):"—"}<div class="rs-sub">${r.channel||""}</div></td>
+        <td class="num">${vbTxt}<div class="rs-sub">${r.chg?("环比 "+r.chg+"%"):""}</div></td>
+        <td>${lcBadge(r.lifecycle)}</td>
+        <td>${spark(r.hist)}</td>
+        <td class="rs-sub">${r.date||"待首检"}</td></tr>`;}).join("")
+      :`<tr><td colspan="7" class="empty">监控清单为空。在技能目录运行 python market.py watchlist 从采购记录生成；行情由每周一自动检查回填。</td></tr>`;
+    const mktAlerts=mk.alerts.length?`<div class="card" style="margin-top:14px">
+      <h3>行情告警（${mk.alerts.length}）</h3><div class="actions">${mk.alerts.map(a=>
+        `<div class="act"><span class="pri ${a.type==='停产'?'pri-高':'pri-中'}">${a.type}</span>
+         <span class="tx"><b>${a.model}</b>：${a.text}</span></div>`).join("")}</div>
+      <div class="note">停产/NRND = 高优（确认替代料、锁定最后采购窗口）；涨跌超阈值 = 中优（评估提前备货或换源）。</div></div>`:"";
+    const secMkt=el(`<section id="sec-Mkt" class="sec"><div class="sec-title">__IC_MKT__ 物料行情（价格涨跌 · 停产/EOL）</div>
+      <div class="card"><div style="overflow-x:auto"><table data-paginate="12"><thead><tr>
+        <th>物料型号</th><th>上次采购价</th><th>最新行情</th><th>vs采购价</th><th>生命周期</th><th>趋势</th><th>行情日期</th>
+      </tr></thead><tbody>${mktRows}</tbody></table></div>
+      <div class="note">红=涨价、绿=降价（采购成本视角）。vs采购价偏差 ≥ ±${mk.threshold}% 或生命周期 NRND/EOL停产 触发告警。行情数据由每周一自动检查（立创/华秋等渠道现货价 + 原厂生命周期公告），也可随时对我说「查一下 XX 的行情」即时补录。</div></div>
+      ${mktAlerts}</section>`);
+    put("Mkt", secMkt);
+  }
+
+  /* 微信情报台：wechat_intake.py 维护的 data/微信事件.csv */
+  const wx=m.wechat;
+  if(wx){
+    const catPill=(c)=>`<span class="pill ${c==='停产通知'?'tag-red':((c==='价格变动'||c==='交期变更')?'tag-amber':'')}">${c||"其他"}</span>`;
+    const pendRows=wx.pending.length?wx.pending.map(e=>`<tr>
+        <td><b>${e["事件编号"]||""}</b><div class="rs-sub">${e["日期"]||""} ${e["时间"]||""}</div></td>
+        <td>${(e["来源群"]||"").slice(0,16)}<div class="rs-sub">${(e["发送人"]||"").slice(0,12)}</div></td>
+        <td>${catPill(e["分类"])}</td>
+        <td style="max-width:340px">${(e["原文"]||"").slice(0,110)}</td>
+        <td><span class="pill tag-red">待确认</span></td></tr>`).join("")
+      :`<tr><td colspan="5" class="empty">暂无待确认事件。每日 9 点自动拉取微信监控群新消息并提取事件；「示例」开头的演示数据可运行 python wechat_intake.py clear-demo 清除。</td></tr>`;
+    const catStat=Object.entries(wx.by_cat||{}).map(([c,n])=>
+      `<span class="pill" style="margin-right:6px">${c} ${n}</span>`).join("")
+      ||`<span class="rs-sub">近 7 天无事件</span>`;
+    const recRows=(wx.recent||[]).slice(0,10).map(e=>`<tr>
+        <td class="rs-sub">${e["日期"]||""}</td><td>${(e["来源群"]||"").slice(0,14)}</td>
+        <td>${catPill(e["分类"])}</td>
+        <td style="max-width:300px">${(e["原文"]||"").slice(0,80)}</td>
+        <td class="rs-sub">${e["状态"]||""}${e["写入结果"]?` · ${(e["写入结果"]||"").slice(0,28)}`:""}</td></tr>`).join("");
+    const secWXC=el(`<section id="sec-WXC" class="sec"><div class="sec-title">__IC_CHAT__ 微信情报台（今日 ${wx.today_count} 条 · 待确认 ${wx.pending_count} 条）</div>
+      <div class="card"><h3>待确认事件（确认前不写业务表）</h3>
+        <div style="overflow-x:auto"><table data-paginate="8"><thead><tr>
+          <th>编号/时间</th><th>来源</th><th>分类</th><th>原文</th><th>状态</th>
+        </tr></thead><tbody>${pendRows}</tbody></table></div>
+        <div class="note">确认方式：在 WorkBuddy 对话里说「确认 WXxxx-001」或「忽略 WXxxx-001」，专家执行 wechat_intake.py approve/ignore——approve 直接写 SeaTable 云端业务表（交期变更/价格变动等自动落到对应行），结果回填留痕。来源：win-wechat-summary 本地微信库（只读，零封号风险）。</div></div>
+      <div class="card" style="margin-top:14px"><h3>近 7 天事件分布</h3>${catStat}
+        <div class="note" style="margin-top:8px">分类：交期变更 / 价格变动 / 停产通知 / 催货 / 进度 / 库存 / 其他。</div></div>
+      ${recRows?`<div class="card" style="margin-top:14px"><h3>最近事件（留痕）</h3>
+        <div style="overflow-x:auto"><table data-paginate="10"><thead><tr>
+          <th>日期</th><th>群</th><th>分类</th><th>原文</th><th>状态/结果</th>
+        </tr></thead><tbody>${recRows}</tbody></table></div></div>`:""}
+    </section>`);
+    put("WXC", secWXC);
+  }
+
   /* 新建向导：销售→「项目」表（销售立项表单）；其余角色→「生产计划」表（生产经理建计划）。
      老板/仓库/采购页不显示（已在 ROLES 裁剪：WZ 不在其 sections 中） */
   const _isSales = (role==="sales");
@@ -1958,6 +2192,7 @@ function render(m){
   /* 快速导航条：首屏模块直接跳；折叠区模块点击时自动展开再跳 */
   const SEC_NAV={K:['核心指标','__IC_GRID__'],KM:['更多指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],
     WZ:['新建项目','__IC_ADD__'],BF:['补录数据','__IC_EDIT__'],Rs:['资源负载','__IC_USER__'],
+    WXC:['微信情报','__IC_CHAT__'],Mkt:['物料行情','__IC_MKT__'],
     PW:['项目&在制','__IC_PROJ__'],G:['甘特图','__IC_GANT__'],T:['工时','__IC_TIME__'],
     C:['成本','__IC_COST__'],Q:['质量','__IC_QUAL__'],P:['产线流转','__IC_PROJ__'],
     Sup:['供应链','__IC_SUP__'],Inv:['库存预警','__IC_BOX__']};
@@ -2280,7 +2515,17 @@ function setupLock(){
     render(MODEL);
   };
   btn.onclick=tryU;
-  inp.addEventListener("keydown",e=>{ if(e.key==="Enter") tryU(); });
+  inp.addEventListener("keydown",e=>{ if(e.key==="Enter" && !e.isComposing && e.keyCode!==229) tryU(); });
+  const eye=document.getElementById("lockEye"), eyeIcon=document.getElementById("lockEyeIcon");
+  if(eye){ eye.onclick=()=>{
+    const p=inp.classList.toggle("pw-plain");
+    if(eyeIcon){
+      eyeIcon.innerHTML = p
+        ? '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>'
+        : '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+    }
+    inp.focus();
+  }; }
   inp.focus();
 }
 window.addEventListener("DOMContentLoaded",()=>{
@@ -2333,7 +2578,7 @@ def main():
     adapter = get_adapter(load_config(cfg_path) if cfg_path else None)
     adapter.auth()
     today = datetime.now(_TZ).date()
-    model = compute(adapter, today)
+    model = compute(_NormAdapter(adapter), today)
     html = HTML.replace("__MODEL__", json.dumps(model, ensure_ascii=False))
     for k, v in ICONS.items():
         html = html.replace("__" + k + "__", v)

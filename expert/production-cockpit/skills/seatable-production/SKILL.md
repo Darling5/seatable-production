@@ -1,4 +1,4 @@
-# 生产交付协同助手（解耦版 v1.1.1）
+# 生产交付协同助手（解耦版 v1.4.5）
 
 **描述**：通过自然语言控制「生产」业务数据的增删改查，覆盖项目立项 → 生产计划 → 采购 → 生产执行 → 库存核对 → 发货 → 维修售后的完整周期，并支持工时/成本/质量/供应链四维分析。
 
@@ -8,10 +8,62 @@
 - ✅ **凭证不再写死**。旧的 `API Token` / `Base UUID` / PartDB 内网 IP 已全部移除，统一由 `config.yaml` 配置；分发技能不再泄露你的账号。
 - ✅ **SeaTable / PartDB 改为可选**。有自己 Base 的，在 `config.yaml` 填 token/uuid 即切换；有 PartDB 的，开启 `partdb.enabled` 才有缺料检查。
 - ✅ **所有数据操作走 `op.py` 这一统一入口**，模型与用户都不碰具体存储和凭证。
+- ✅ **新增微信情报反哺（v1.3.3 双引擎）**：引擎A 直读微信 4.x 本地加密库（`wxengine/wa_db.py`，主密钥从运行中的 Weixin.exe 内存提取，无需第三方工具）；引擎B 回退 `merge_all.db`（微信3.x + win-wechat-summary）。拉监控群消息 → 事件待确认 → 确认后写入 SeaTable 业务表，全程留痕。
+- ✅ **新增第二大脑三件套（v1.4.0）**：`wxwatch.py` 实时哨兵（1 秒轮询监听，关键词命中自动登记事件+通知）、`alerts.py` 异常检测引擎（A1-A7 七条规则，让数据主动喊）、`daily_brief.py` 站会摘要（四路数据合成一段话）+ `notify.py` 发件箱（Agent Mail 触达）。
+- ✅ **新增物料行情监控**：从采购记录自动生成物料监控清单，保存价格快照，计算涨跌幅并跟踪 NRND/EOL 停产状态，驾驶舱展示趋势和告警。
 
 ---
 
 ## 版本历史
+
+### v1.4.5（2026-09-01）
+- 🎯 **监控群选择工作流固化**：监控范围属于用户偏好配置，**必须先列候选让用户勾选，禁止默认替用户决定**。标准流程：`python wechat_intake.py groups` 列出全部群（380 个，缓存到 `groups.json`）→ 按业务关键词（生产/贴片/组装/供应商/客户）筛出候选 → 用户确认后写入 `config.yaml` 的 `wechat.watch_groups` → `python wxwatch.py once` 验证。
+- 📈 **监控范围 11 → 31 群**（用户确认后扩容）：生产/组装/贴片（禾平加工、铁牛灌胶、SMT浪博者、佳顺达）、IC/物料/供应商（华宸外壳×2、华之安、三安×2、世鼎 FR8018HD、如般微、思睿通、御芯微）、客户/项目（郑州云峰×2、动联×2、上海汇撰、成都海得、金诚）。客户群入列后，超期项目（A2 规则）与群聊催货情报（高危关键词）形成交叉印证。
+- 📌 群名含空格/特殊字符（如 `人员定位  郑州云峰-振道`、`振道&世鼎 FR8018HD项目`）直接原样写入 YAML 列表即可，匹配逻辑同时支持群名精确匹配、群 ID 匹配和子串包含。
+
+### v1.4.4（2026-09-01）
+- 📝 **新增 `wechat_intake.py summary` 群聊摘要**：按时间窗口（默认 24h）回溯任意群的完整对话，输出统计 → 发言分布 → **需关注**（交期/价格/供应/决策/风险五类关键词自动标注）→ 正序对话记录（含图片/文件等非文本标注）。支持 `--group`（部分匹配、可多次/逗号分隔）、`--hours`、`--limit`、`--all`、`--json`、`--out`。这是 4.x 上替代已失效的 WeChat-Summary 类 GUI 工具的能力。
+- 🐞 摘要人名解析补兜底：只用 `member_names.json` 会漏掉非好友/不活跃成员（显示成 `wxid_xxx`），改为「群成员表 → `wdb.get_nickname()`」两级解析（实测把 `wxid_5671886676312` 解成 `Ling玲玲`）。
+- 🐞 剥掉微信正文里冗余的发送者账号前缀。分隔符是**换行不是空格**（`wxid_xxx:\n正文`），全角冒号也兼容。
+- 🐞 过滤 `type=="系统消息"` 与 content 为 `[文本]` 的解析失败空占位（此前会把撤回提示当消息输出）。
+- 📖 §11.1 新增微信命令速查；README 补充 venv 依赖陷阱与「WeChat-Summary 类工具在 4.x 上必死」的结论。
+
+### v1.4.3（2026-09-01）
+- 🐞 **修复 `update_row` 静默失败（高危）**：`PUT /rows/` 传**列 key** 时 SeaTable 返回 `{"success":true}` + HTTP 200，但数据**不落库**，不报错、不提示。实测必须用**中文列名**才生效。此前 `_row_with_keys()` 把列名全部转成 key，导致**所有 update 操作实际都没写进去**，而调用方看到的是 OK——已改回直接传列名，`_row_with_keys` 保留但 update 不再调用。
+- 📌 附带确认：`append_row` 同样按中文列名匹配（传 key 会 `inserted_row_count=0`）；`batch-update-rows` 端点在本 Base 返回 404，不可用。
+- 🧭 新增 §12「在自定义脚本里调 adapter」踩坑记录（auth 时机、选项 ID 读取、long-text 列解析）。
+
+### v1.4.1（2026-09-01）
+- 🐞 **修复 `update_row` 静默失败（高危）**：`PUT /rows/` 传**列 key** 时 SeaTable 返回 `{"success":true}` + HTTP 200，但数据**不落库**，不报错、不提示。实测必须用**中文列名**才生效。此前 `_row_with_keys()` 把列名全部转成 key，导致**所有 update 操作实际都没写进去**，而调用方看到的是 OK——已改回直接传列名，`_row_with_keys` 保留但 update 不再调用。
+- 📌 附带确认：`append_row` 同样按中文列名匹配（传 key 会 `inserted_row_count=0`）；`batch-update-rows` 端点在本 Base 返回 404，不可用。
+- 🧭 新增 §12「在自定义脚本里调 adapter」踩坑记录（auth 时机、选项 ID 读取、long-text 列解析）。
+
+### v1.4.0（2026-09-01）
+- 🌉 **`wxwatch.py` 实时哨兵（耳朵）**：基于 wxengine Listener（1 秒轮询 + WAL 增量 + 自动发现新会话）监听 11 个监控群；关键词两级——高危（交期/延期/涨价/停产/缺货/催货等 24 个，命中即写通知发件箱）与一般（价格/库存/到货/进度等，仅登记事件）；`watch` 常驻 / `once --minutes N` 低频扫描 / `status` 状态。事件自动进「微信事件.csv」待确认，不自动写业务表。
+- 🧠 **`alerts.py` 异常检测引擎（神经）**：A1 交期逼近（≤7天未完货）/ A2 项目已超期 / A3 逾期应收 / A4 采购在途 / A5 计划停滞（超2周）/ A6 行情异动（±10%）与 NRND/EOL / A7 数据体检（空状态、#VALUE!）。输出 `data/alerts.json` 供摘要和自动化消费。首跑即挖出 13 个高危（5 个超期项目 + 8 笔逾期应收，最长 133 天）。
+- 📋 **`daily_brief.py` 站会摘要（嘴巴）**：合成异常+微信情报待确认+业务面（在产/待收/昨日发货）+行情异动，输出完整版 `daily_brief.md` 和 200 字精简版 `daily_brief_short.md`，`--push` 写发件箱。
+- 📬 **`notify.py` 发件箱（进程解耦触达）**：生产者只写 `data/wechat_intake/notify_outbox.json`；AI 会话 `dump` 取件 → agent-mail 发送 → `mark-sent`。实测全链路闭环（邮件已发出）。
+- 🤖 **每日 9 点自动化扩到 8 步**：同步 → 异常检测 → 站会摘要 → 驾驶舱 → 发布 → 邮件通知 → 播报（含高/中异常数）→ 口令清单。
+- 🚀 **微信情报引擎A：微信 4.x 直读**（`wxengine/wa_db.py`，vendored 自 PyPI `wechatauto-replica`）：直接解密 `xwechat_files/db_storage` 的 SQLCipher4 加密库，主密钥从运行中 Weixin.exe 进程内存提取（Config.Cipher 扫描 + cfg 派生 + HMAC 强校验），微信保持登录即可，彻底告别只支持 3.x 的 win-wechat-summary（PyWxDump 系已因律师函全面下架）。主密钥缓存到 `data/wechat_intake/master_key.json`（已 gitignore），解密库缓存 + WAL 增量合并，二次拉取仅 ~8 秒。
+- 🔄 **`wechat_intake.py` 双引擎 pull**：A（4.x 直读，主路径）失败自动回退 B（merge_all.db）；书签按 sort_seq 毫秒续读；群成员昵称解析（1 万人映射，非好友也显示昵称）；`config.yaml` 新增 `wechat.db_dir` 配置项。
+- 🐎 **实测**：379 群首拉 860 条（28 分钟，含全量解密 855MB），配置 `watch_groups` 盯 11 个生产群后日常拉取秒级完成。
+
+### v1.3.2（2026-08-31）
+- 🚀 **新增 `publish.py` 驾驶舱发布器**：把本地生成的驾驶舱 HTML 覆盖发布到 WorkBuddy 团队资料库，固定链接 + 服务端协作者权限（owner/editor/reader）+ 自动版本历史。首次 `--setup --space-id <空间ID>` 发布并回写 `config.yaml` 的 `publish` 段（space_id/node_id/url，已 gitignore），日常一条 `publish.py --token-stdin` 覆盖更新、链接不变；`--status` 查看目标；发布失败保留本地 HTML 兜底（退出码 2，自动化可识别为"仅发布失败"）。
+- 🤖 **每日 9 点 / 每周一 9:20 两条自动化追加发布步骤**：驾驶舱重建后先取 open platform token（connect_open_platform, skill_id=library）再覆盖上传，播报含发布结果与固定链接。
+- 🏗️ **混合架构定型**：生成在本地（凭证/数据源都在本机，快、可离线重跑），分发在库内（一个 URL 永远最新）；本地 HTML 降级为构建产物 + 断网兜底。
+
+### v1.3.1（2026-08-31）
+- 📐 **生产计划「一产品一行」规则**：同一合同的多个生产产品必须逐行拆开建生产计划，禁止堆在一行（此前遗漏的规则，正式固化进文档）。
+- 💰 **交期以收款起算规则**：合同交货日期一律以收到款项之日起算，未收款前「交货时间」留空，收款当日回填并重算倒计时。
+- 🐞 **工序列表勘误**：默认工序实为 `09测试`/`11 出货`（旧文档误写为 13/14），已在生产计划规则中修正。
+
+### v1.3.0（2026-08-29）
+- 🚀 **新增 `deploy.py` 一键全自动部署**：用户资料给到任意一层（CLI 参数 / 环境变量 / `deploy.yaml` 资料文件 / 交互问答），自动完成装依赖 → 生成/更新配置 → 连通验证 → 云端数据同步 → 物料清单 → 驾驶舱 → 体检 → 部署报告。幂等可重跑，`--demo` 零资料 60 秒跑通全链路，`--dry-run` 只预览。
+- 🔒 **`deploy.yaml`（含凭证）加入 `.gitignore`**，只提交 `deploy.yaml.example` 模板。
+- 🐞 **修复云端直连驾驶舱崩溃**：SeaTable 链接/多选列返回 list/dict 导致 `unhashable type: 'list'`；`cockpit.py` 新增 `_NormAdapter` 归一化代理与 `_text()`/`_num()` 压平逻辑（backend=seatable 直连场景，本地 CSV 模式不受影响）。
+- 🐞 **修复 `seatable_sync.py` 配置解析**：`server: "https://..."` 带引号写法导致 `unknown url type`，解析时统一剥引号。
+- 📦 新增 `requirements.txt`（requests / pyyaml）。
 
 ### v1.1.0（2026-08-08）
 - 🌙 **主题三态切换**：新增「主题」按钮（自动 / 暗色 / 亮色循环），覆盖系统设置，选择持久化到 localStorage，支持 `<head>` 无闪烁加载。
@@ -29,22 +81,40 @@
 
 ## 0. 后端与配置（必读）
 
-技能根目录下的 `config.yaml` 决定用哪种后端（没有就自动用 local 默认）：
+技能根目录下的 `config.yaml` 决定用哪种业务后端；采购库存源可单独选择 PartDB 或客户导出的 Excel/CSV：
+
+> 新用户可跳过手改配置：把资料（SeaTable Token / PartDB / 微信 DB 路径）交给
+> `python deploy.py`（支持 CLI 参数、环境变量、`deploy.yaml` 资料文件、交互问答四种给法，
+> `--demo` 零资料演示），它会自动生成配置并完成整套部署，详见仓库 README「一键全自动部署」。
 
 ```yaml
 backend: local          # local（默认）| seatable
 local:
-  data_dir: data      # 数据文件夹，默认技能目录下的 data/，自动创建
-  format: csv          # csv = 每表一个 .csv；Excel 由 op.py export-excel 生成
+  data_dir: data
+  format: csv
 seatable:
-  api_token: ""       # 你的 SeaTable API Token（留空→退回 local）
+  api_token: ""
   server: "https://cloud.seatable.cn"
-  base_uuid: ""       # 你的 Base 的 dtable_uuid（留空→退回 local）
-partdb:
-  enabled: false      # 没 PartDB 就保持 false，会自动跳过缺料检查
+  base_uuid: ""
+inventory:
+  source: file          # partdb | api | mcp | file
+  file:
+    path: "pipeline/customer/inventory/库存导出.xlsx"
+    stock_is_confirmed: false
+partdb:                 # 仅 source=partdb 时需要
+  enabled: false
   url: ""
   token: ""
 ```
+
+首次部署采购流水线：
+
+```bash
+python3 pipeline/run.py init      # 创建被 Git 忽略的客户资料目录与 rules.local.yaml
+python3 pipeline/run.py preflight # 校验公司抬头、BOM、库存源与可选 SeaTable
+```
+
+`pipeline/customer/`、`pipeline/rules.local.yaml`、`config.yaml` 都是客户私有资料，已被 Git 忽略。已有金蝶、简道云、禅道或自建 ERP 时，优先配置 `inventory.source: api` 或 `mcp`；无法在线连接时再用 Excel/CSV 文件源兜底。
 
 **数据操作一律用 `op.py`**（路径相对于技能目录）：
 
@@ -73,7 +143,7 @@ python3 op.py partdb-search 电容 10        # 仅 PartDB 启用时
 7. **询问 link 列时，必须先 `op.py list` 目标表全部记录，完整列出供用户选择，禁止只描述不列表！**
 8. **一句自然语言涉及多表新增时，必须自动建立所有双向关联**（每对表调一次 `op.py link`）。
 9. **后补字段（标记 📥 的）未提及就留空；每周五下午 2 点 cron 自动提醒填写。**（cron 在 WorkBuddy 自动化里配置，本技能只定义字段清单，见 §8）
-10. **PartDB 未配置（enabled=false）时，涉及缺料/BOM 的场景直接说明「未配置 PartDB，跳过缺料检查」，不要报错或编造库存。**
+10. **库存核对必须配置有效 `inventory.source`；通用库存列默认未确认，未确认库存不得用于生产承诺，人工审核关卡不可跳过。**
 
 ---
 
@@ -156,8 +226,10 @@ python3 op.py partdb-search 电容 10        # 仅 PartDB 启用时
 
 ### 生产计划（新增）
 - **填默认（不问）**：状态=`计划中`、阶段=`库存核对`、立项日期=今天。
-- **必问/提取**：生产产品、数量、关联项目（列近 1 个月项目供选）、工序（列全部工序供多选，13(09测试)/14(10出货) 默认自动加）。
+- **必问/提取**：生产产品、数量、关联项目（列近 1 个月项目供选）、工序（列全部工序供多选，09测试/10出货(11 出货) 默认自动加）。
 - 合同交期：提取「X 个工作日/X 天后/X月X日」，否则问（见 §3）。
+- **⚠️ 一产品一行（2026-08-31 新规）**：同一合同/项目含多个生产产品时，**必须按产品逐行拆开建生产计划**，禁止把多个产品堆在一行（「生产产品」字段不得出现「A ×N；B ×M」多产品并列写法）。每行单独有自己的数量/工序/编号。
+- **⚠️ 交期以收款起算（2026-08-31 新规）**：合同交货日期一律以**收到款项之日**起算（合同普遍注明「收款后 X 日内发货/交货」）。项目「实收」仍为 0 时，「交货时间」**留空不预填**；收款当日回填交货时间并重算倒计时。
 - 其余（生产详情/版本说明）用户不说就跳过。
 
 ### 项目（新增）
@@ -382,16 +454,23 @@ python3 op.py stage 演示定位终端 --to 量产 --yes       # 跳步 → 必�
 
 ---
 
-## 10. 缺料检查（PartDB，可选）
+## 10. 采购库存核对
 
-仅当 `config.yaml` 中 `partdb.enabled: true` 且填了 url/token 时启用：
+采购流水线通过 `pipeline/run.py audit <run_id>` 使用 `inventory.source` 生成库存审核表：
+
+- `partdb`：逐个命中料号读取 PartDB 批次，按确认日期区分可承诺与未确认库存。
+- `api`：通用 REST/HTTP 连接器，支持鉴权、GET/POST、分页、响应路径与嵌套字段映射；可接金蝶、简道云、禅道及客户自建 ERP。
+- `mcp`：通过 MCP stdio 调用客户现有库存工具，读取 structuredContent 或文本 JSON，并按统一字段映射。
+- `file`：读取 Excel/CSV，作为离线系统或 API 暂不可用时的兜底。
+- API/MCP/文件中的通用“库存”默认归入未确认库存；只有 `stock_is_confirmed: true` 或显式“已确认库存”字段才会抵扣缺口。
+- 审核人员必须在 `库存审核表.csv` 复核库存、供应商、采购数量与单价，并将采购行标为“已批准”。
+
+PartDB 专用的查询命令仍可选用：
 
 ```bash
-python3 op.py partdb-search <关键词> [数量]     # 查物料库存
-python3 op.py partdb-shortage <项目ID> <生产数量>  # 复现 PartDB 前端「生产N套→缺料」
+python3 op.py partdb-search <关键词> [数量]
+python3 op.py partdb-shortage <项目ID> <生产数量>
 ```
-
-**未配置 PartDB 时**：涉及缺料的场景直接说明「未配置 PartDB，跳过缺料检查」，不要编造库存或报错。
 
 **价格导入（采购合同 PDF → PartDB）**：批量把合同型号与含税单价录入 PartDB 的流程——PDF 文本提取、全量零件结构化匹配、Hydra API 写价的关键坑（派生字段 / PATCH 内容类型 / MOQ 唯一约束）、以及新建料号的 IPN 命名约定——见 `references/price-import.md`。
 
@@ -414,3 +493,125 @@ python3 op.py partdb-shortage <项目ID> <生产数量>  # 复现 PartDB 前端�
 | `op.py partdb-search / partdb-shortage` | PartDB 缺料（可选） |
 
 > 完整业务流程速查、BOM 成本算法、分析公式明细见 `references/` 目录。
+
+### 11.1 微信情报命令速查（`wechat_intake.py`）
+
+先跑 `doctor` 自检（**用装了 cryptography 的那个解释器**，缺包会报误导性的「引擎A不可用」）。
+自检通过的标准是出现 `数据库：19 个，已解密 19 个`，而不是任何 `[!]`。
+
+```bash
+python wechat_intake.py doctor      # 体检：找库 / 提密钥 / 给指引
+python wechat_intake.py groups      # 列全部群聊（挑监控对象）
+python wechat_intake.py pull        # 增量事件流：书签续读 -> 微信事件.csv 待确认
+python wechat_intake.py summary     # 群聊摘要：按时间窗口回溯对话（见下）
+python wechat_intake.py list --status 待确认
+python wechat_intake.py approve <编号>   # 确认事件并写 SeaTable 云端
+```
+
+**`summary` 群聊摘要**（替代已失效的 WeChat-Summary 类 GUI 工具）：
+
+```bash
+# 单个/多个群，72 小时窗口
+python wechat_intake.py summary --group "智环未来生产" --hours 72
+python wechat_intake.py summary --group "采购群A,生产群B" --hours 168
+
+# 不指定 --group = config.yaml 的 watch_groups；--all = 全部群
+python wechat_intake.py summary --hours 24
+python wechat_intake.py summary --all --hours 24 --limit 5000
+
+# 写文件 / 输出 JSON（供 AI 直接消费）
+python wechat_intake.py summary --hours 24 --out data/wechat_intake/summary_24h.md
+python wechat_intake.py summary --group "群名" --hours 72 --json --out sum.json
+```
+
+参数：`--group` 可多次指定也可逗号分隔、**支持部分匹配**；`--hours` 时间窗口（默认 24）；
+`--limit` 每群最多扫描条数（默认 2000，触顶会在输出里提示可能截断）；
+`--keep-empty` 保留 0 条消息的群章节（**默认折叠**为末尾一行汇总）。
+
+> **空群折叠**：不给 `--group` 时覆盖全部 `watch_groups`（实测 31 个），其中绝大多数
+> 当天无消息。默认把它们折叠成末尾一行「另有 N 个监控群在该窗口内无消息：…」，
+> 实测 422 行 → 288 行（省 32%）。JSON 输出不受影响，始终包含全部群。
+
+输出结构：时间窗口与统计 → 每群发言分布 → **需关注**（按交期/价格/供应/决策/风险
+五类关键词自动标注，避免人工翻全量）→ 完整对话记录（正序，含图片/文件等非文本类型标注）。
+
+**与 `pull` 的分工**：`pull` 是增量事件流（书签续读、只收文本、进「待确认」队列、可写业务表）；
+`summary` 是一次性回溯（按小时窗口、保留全部消息类型、供人工或 AI 速读）。两者不冲突。
+
+**已踩过的坑（别再改回去）**：
+- 发言人名解析要走「**别名映射 → 群成员表 → `wdb.get_nickname()` 兜底」三级**。
+  别名映射（config.yaml `wechat.sender_aliases`，wxid → 显示名）优先级最高，
+  用于同一人多账号/多昵称的场景（实例：`jixu911: 刘俊良`——其昵称 Dylan-刘，
+  企微互通号却显示刘俊良且从不发言，两个化身靠别名聚合成一个人）。
+  只用 `member_names.json` 缓存会漏掉非好友/不活跃成员，摘要里显示成一串 `wxid_xxx`。
+- 微信把发送者账号冗余拼在正文前，分隔符是**换行不是空格**（`"wxid_xxx:\n正文"`，全角冒号也见过），
+  必须剥掉，否则每条都显示成「昵称：helei270640: 正文」。
+- `type == "系统消息"` 和 content 为 `[文本]`（解析失败的空占位）要过滤，否则混进撤回提示等噪声。
+
+#### 11.1.1 群聊 AI 总结（脚本取数 + AI 提炼）
+
+`summary` 只负责**取数和结构化**，真正的"总结"由 AI（你）完成——**不需要接任何 LLM API，你就是 LLM**。
+完整提示词模板见 `references/wx-ai-summary-prompt.md`，核心要求：
+
+- 输出结构：一句话结论 → 待办事项表（**事项|负责人|提出时间|状态**）→ 决策共识 → 分话题要点 → 风险 → ❓ 悬而未决
+- **待办必须带负责人**，从 @提及、指派语句（「明天一早查一下」）推断
+- **必须单独列出「提问后无人回复 / 被追问仍未闭环」**——这是人工翻聊天最容易漏的，也是这一步最大的价值
+- 消息数 < 5 条直接跳过；超 300 条先分段摘要再合并（map-reduce）
+- 不臆造，每条结论可追溯到原文
+
+参考耗时：全量监控群（31 群）扫 24 小时窗口约 **3 分 20 秒**，每日任务可接受。
+
+长中文正文入队一律用 `notify.py send --body-file <文件>`，**不要用 `--body` 命令行传参**
+（Windows 命令行有长度上限，且引号转义会毁掉内容）。
+
+```bash
+python wechat_intake.py summary --hours 24 --out data/wechat_intake/summary_24h.md
+# → AI 读文件生成 data/wechat_intake/ai_summary_24h.md
+python notify.py send --subject "💬 群聊总结 <日期>" \
+    --body-file data/wechat_intake/ai_summary_24h.md --level info
+```
+
+> 每日 9 点自动化已内置此流程（步骤 4），产物随发件箱一并推企微。
+
+---
+
+## 12. 在自定义脚本里调 adapter（踩坑记录）
+
+`op.py` 内部会自己调 `adapter.auth()`，**但外部脚本不会**。直接 `get_adapter(cfg).list_rows(...)` 会报
+`MissingSchema: Invalid URL 'None/api/v2/dtables/...'`，因为 `self._server` 要等 `auth()` 之后才有值。
+正确写法：
+
+```python
+import sys; sys.path.insert(0, r'<技能目录>')
+from adapters.factory import load_config, get_adapter
+a = get_adapter(load_config(None)); a.auth()      # ← 这行不能少
+rows = a.list_rows('发货清单')                     # 返回 dict 列表，含 __row_id__
+```
+
+**为什么值得自己写脚本**：`op.py list` 是 TSV 输出，`long-text` 列（如「发货内容」）里的换行会把一行拆成多行，
+没法解析出完整记录；需要读/比对整条记录时走 adapter 拿 dict 更可靠。
+
+**single-select / multiple-select**：`list_rows` 返回的是**选项 ID**（如发货清单「类型」的销售=`909350`），
+`op.py meta` 的 `data.options` 又是 `None`。要拿 ID↔中文名映射，从 metadata 直接读：
+
+```python
+a._ensure_meta()
+tbl = next(t for t in a._meta['tables'] if t['name'] == '发货清单')
+opts = {o['id']: o['name'] for c in tbl['columns']
+        if c['type'] == 'single-select' for o in c['data']['options']}
+```
+
+写入时**直接传中文名即可**（adapter 内部会翻译），不要自己查 ID 再传。
+
+**⚠️ 写入后必须读回验证**（这是本次最大的教训）：
+
+```python
+a.update_row("成品采购记录", rid, {"交期（天）": 39})
+# 必须重新读一次确认，不能只看有没有报错
+```
+
+`PUT /rows/` 在传错列标识（列 key 而非中文列名）时会返回 `{"success": true}` 且 HTTP 200，**数据却不落库**——
+`op.py update` 因此会打印 `OK`，让你以为写入成功。凡是走 adapter 的写操作，写完后用新的 adapter 实例
+`list_rows` 读回比对一次；只有读回值等于写入值才算真的成功。
+
+---

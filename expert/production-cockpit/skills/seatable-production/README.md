@@ -10,6 +10,17 @@
 
 **想直接点开玩玩？** → **[交互式使用指南（在线，无需安装）](https://darling5.github.io/seatable-production/usage-guide.html)**
 
+## 为什么跑在 WorkBuddy 上
+
+这个项目完全可以在裸 Windows 上跑，但配合 WorkBuddy 用，有四个别人替代不了的点：
+
+| # | 理由 | 具体表现 |
+|---|---|---|
+| 1 | **技能两级共享** | 用户级（`~/.workbuddy/skills/`，个人私有）和项目级（`<项目>/.workbuddy/skills/`，团队同版本）天然分开，一人维护、全员即时升级，版本不会漂移 |
+| 2 | **团队资料库分发** | 驾驶舱 HTML 发到团队空间就是一个**固定链接**，服务端权限（owner/editor/reader），每日覆盖更新自动留版本历史——同事永远打开的是最新版，不用重新发文件 |
+| 3 | **定时自动化** | 「每日 9 点自动重建部署」「每周一物料行情检查」挂在平台侧，机器开着就能跑：拉云端数据 → 重新生成驾驶舱 → 重新发布到固定链接 → 推送摘要，全自动无人值守 |
+| 4 | **Agent Mail 推送** | 哨兵抓到的异常、站会摘要走发件箱，由 AI 会话经 Agent Mail 真正推送出去；企微群也可以直接推（`wecom_push.py --body-file`）——消息主动找你，不用你盯着看 |
+
 ---
 
 ## 30 秒装好
@@ -52,6 +63,56 @@ python setup.py --local    # 或直接零配置
 ```
 </details>
 
+## 一键全自动部署（deploy.py）
+
+`setup.py` 只负责写配置；**`deploy.py` 把剩下的活全部干完**：装依赖 → 生成/更新配置 → 连通验证 → 拉云端数据 → 物料清单 → 驾驶舱 → 体检 → 部署报告。幂等可重跑，已有配置做「外科手术式」更新（口令、微信、行情段原样保留）。
+
+**你需要做的只有一件事：把资料给到下面任意一层。**
+
+| 资料给到哪层 | 命令 |
+|---|---|
+| 命令行参数 | `python deploy.py --seatable-token XXX --seatable-uuid YYY --partdb-url http://... --partdb-token K` |
+| 环境变量 | `export SEATABLE_TOKEN=... SEATABLE_UUID=...` 后跑 `python deploy.py --yes` |
+| 资料文件（推荐） | 复制 `deploy.yaml.example` 为 `deploy.yaml` 填好 → `python deploy.py --profile deploy.yaml` |
+| 什么都不给 | 终端可交互则逐项问答；加 `--yes` 走本地模式 |
+| 零资料演示 | `python deploy.py --demo`（60 秒全链路跑通，不需要任何账号） |
+
+部署结果长这样：
+
+```text
+步骤    名称              结果
+----------------------------------------------
+S1    环境检测            [OK]  完成   Python 3.13.14
+S2    依赖自装            [OK]  完成   已安装 requests, pyyaml
+S3    生成 config.yaml  [OK]  完成   全新生成配置，backend=seatable
+S4    连通验证            [OK]  完成   SeaTable ✓；PartDB ✓（HTTP 200）
+S5    数据初始化           [OK]  完成   云端业务表已同步到本地 data/；物料监控清单已生成
+S6    驾驶舱生成           [OK]  完成   项目管理驾驶舱.html（145.5 KB）
+S7    开局体检            [OK]  完成   体检完成（BLOCK 项才需要立即处理）
+S8    部署报告            [OK]  完成   已写入 data/deploy-report.md
+```
+
+常用参数：`--dry-run` 只预览不落盘 · `--skip-deps / --skip-sync / --skip-doctor / --no-cockpit` 跳步 · `--yes` 免交互（CI 友好）。
+
+> 🔒 `deploy.yaml` 含凭证，已被 `.gitignore` 排除；`config.yaml` 同理，两者都不会进仓库。
+
+## 发布到团队资料库（publish.py）
+
+本地生成的驾驶舱是给构建用的，**分发**走 WorkBuddy 团队资料库：固定链接、服务端权限（owner/editor/reader）、每日覆盖更新自动留版本历史。
+
+```bash
+python publish.py --setup --space-id <空间ID> --token-stdin   # 首次发布，node_id 回写 config.yaml
+python publish.py --token-stdin                                # 之后每天覆盖更新，链接不变
+python publish.py --status                                     # 查看当前发布目标
+```
+
+- 首次发布前先建团队空间（如「生产交付」），把同事按角色拉为协作者。
+- token 在 WorkBuddy 会话中由 AI 调 `connect_open_platform`（skill_id=library）取得，经 stdin 传入，不落盘。
+- 发布目标存 `config.yaml` 的 `publish` 段（space_id / node_id / url），已 gitignore。
+- 发布失败保留本地 HTML 兜底，退出码 2 可被自动化流程识别为"仅发布失败"。
+
+> 混合架构建议：**生成在本地**（凭证与数据源都在本机，快、可离线重跑），**分发在库内**（一个 URL 永远最新）。不要砍掉本地生成环节。
+
 ---
 
 ## 它到底解决什么问题
@@ -64,6 +125,8 @@ python setup.py --local    # 或直接零配置
 1. **统一读写**——`op.py` 一个入口管业务表，不管后端是本地 CSV 还是 SeaTable 云。
 2. **按角色出网页**——`cockpit.py` 把数据算成 KPI、甘特图、缺料预警，生成**单文件 HTML**，5 个角色各一套视图，可设口令分享给同事。
 3. **采购合同变采购订单**——合同解析 → 标准 BOM 扩量 → PartDB/ERP API/MCP/文件库存源 → 人工审核 → 供应商分组 → 正式采购订单 PDF。
+4. **微信消息变业务情报**——双引擎只读本地微信数据库（4.x 直读加密库 / 3.x 走 merge_all.db），按监控群拉取新消息，提取交期、价格、停产、催货、进度和库存事件，确认后才写回业务表。
+5. **物料行情可追踪**——从采购记录生成物料监控清单，记录渠道价快照、采购价偏差、环比涨跌和 NRND/EOL 生命周期状态，在驾驶舱里集中显示趋势与告警。
 
 ```mermaid
 flowchart LR
@@ -73,7 +136,152 @@ flowchart LR
     C --> E[一键发起 → 写回<br/>先确认再落库]
 ```
 
+### 微信情报与行情监控
+
+新增能力采用“本地专用数据 + 业务表确认写入”的方式，避免每日同步时覆盖监控信息：
+
+```text
+微信 4.x：wxengine/wa_db.py 直读本地加密库（主密钥从进程内存提取）
+微信 3.x：win-wechat-summary 生成 merge_all.db（回退路径）
+        ↓ 只读，不连接微信服务器
+wechat_intake.py pull（引擎A优先，自动回退引擎B）
+        ↓
+微信事件.csv（待确认） → 用户确认 → SeaTable 业务表 + 工作日志
+
+采购记录 → market.py watchlist
+        ↓
+物料监控清单.csv + 物料行情记录.csv
+        ↓
+价格涨跌 / NRND / EOL → 驾驶舱告警
+```
+
+> 个人微信没有开放读取 API。本项目不会连接微信服务器；微信 4.x 用户保持 PC 版登录即可（引擎A 自动从进程内存提取密钥），微信 3.x 用户需在 Windows 本机用 win-wechat-summary 生成 `merge_all.db`。涉及交期、价格、数量、金额或采购下单的微信事件，默认只进入“待确认”，不会自动改业务表。
+
 ---
+
+## 微信情报反哺
+
+**微信 4.x（推荐，零工具依赖）**：保持微信 PC 版登录，安装 `pip install cryptography` 即可。**微信 3.x**：安装运行 [win-wechat-summary](https://github.com/yanyan1115/win-wechat-summary) 生成 `merge_all.db`。配置 `config.yaml`：
+
+> **⚠️ 依赖装在哪个 venv 就用哪个 venv 跑**（`python wechat_intake.py doctor` 自检）。本仓库自带的 `.venv-pipeline` 可能缺 `cryptography`，症状是：
+> ```
+> [warn] 引擎A(wechatauto)加载失败：No module named 'cryptography'
+> [!] 引擎A不可用（微信4.x未登录 / 版本不支持 / 缺 cryptography）
+> ```
+> 这条报错里"微信4.x未登录 / 版本不支持"是**误导项**——真正原因几乎总是当前解释器缺包。修复：
+> ```bash
+> .venv-pipeline/Scripts/python.exe -m pip install cryptography pyyaml
+> ```
+> 自检通过的标准输出是 `数据库：19 个，已解密 19 个` + 群聊数量，而不是任何 `[!]`。
+
+> **⚠️ 微信 4.x 用户不要用 win-wechat-summary / WeChat-Summary 类工具**：这类工具（含网络上的 GUI 版）通过 `psutil.process_iter` 精确匹配进程名 `WeChat.exe` 来检测微信，而微信 4.x 的主程序已改名为 `Weixin.exe`，必然报"未检测到微信进程"。其内置 PyWxDump 偏移表也只支持到 **3.9.12.55**，对 4.x 无解。本项目引擎A 直读 4.x `db_storage` 加密库，是 4.x 唯一可行路径。
+
+```yaml
+wechat:
+  enabled: true
+  db_dir: ""                          # 引擎A：微信4.x数据根目录，留空=自动探测
+  db_path: "C:/.../merge_all.db"      # 引擎B：3.x回退路径，留空=自动搜索
+  watch_groups: [供应商群, 项目群]     # 留空=所有群（群多时首拉很慢）
+  max_hours: 48
+```
+
+**怎么选监控群（重要）**：先列出你的全部群聊，再按业务挑——不要拍脑袋写：
+
+```bash
+python wechat_intake.py groups    # 列出全部群（名称+群ID，缓存到 groups.json）
+```
+
+一个微信群列表动辄几百个，推荐按四类勾选（以本仓库实际 380 群筛选 31 群为例）：
+
+| 类别 | 挑什么 | 价值 |
+|---|---|---|
+| 生产/组装/贴片 | 贴片厂、组装厂、灌胶/加工群 | 工序进度、送料返料情报 |
+| IC/物料/供应商 | 芯片代理、外壳模具、电机马达群 | 价格变动、停产通知、交期变更 |
+| 客户/项目 | 甲方项目群、商务群 | 催货、付款、需求变更——与超期预警交叉印证 |
+| 内部 | 公司内部生产群 | 决策、跨部门协调 |
+
+群名直接原样写进 `watch_groups` 列表即可（含空格、`&`、全角括号都没问题），匹配支持群名精确匹配 / 群 ID / 子串包含三种。改完配置跑一次 `python wxwatch.py once --minutes 60` 验证扫描的群数对不对。
+
+检查数据库并列出群：
+
+```bash
+python wechat_intake.py doctor
+python wechat_intake.py groups
+python wechat_intake.py pull
+```
+
+`pull` 使用 `data/wechat_intake/bookmark.json` 按群记录读取位置，重复执行不会反复拉取同一批消息。AI 提取事件后登记为待确认：
+
+```bash
+python wechat_intake.py add-event \
+  --group 供应商群 --sender 供应商A \
+  --category 价格变动 \
+  --text "FR8018HD 下周报价可能上涨 12%" \
+  --intent '{"op":"log","table":"工作日志","data":{"原话":"FR8018HD 下周报价可能上涨 12%"}}'
+
+python wechat_intake.py list --status 待确认
+python wechat_intake.py approve WX20260821-001
+python wechat_intake.py ignore WX20260821-002
+```
+
+可识别分类：交期变更、价格变动、停产通知、催货、进度、库存、其他。驾驶舱的「微信情报台」展示原文、来源群、分类、待确认状态和最终写入结果。
+
+## 实时哨兵 · 异常检测 · 站会摘要（第二大脑三件套）
+
+数据不再等你看，而是主动找你：
+
+```bash
+# 🌉 耳朵：实时监听（1 秒轮询，监控群命中关键词自动登记事件+写通知发件箱）
+python wxwatch.py watch              # 常驻监听（微信保持登录）
+python wxwatch.py once --minutes 60  # 低频模式：扫描过去 N 分钟（配合定时任务）
+python wxwatch.py status             # 哨兵状态/最近命中
+
+# 🧠 神经：异常检测（超期项目/逾期应收/采购在途/计划停滞/行情异动/数据体检）
+python alerts.py run                 # 跑全部规则 → data/alerts.json
+python alerts.py show                # 查看上次结果
+
+# 📋 嘴巴：站会摘要（合成异常+微信情报+业务面，一段话说完今天要管什么）
+python daily_brief.py --push         # 生成 data/daily_brief.md / _short.md 并写发件箱
+
+# 📬 发件箱（进程解耦：生产者只管写，AI 会话经 agent-mail 发送）
+python notify.py dump                # 取未发送通知（JSON 行）
+python notify.py mark-sent --ids 1,2 # 发送后标记
+```
+
+关键词分两级：**高危**（交期/延期/涨价/停产/缺料/催货，命中即通知）和**一般**（价格/库存/到货/进度等，仅登记事件）。通知走发件箱，由每日 9 点自动化或对话中的 AI 经 Agent Mail 发送。
+
+**异常规则一览**：A1 交期逼近（≤7 天未完货）· A2 项目已超期 · A3 逾期应收（交期过 + 待收>0）· A4 采购在途逐条 · A5 计划停滞（超 2 周无推进）· A6 行情异动（±10%）与 NRND/EOL 停产 · A7 数据体检（空状态/#VALUE! 脏值）。
+
+## 物料行情监控
+
+从 IC、组装料、成品、外壳和 PCBA 采购记录提取型号与历史采购价，生成监控清单：
+
+```bash
+python market.py watchlist
+python market.py watchlist --refresh
+python market.py add FR8018HD --price 3.10 --category IC
+```
+
+每周检查后写入行情快照；没有可靠价格或生命周期来源时填“未知”，不要猜测。NRND/EOL 需要保留来源链接：
+
+```bash
+python market.py snapshot \
+  --model FR8018HD --price 3.50 \
+  --channel 立创商城 --lifecycle 在产 \
+  --source "https://example.com/source"
+
+python market.py report
+python market.py alerts
+```
+
+默认 `market.alert_threshold: 10`：
+
+- 最新价相对上次采购价达到 ±10% 时预警；
+- 最新快照环比达到 ±10% 时预警；
+- `NRND`（不推荐继续使用）和 `EOL停产` 立即预警；
+- 驾驶舱「物料行情」展示采购价、最新行情、偏差、生命周期和内联 SVG 趋势。
+
+数据保存在 `data/物料监控清单.csv` 与 `data/物料行情记录.csv`，均为本地专用文件，不会被 `seatable_sync.py` 覆盖。
 
 ## 三种用法，按需选
 
@@ -141,6 +349,13 @@ seatable-production/
 ├── config.yaml.example   # 配置模板（复制为 config.yaml 后填写）
 ├── op.py                 # 统一数据操作 CLI（模型与用户都只调它）
 ├── cockpit.py            # 驾驶舱网页生成器（单文件 HTML）
+├── wechat_intake.py      # 微信本地库 → 待确认事件 → 业务表（双引擎）
+├── wxengine/wa_db.py     # 微信 4.x 解密引擎（SQLCipher4 直读，主密钥从进程内存提取）
+├── wxwatch.py            # 实时哨兵：监听监控群，关键词命中自动登记事件+通知
+├── alerts.py             # 异常检测引擎：超期/应收/在途/停滞/行情 → data/alerts.json
+├── daily_brief.py        # 站会摘要：异常+微信情报+业务面 合成一段话
+├── notify.py             # 通知发件箱：进程解耦，AI 会话经 agent-mail 发送
+├── market.py             # 物料监控清单 / 价格涨跌 / NRND-EOL
 ├── pipeline/             # 合同 → BOM → 库存审核 → 正式采购订单
 │   ├── inventory_sources.py # PartDB / API / MCP / Excel·CSV 适配器
 │   └── rules.yaml        # 无客户信息的公共采购规则模板
