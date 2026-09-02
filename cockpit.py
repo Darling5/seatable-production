@@ -299,6 +299,42 @@ def _load_commodities(days=None):
             "days": days, "series_count": len(rows)}
 
 
+def _load_wxmatch():
+    """消息↔SeaTable 核对模型（wxmatch.py 维护：data/核对结果.csv）。无数据返回 None。
+
+    四类核对：收款 / 下单 / 客户合同PDF / 供应商合同。
+    铁律：核对引擎只读不写库——高置信项仅生成「预填意图」，人确认后才落 SeaTable。
+    驾驶舱只做展示与指引，不提供任何直接写库按钮。
+    """
+    rows = _read_local_csv("核对结果.csv")
+    if not rows:
+        return None
+    pending = [r for r in rows if r.get("状态") in ("", "待核对", "待确认")]
+    done = [r for r in rows if r.get("状态") not in ("", "待核对", "待确认")]
+    by_type, by_conf = {}, {}
+    for r in pending:
+        by_type[r.get("类型", "其他")] = by_type.get(r.get("类型", "其他"), 0) + 1
+        c = r.get("置信度", "低") or "低"
+        by_conf[c] = by_conf.get(c, 0) + 1
+    # 展示顺序：高置信（可确认意图）在前，其次中（有匹配项目待人工看），最后低
+    conf_rank = {"高": 0, "中": 1, "低": 2}
+    pending.sort(key=lambda r: (conf_rank.get(r.get("置信度", "低") or "低", 3),
+                                str(r.get("日期", ""))), reverse=False)
+    # 「下一步行动」素材：高置信收款项红字提示；中置信合同项给登记建议
+    hi_pay = [r for r in pending
+              if r.get("置信度") == "高" and "收款" in (r.get("类型") or "")]
+    # 优先级 = 高置信收款 > 中置信有匹配项目（漏登记类）> 低置信
+    act_ready = [r for r in pending
+                 if r.get("置信度") == "高" or (r.get("置信度") == "中" and r.get("匹配项目"))]
+    return {
+        "pending": pending, "pending_count": len(pending),
+        "done_count": len(done), "total": len(rows),
+        "by_type": by_type, "by_conf": by_conf,
+        "hi_pay_count": len(hi_pay), "act_ready": act_ready[:12],
+        "scan_date": str(rows[-1].get("日期", ""))[:10] if rows else "",
+    }
+
+
 def _load_wechat(today):
     """微信情报模型（wechat_intake.py 维护：data/微信事件.csv）。无数据返回 None。"""
     events = _read_local_csv("微信事件.csv")
@@ -809,6 +845,8 @@ def compute(adapter, today):
     market_model = _load_market()
     # 原料行情（commodities.py 维护 data/原料行情记录.csv；缺失则 None）
     commodities_model = _load_commodities()
+    # 消息↔SeaTable 核对（wxmatch.py 维护 data/核对结果.csv；缺失则 None）
+    wxmatch_model = _load_wxmatch()
     if wechat_model and wechat_model["pending_count"]:
         cats = "/".join(sorted({e.get("分类", "") for e in wechat_model["pending"] if e.get("分类")}))
         actions.insert(0, {"pri": "高", "cat": "wechat",
@@ -819,6 +857,18 @@ def compute(adapter, today):
             actions.insert(0 if a["type"] == "停产" else len(actions),
                            {"pri": "高" if a["type"] == "停产" else "中", "cat": "market",
                             "text": "物料行情：%s %s" % (a["model"], a["text"])})
+    # 核对引擎：高置信收款=钱的事必须红字置顶；中置信有匹配项目=漏登记，中优
+    if wxmatch_model:
+        if wxmatch_model["hi_pay_count"]:
+            actions.insert(0, {"pri": "高", "cat": "wechat",
+                               "text": "收款核对：%d 条高置信收款信号待确认（匹配到项目待收金额，"
+                                       "确认后写入实收）" % wxmatch_model["hi_pay_count"]})
+        ready = [r for r in wxmatch_model["act_ready"]
+                 if "收款" not in (r.get("类型") or "")][:3]
+        for r in ready:
+            tgt = r.get("匹配项目") or r.get("信号内容", "")
+            actions.append({"pri": "中", "cat": "wechat",
+                            "text": "核对：%s %s" % ((tgt or "")[:34], (r.get("建议动作") or "")[:40])})
     # 原料行情波动 = 成本走向信号，不是停线事件，一律中优、且最多带 2 条免得刷屏
     if commodities_model:
         for a in commodities_model["alerts"][:2]:
@@ -914,6 +964,8 @@ def compute(adapter, today):
         "market": market_model,
         # 原料行情（commodities.py 维护 上游原料 金/银/铜/锡/塑料；缺失则 None）
         "commodities": commodities_model,
+        # 消息↔SeaTable 核对（wxmatch.py 维护 data/核对结果.csv；缺失则 None）
+        "wxmatch": wxmatch_model,
     }
 
 
@@ -941,6 +993,7 @@ ICONS = {
     "IC_SHARE": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l7.8 4"/><path d="M15.4 6.5l-7.8 4"/></svg>',
     "IC_KEY": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M14 7a4 4 0 1 0-3.6 5.9L7 17v3H4v-3l5.4-5.4A4 4 0 0 0 14 7zm-1.6 2.4a2 2 0 1 1-2.8 2.8 2 2 0 0 1 2.8-2.8z"/></svg>',
     "IC_ADD": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
+    "IC_CHECK": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 12l3 3 5-6"/></svg>',
     "IC_THEME": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
     "IC_USER": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3 20v-1.5C3 16 5.7 14.5 9 14.5s6 1.5 6 4V20"/><path d="M17 8.5h4"/><path d="M17 12h4"/><path d="M17 15.5h4"/></svg>',
 }
@@ -1653,8 +1706,8 @@ function renderGantt(g, todayStr){
 const ROLES={
   // 老板：只看数据，不含任何写入口（新建/补录均为项目经理职责，不出现在老板页）
   // core = 首屏核心模块（≤4）；more = 折叠进「更多分析」的二级模块
-  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv","Rs","WXC","Mkt","Raw"],
-              core:["K","A","PW"],                more:["WXC","Mkt","Raw","Rs","G","T","C","Q","P","Sup","Inv"], actions:null},
+  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv","Rs","WXC","WXM","Mkt","Raw"],
+              core:["K","A","PW"],                more:["WXC","WXM","Mkt","Raw","Rs","G","T","C","Q","P","Sup","Inv"], actions:null},
   // 仓库/采购：非项目经理，不开放「新建」写入口（仅看数据 + 各自作业动作）
   warehouse: {name:"仓库",     sections:["K","A","Inv","P"],
               core:["K","A","Inv"],               more:["P"],                     actions:["warehouse"]},
@@ -1662,11 +1715,11 @@ const ROLES={
   purchase:  {name:"采购",     sections:["K","A","Sup","Mkt","Raw"],
               core:["K","A","Sup"],               more:["Mkt","Raw"],             actions:["purchase","market"]},
   // 生产经理：项目经理职责 → 新建生产计划（写「生产计划」表）+ 资源排程
-  production:{name:"生产经理", sections:["K","A","WZ","Rs","G","T","Q","P","Inv","WXC"],
-              core:["K","A","Rs","WZ"],           more:["WXC","P","G","T","Q","Inv"],   actions:["production","warehouse","delivery","resource","wechat"]},
+  production:{name:"生产经理", sections:["K","A","WZ","Rs","G","T","Q","P","Inv","WXC","WXM"],
+              core:["K","A","Rs","WZ"],           more:["WXC","WXM","P","G","T","Q","Inv"],   actions:["production","warehouse","delivery","resource","wechat"]},
   // 销售：立项职责 → 新建项目（写「项目」表，对应销售立项表单）
-  sales:     {name:"销售",     sections:["K","A","PW","WZ","G"],
-              core:["K","A","PW","WZ"],           more:["G"],                     actions:["sales","delivery"]},
+  sales:     {name:"销售",     sections:["K","A","PW","WZ","G","WXM"],
+              core:["K","A","PW","WZ"],           more:["G","WXM"],                     actions:["sales","delivery"]},
 };
 const ROLE_ORDER=["boss","production","purchase","warehouse","sales"];
 function currentRole(){
@@ -2273,6 +2326,45 @@ function render(m){
     put("WXC", secWXC);
   }
 
+  /* 消息↔SeaTable 核对台：wxmatch.py 维护的 data/核对结果.csv
+     （群消息收款/下单/合同PDF ↔ 项目表、供应商合同 ↔ 采购记录表，只读核对不写库） */
+  const wmatch=m.wxmatch;
+  if(wmatch){
+    const typeBadge=(t)=>{
+      const cls = (t==="收款") ? "tag-red" : ((t==="下单") ? "tag-amber" : "");
+      return `<span class="pill ${cls}">${t||"其他"}</span>`;
+    };
+    const confBadge=(c)=>{
+      const cls = (c==="高") ? "tag-red" : ((c==="中") ? "tag-amber" : "");
+      return `<span class="pill ${cls}">${c||"低"}</span>`;
+    };
+    const wmRows=wmatch.pending.length?wmatch.pending.map(r=>`<tr>
+        <td><b>${r["核对编号"]||""}</b><div class="rs-sub">${(r["日期"]||"").slice(0,10)}</div></td>
+        <td>${typeBadge(r["类型"])}</td>
+        <td style="max-width:300px" title="${(r["信号内容"]||"").replace(/"/g,"&quot;")}">${(r["信号内容"]||"").slice(0,44)}</td>
+        <td style="max-width:200px">${r["匹配项目"]?`<b>${r["匹配项目"].slice(0,20)}</b>`:`<span class="rs-sub">${(r["匹配结果"]||"未匹配").slice(0,26)}</span>`}</td>
+        <td>${(r["建议动作"]||"").slice(0,30)}${r["预填意图"]?`<div class="rs-sub">有预填意图</div>`:""}</td>
+        <td>${confBadge(r["置信度"])}</td></tr>`).join("")
+      :`<tr><td colspan="6" class="empty">暂无待核对项。运行 python wxmatch.py scan 扫描监控群消息与合同 PDF。</td></tr>`;
+    const typeStat=Object.entries(wmatch.by_type||{}).map(([t,n])=>
+      `<span class="pill" style="margin-right:6px">${t} ${n}</span>`).join("")
+      ||`<span class="rs-sub">暂无分类数据</span>`;
+    const confStat=Object.entries(wmatch.by_conf||{}).map(([c,n])=>
+      `<span class="pill ${c==="高"?"tag-red":(c==="中"?"tag-amber":"")}" style="margin-right:6px">${c}置信 ${n}</span>`).join("")
+      ||`<span class="rs-sub">暂无置信度数据</span>`;
+    const secWXM=el(`<section id="sec-WXM" class="sec"><div class="sec-title">__IC_CHECK__ 消息↔SeaTable 核对台（待核对 ${wmatch.pending_count} 条 · 已处置 ${wmatch.done_count} 条）</div>
+      <div class="card"><h3>待核对项（收款 / 下单 / 客户合同 / 供应商合同 ↔ 业务表）</h3>
+        <div style="overflow-x:auto"><table data-paginate="10"><thead><tr>
+          <th>编号/日期</th><th>类型</th><th>信号内容</th><th>匹配项目/结果</th><th>建议动作</th><th>置信度</th>
+        </tr></thead><tbody>${wmRows}</tbody></table></div>
+        <div class="note"><b>处置方式</b>：在 WorkBuddy 对话里说「核对 WX-M-xxxx 处理」或「忽略 WX-M-xxxx」，专家执行 wxmatch.py done 落留痕；高置信收款项确认后由 wechat_intake approve 写入项目「实收」列。扫描频率：每日 9 点自动化随微信拉取一起跑 <code>python wxmatch.py scan</code>。核对引擎<b>只读</b>，绝不自动写 SeaTable。</div></div>
+      <div class="card" style="margin-top:14px"><h3>分类 / 置信度分布</h3>
+        <div>${typeStat}</div><div style="margin-top:8px">${confStat}</div>
+        <div class="note" style="margin-top:8px">四类核对：① 收款（已打款/到账等信号 ↔ 项目待收金额 ±2% 容差）② 下单（新订单信号 ↔ 项目表客户名，匹配不到提示漏立项）③ 客户合同PDF（微信收到的合同文件 ↔ 项目表合同列）④ 供应商合同（采购合同 ↔ 5 张采购记录表供应商，含别名归一）。上次扫描：${wmatch.scan_date||"未知"}。</div></div>
+    </section>`);
+    put("WXM", secWXM);
+  }
+
   /* 新建向导：销售→「项目」表（销售立项表单）；其余角色→「生产计划」表（生产经理建计划）。
      老板/仓库/采购页不显示（已在 ROLES 裁剪：WZ 不在其 sections 中） */
   const _isSales = (role==="sales");
@@ -2322,6 +2414,7 @@ function render(m){
   const SEC_NAV={K:['核心指标','__IC_GRID__'],KM:['更多指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],
     WZ:['新建项目','__IC_ADD__'],BF:['补录数据','__IC_EDIT__'],Rs:['资源负载','__IC_USER__'],
     WXC:['微信情报','__IC_CHAT__'],Mkt:['物料行情','__IC_MKT__'],Raw:['原料行情','__IC_MKT__'],
+    WXM:['消息核对','__IC_CHECK__'],
     PW:['项目&在制','__IC_PROJ__'],G:['甘特图','__IC_GANT__'],T:['工时','__IC_TIME__'],
     C:['成本','__IC_COST__'],Q:['质量','__IC_QUAL__'],P:['产线流转','__IC_PROJ__'],
     Sup:['供应链','__IC_SUP__'],Inv:['库存预警','__IC_BOX__']};

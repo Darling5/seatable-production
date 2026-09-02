@@ -28,6 +28,8 @@ FILES = [
     "intake.py", "doctor.py",
     "market.py", "suppliers.py", "test_market_sync.py",
     "commodities.py", "test_commodities.py",
+    "wechat_intake.py", "wxmatch.py", "test_wxmatch.py",
+    "wxengine/wa_db.py",
     "seatable_sync.py", "partdb_sync.py", "backfill_seatable.py",
     "config.yaml.example",
     "adapters/__init__.py", "adapters/factory.py", "adapters/schema.py",

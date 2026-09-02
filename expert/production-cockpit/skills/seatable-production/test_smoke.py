@@ -197,7 +197,8 @@ def main():
             if os.path.exists(_sk):
                 _txt = open(_sk, encoding="utf-8").read()
                 for _leak in ("示例供应商AJ", "示例供应商AK", "示例供应商AC", "示例供应商AE", "示例供应商AF",
-                               "示例供应商AG", "示例供应商AH", "示例供应商AI", "客户B", "客户F", "客户X"):
+                               "示例供应商AG", "示例供应商AH", "示例供应商AI", "客户B", "客户F", "客户X",
+                               "示例科技", "示例集团", "示例供应商AO", "示例供应商AP"):
                     # 演示数据/文档用泛化名（示例电子A/示例组装厂），真实供应链与客户名一律不得入库
                     check(_leak not in _txt,
                           "SKILL.md 仍写着真实供应商『%s』（泄露供应链且不可移植）" % _leak)
