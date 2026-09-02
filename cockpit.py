@@ -219,6 +219,86 @@ def _load_market():
             "watch_count": len(watch), "hist_count": len(hist)}
 
 
+def _mille(v):
+    """数字加千分位，用于原料行情（元/吨这类数字动辄六位，不加分隔符读不清）。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v or "")
+    return ("{:,.0f}".format(f)) if abs(f) >= 1000 else ("{:g}".format(f))
+
+
+def _load_commodities(days=None):
+    """原料行情模型（commodities.py 维护：data/原料行情记录.csv）。无数据返回 None。
+
+    与物料行情（_load_market）是两条线：那个看单个型号贵没贵/停没停产，
+    这个看上游原料（金/银/铜/锡/塑料）的成本走向，决定报价基调。
+
+    口径纪律：期货「连续」与「具体合约」是两个口径，只按 (原料, 口径) 分组，
+    绝不跨口径拼序列——否则会算出假涨跌（与元器件「串渠道假涨跌」同源）。
+
+    阈值/天数从 config.yaml 的 commodities 段读，与 commodities.py 的 CLI 同一真源。
+    """
+    rows_all = _read_local_csv("原料行情记录.csv")
+    if not rows_all:
+        return None
+    try:
+        th = float((load_config().get("market") or {}).get("alert_threshold") or 10)
+    except Exception:
+        th = 10.0
+    # 阈值与回看天数统一取自 commodities 段（与 commodities.py CLI 同一真源，
+    # 免得命令行显示 ±3% 而驾驶舱按 ±5% 算，两边数字对不上）
+    raw_cfg = (load_config() or {}).get("commodities") or {}
+    try:
+        raw_th = float(raw_cfg.get("alert_threshold") or 3)
+    except (TypeError, ValueError):
+        raw_th = 3.0
+    if days is None:
+        try:
+            days = int(raw_cfg.get("trend_days") or 30)
+        except (TypeError, ValueError):
+            days = 30
+    days = max(2, int(days))
+
+    cutoff = (datetime.now().date() - timedelta(days=days)).isoformat()
+    groups = {}
+    for r in rows_all:
+        key = (r.get("原料", "") or "", r.get("口径", "") or "连续")
+        groups.setdefault(key, []).append(r)
+
+    rows, alerts = [], []
+    for (name, basis), items in groups.items():
+        items = sorted(items, key=lambda x: str(x.get("日期", "")))
+        win = [x for x in items if str(x.get("日期", "")) >= cutoff]
+        priced = [x for x in items if _num(x.get("单价")) > 0]
+        if not priced:
+            continue
+        latest = priced[-1]
+        series = [_num(x.get("单价")) for x in win if _num(x.get("单价")) > 0]
+        first = series[0] if len(series) > 1 else None
+        cur = _num(latest.get("单价"))
+        pct = round((cur - first) / first * 100, 1) if (first and first > 0 and cur > 0) else None
+        rows.append({
+            "name": name, "category": latest.get("类别", ""), "basis": basis,
+            "price": latest.get("单价", ""), "unit": latest.get("单位", ""),
+            "date": latest.get("日期", ""), "source": latest.get("来源", ""),
+            "note": latest.get("备注", ""), "pct": pct,
+            "hist": series[-30:],
+        })
+        if pct is not None and abs(pct) >= raw_th:
+            alerts.append({
+                "type": "涨" if pct > 0 else "跌", "name": name, "pct": pct,
+                "text": "%s 口径近 %d 天 %+.1f%%（%s → %s %s，阈值 ±%.0f%%）"
+                        % (basis, days, pct, _mille(first), _mille(cur),
+                           latest.get("单位", ""), raw_th),
+            })
+    # 按波动幅度降序：驾驶舱「下一步行动」只带前 2 条，必须是动静最大的两个
+    rows.sort(key=lambda r: (abs(r["pct"]) if r["pct"] is not None else -1), reverse=True)
+    alerts.sort(key=lambda a: abs(a.get("pct") or 0), reverse=True)
+    return {"rows": rows, "alerts": alerts, "threshold": raw_th,
+            "days": days, "series_count": len(rows)}
+
+
 def _load_wechat(today):
     """微信情报模型（wechat_intake.py 维护：data/微信事件.csv）。无数据返回 None。"""
     events = _read_local_csv("微信事件.csv")
@@ -727,6 +807,8 @@ def compute(adapter, today):
     # ── 微信情报 & 物料行情（本地专用数据，wechat_intake.py / market.py 维护）──
     wechat_model = _load_wechat(today)
     market_model = _load_market()
+    # 原料行情（commodities.py 维护 data/原料行情记录.csv；缺失则 None）
+    commodities_model = _load_commodities()
     if wechat_model and wechat_model["pending_count"]:
         cats = "/".join(sorted({e.get("分类", "") for e in wechat_model["pending"] if e.get("分类")}))
         actions.insert(0, {"pri": "高", "cat": "wechat",
@@ -737,6 +819,11 @@ def compute(adapter, today):
             actions.insert(0 if a["type"] == "停产" else len(actions),
                            {"pri": "高" if a["type"] == "停产" else "中", "cat": "market",
                             "text": "物料行情：%s %s" % (a["model"], a["text"])})
+    # 原料行情波动 = 成本走向信号，不是停线事件，一律中优、且最多带 2 条免得刷屏
+    if commodities_model:
+        for a in commodities_model["alerts"][:2]:
+            actions.append({"pri": "中", "cat": "market",
+                            "text": "原料行情：%s %s" % (a["name"], a["text"])})
 
     if not actions:
         actions.append({"pri": "提示", "cat": "boss", "text": "暂无紧急事项，保持当前节奏即可 ✔"})
@@ -825,6 +912,8 @@ def compute(adapter, today):
         "wechat": wechat_model,
         # 物料行情（market.py 维护 监控清单+行情快照；缺失则 None）
         "market": market_model,
+        # 原料行情（commodities.py 维护 上游原料 金/银/铜/锡/塑料；缺失则 None）
+        "commodities": commodities_model,
     }
 
 
@@ -1564,13 +1653,14 @@ function renderGantt(g, todayStr){
 const ROLES={
   // 老板：只看数据，不含任何写入口（新建/补录均为项目经理职责，不出现在老板页）
   // core = 首屏核心模块（≤4）；more = 折叠进「更多分析」的二级模块
-  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv","Rs","WXC","Mkt"],
-              core:["K","A","PW"],                more:["WXC","Mkt","Rs","G","T","C","Q","P","Sup","Inv"], actions:null},
+  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv","Rs","WXC","Mkt","Raw"],
+              core:["K","A","PW"],                more:["WXC","Mkt","Raw","Rs","G","T","C","Q","P","Sup","Inv"], actions:null},
   // 仓库/采购：非项目经理，不开放「新建」写入口（仅看数据 + 各自作业动作）
   warehouse: {name:"仓库",     sections:["K","A","Inv","P"],
               core:["K","A","Inv"],               more:["P"],                     actions:["warehouse"]},
-  purchase:  {name:"采购",     sections:["K","A","Sup","Mkt"],
-              core:["K","A","Sup"],               more:["Mkt"],                   actions:["purchase","market"]},
+  // 原料行情对采购最有用：决定报价有效期与备货节奏，故给采购页也开
+  purchase:  {name:"采购",     sections:["K","A","Sup","Mkt","Raw"],
+              core:["K","A","Sup"],               more:["Mkt","Raw"],             actions:["purchase","market"]},
   // 生产经理：项目经理职责 → 新建生产计划（写「生产计划」表）+ 资源排程
   production:{name:"生产经理", sections:["K","A","WZ","Rs","G","T","Q","P","Inv","WXC"],
               core:["K","A","Rs","WZ"],           more:["WXC","P","G","T","Q","Inv"],   actions:["production","warehouse","delivery","resource","wechat"]},
@@ -2109,6 +2199,45 @@ function render(m){
     put("Mkt", secMkt);
   }
 
+  /* 原料行情（上游成本）：commodities.py 维护的 data/原料行情记录.csv */
+  const raw=m.commodities;
+  if(raw){
+    const rawSpark=(pts)=>{
+      if(!pts||pts.length<2) return `<span class="rs-sub">待积累</span>`;
+      const mn=Math.min(...pts), mx=Math.max(...pts), rg=(mx-mn)||1;
+      const P=pts.map((v,i)=>`${(i/(pts.length-1)*86+2).toFixed(1)},${(23-(v-mn)/rg*20).toFixed(1)}`).join(" ");
+      const up=pts[pts.length-1]>=pts[0];
+      return `<svg width="90" height="26" viewBox="0 0 90 26"><polyline points="${P}" fill="none" stroke="${up?'#e03131':'#2f9e44'}" stroke-width="1.6"/></svg>`;};
+    const pctTxt=(p)=>(p==null)?`<span class="rs-sub">—</span>`
+      :`<span style="color:${p>=0?'var(--red)':'var(--green)'};font-weight:600">${p>=0?"+":""}${p.toFixed(1)}%</span>`;
+    const basisPill=(b)=>{
+      const isCont=b==="连续";
+      return `<span class="pill ${isCont?'tag-green':''}">${b||"连续"}</span>`;};
+    const rawRows=raw.rows.length?raw.rows.map(r=>`<tr>
+        <td><b>${r.name}</b><div class="rs-sub">${r.category||""}</div></td>
+        <td>${basisPill(r.basis)}</td>
+        <td class="num">${r.price||"—"}<div class="rs-sub">${r.unit||""}</div></td>
+        <td class="num">${pctTxt(r.pct)}<div class="rs-sub">近 ${raw.days} 天</div></td>
+        <td>${rawSpark(r.hist)}</td>
+        <td class="rs-sub">${r.date||""}</td>
+        <td class="rs-sub">${r.source||""}</td></tr>`).join("")
+      :`<tr><td colspan="7" class="empty">暂无原料行情。在技能目录运行 python market.py raw fetch 拉取当日价，raw backfill AU --contract au2610 --days 40 补历史。</td></tr>`;
+    const rawAlerts=raw.alerts.length?`<div class="card" style="margin-top:14px">
+      <h3>原料波动告警（${raw.alerts.length}）</h3><div class="actions">${raw.alerts.map(a=>
+        `<div class="act"><span class="pri ${a.type==='涨'?'pri-高':'pri-中'}">${a.type}</span>
+         <span class="tx"><b>${a.name}</b>：${a.text}</span></div>`).join("")}</div>
+      <div class="note">原料波动影响的是<b>整体报价基调</b>，不是单个料号——涨了复核供应商报价有效期与备货节奏，跌了可择机锁价。</div></div>`:"";
+    const secRaw=el(`<section id="sec-Raw" class="sec"><div class="sec-title">__IC_MKT__ 原料行情（上游成本 · 金属 / 塑料）</div>
+      <div class="card"><div style="overflow-x:auto"><table data-paginate="12"><thead><tr>
+        <th>原料</th><th>口径</th><th>最新价</th><th>区间涨跌</th><th>趋势</th><th>日期</th><th>来源</th>
+      </tr></thead><tbody>${rawRows}</tbody></table></div>
+      <div class="note">红=涨、绿=跌（成本视角）。近 ${raw.days} 天波动 ≥ ±${raw.threshold}% 触发告警（原料波动比单个料号频繁，阈值单独设，默认 5%）。
+        <b>口径纪律</b>：期货「连续」与「具体合约」是两个口径，同原料出现多行属正常，<b>不跨口径比价</b>——混比会算出假涨跌。
+        ABS/PC/PS 树脂现货无免费公开 API，走人工录入（<code>python market.py raw add ABS --price 11800</code>）。</div></div>
+      ${rawAlerts}</section>`);
+    put("Raw", secRaw);
+  }
+
   /* 微信情报台：wechat_intake.py 维护的 data/微信事件.csv */
   const wx=m.wechat;
   if(wx){
@@ -2192,7 +2321,7 @@ function render(m){
   /* 快速导航条：首屏模块直接跳；折叠区模块点击时自动展开再跳 */
   const SEC_NAV={K:['核心指标','__IC_GRID__'],KM:['更多指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],
     WZ:['新建项目','__IC_ADD__'],BF:['补录数据','__IC_EDIT__'],Rs:['资源负载','__IC_USER__'],
-    WXC:['微信情报','__IC_CHAT__'],Mkt:['物料行情','__IC_MKT__'],
+    WXC:['微信情报','__IC_CHAT__'],Mkt:['物料行情','__IC_MKT__'],Raw:['原料行情','__IC_MKT__'],
     PW:['项目&在制','__IC_PROJ__'],G:['甘特图','__IC_GANT__'],T:['工时','__IC_TIME__'],
     C:['成本','__IC_COST__'],Q:['质量','__IC_QUAL__'],P:['产线流转','__IC_PROJ__'],
     Sup:['供应链','__IC_SUP__'],Inv:['库存预警','__IC_BOX__']};

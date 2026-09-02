@@ -73,7 +73,7 @@ partdb:
 
 # ── 物料行情监控（可选）────────────────────────────
 market:
-  alert_threshold: 10        # 涨跌预警阈值（%）
+  alert_threshold: 10        # 物料涨跌预警阈值（%），单个料号 vs 上次采购价/上次快照
   check_day: Monday          # 人工复查日（提示用）
   channels: [立创商城, 华秋商城, 原厂公告]
   currency: CNY              # 展示与折算币种，默认人民币 ¥
@@ -106,6 +106,19 @@ market:
       ship_to: CN
     mouser:
       api_key: ""
+
+# ── 原料行情监控（可选，零凭证）──────────────────────
+# 跟上游原料成本：金/银/铜/锡/铝/镍 全自动，PP/LLDPE/PVC 作石化链代理指标，
+# ABS/PC/PS 现货人工录入。**不需要任何 API key** —— 实时价走新浪期货公开接口。
+# 命令统一入口：python market.py raw <fetch|show|trend|add|backfill|list>
+commodities:
+  alert_threshold: 3         # 原料波动预警阈值（%）。原料比单个料号活跃得多，
+                             #   沿用物料的 10% 会漏报；实测塑料链一个月能走 15%，金属 3~8%。
+  trend_days: 30             # 驾驶舱 / CLI 走势回看天数
+  # 可选：给 spot 现货价加自动源（ABS/PC/PS 目前只能手工 add）。
+  # 现货数据在生意社 / 卓创 / 中塑在线 / 同花顺 iFinD，均需付费授权；
+  # 有授权后在这里填 endpoint，commodities.py 的 source 适配器位已预留，不用改结构。
+  # spot_source: ifind
 # 订阅判别（2026-09-02 实测）：App 状态 Approved ≠ 万事大吉。
 # 得捷一个 App 可订阅多个 API 产品（Barcode/OrderStatus/ProductInformation V4/Quote/...），
 # 代码调的端点必须在订阅列表里，否则 401 "You are not subscribed to this API"。

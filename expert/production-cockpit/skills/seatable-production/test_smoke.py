@@ -97,7 +97,10 @@ def main():
             acts = model["next_actions"]
             check(any(a.get("cat") == "resource" for a in acts), "未生成资源类行动建议")
             # 每条建议都要有 pri / cat / text，且 cat 在驾驶舱有映射
-            KNOWN = {"purchase", "warehouse", "delivery", "production", "sales", "boss", "resource"}
+            # （KNOWN 必须与 cockpit.py 的 CAT_SEC 一致：v1.3 加了 wechat，v1.5 加了 market，
+            #  v1.6 又把 market 类建议翻倍（物料+原料），漏登记会导致测试 FAIL 而非静默漏报）
+            KNOWN = {"purchase", "warehouse", "delivery", "production", "sales",
+                     "boss", "resource", "wechat", "market"}
             for a in acts:
                 check(a.get("pri") in ("高", "中", "提示"), "行动建议优先级非法: %r" % a.get("pri"))
                 check(a.get("cat") in KNOWN, "行动建议 cat 未在 CAT_SEC 中登记: %r" % a.get("cat"))
@@ -193,7 +196,9 @@ def main():
             _sk = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SKILL.md")
             if os.path.exists(_sk):
                 _txt = open(_sk, encoding="utf-8").read()
-                for _leak in ("鸿运电子", "环宇电子", "禾平", "烽天华", "聚力半导体"):
+                for _leak in ("鸿运电子", "环宇电子", "禾平", "烽天华", "聚力半导体",
+                               "铁牛灌胶", "浪博者", "华宸外壳", "郑州云峰", "上海汇撰", "成都海得"):
+                    # 演示数据/文档用泛化名（示例电子A/示例组装厂），真实供应链与客户名一律不得入库
                     check(_leak not in _txt,
                           "SKILL.md 仍写着真实供应商『%s』（泄露供应链且不可移植）" % _leak)
 
