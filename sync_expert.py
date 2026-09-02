@@ -26,6 +26,7 @@ FILES = [
     "SKILL.md", "README.md", "LICENSE",
     "cockpit.py", "op.py", "setup.py", "seed_demo.py", "test_smoke.py",
     "intake.py", "doctor.py",
+    "market.py", "suppliers.py", "test_market_sync.py",
     "seatable_sync.py", "partdb_sync.py", "backfill_seatable.py",
     "config.yaml.example",
     "adapters/__init__.py", "adapters/factory.py", "adapters/schema.py",

@@ -281,6 +281,58 @@ python market.py alerts
 - `NRND`（不推荐继续使用）和 `EOL停产` 立即预警；
 - 驾驶舱「物料行情」展示采购价、最新行情、偏差、生命周期和内联 SVG 趋势。
 
+### 代理商 API 自动查价（得捷 / 贸泽）
+
+人工录入太慢，行情可以**自动拉**：`suppliers.py` 抹平得捷与贸泽两个官方 API 的差异，统一折算人民币。
+
+```bash
+python suppliers.py doctor              # 凭证自检（值脱敏，不打印明文）
+python suppliers.py doctor --live       # 真实联网探测一次（消耗 1 次配额）
+python market.py lookup FR8018HD        # 单型号查价，**只查不写**
+python market.py compare FR8018HD       # 多源比价，原价与 ¥ 并列，标出最低/最高/差价
+python market.py sync --dry-run         # 预览这轮将查哪些（不联网、不写库）
+python market.py sync                   # 按节奏批量拉价并写快照
+python market.py sync --limit 5         # 只查前 5 个（省配额调试）
+python market.py sync --force           # 忽略节奏强制全查
+```
+
+**凭证怎么配**（`config.yaml` 的 `market.api_keys`，已被 `.gitignore` 排除，**不会进仓库**）：
+
+```yaml
+market:
+  currency: CNY          # 默认人民币 ¥
+  cadence: auto          # 自适应复查节奏，省钱
+  api_keys:
+    digikey:             # 得捷：developer.digikey.com 注册应用
+      client_id: ""
+      client_secret: ""
+      site: CN           # 站点/币种/语种，决定了报价币种
+      currency: CNY
+    mouser:              # 贸泽：My Account → APIs → Search API Key
+      api_key: ""
+```
+
+从 GitHub clone 的人**自己去官网申请**，仓库里只有 `config.yaml.example` 的空占位符。
+
+**自适应节奏**（省 API 配额的核心）：按「库存电子料数量」自动选复查间隔，逐型号比对上次快照日期，未到期直接跳过——
+
+| 库存电子料数量 | 复查间隔 | 依据 |
+|---|---|---|
+| ≤ 100 种 | 每 7 天（每周） | 料少，盯紧点 |
+| 101 ~ 300 种 | 每 15 天（半月） | 折中 |
+| > 300 种 | 每 30 天（每月） | 料多，配额优先 |
+
+数量取自 `data/partdb_snapshot.json` 的 `part_count`（当前 369 种 → 每月一次）。想写死就把 `market.cadence` 设成数字（如 `7`），或改 `market.cadence_tiers` 自定义阈值。
+
+**四条铁律**（改代码前先读 `suppliers.py` 文件头）：
+
+1. **只读**——只调查询接口，绝不碰下单/报价/购物车。下单必须人工在官网完成。
+2. **凭证不落库**——只从本地 `config.yaml` 读，日志与报错一律脱敏（只显示前 4 位）。
+3. **失败降级**——网络超时/鉴权失败/查无此料都返回 `ok=False`，**不抛异常**，批处理继续跑下一个。
+4. **统一人民币**——返回原始币种 + 折算后的 `price_cny`；汇率走免费接口，拿不到退回 `market.fx.static` 静态值并在备注标注来源。
+
+其他要点：贸泽一次可查 **10 个型号**（代码自动分批，省配额），得捷只能逐个查；得捷令牌自动缓存到 `data/.supplier_tokens.json`，过期自动刷新；多渠道各写一条快照时，**涨跌幅只跟同渠道的上一条比**，避免把渠道差价误报成涨跌。
+
 数据保存在 `data/物料监控清单.csv` 与 `data/物料行情记录.csv`，均为本地专用文件，不会被 `seatable_sync.py` 覆盖。
 
 ## 三种用法，按需选
@@ -356,6 +408,8 @@ seatable-production/
 ├── daily_brief.py        # 站会摘要：异常+微信情报+业务面 合成一段话
 ├── notify.py             # 通知发件箱：进程解耦，AI 会话经 agent-mail 发送
 ├── market.py             # 物料监控清单 / 价格涨跌 / NRND-EOL
+├── suppliers.py          # 得捷·贸泽官方 API 只读查价（凭证本地化 / 失败降级 / 统一 ¥）
+├── test_market_sync.py   # 行情同步离线回归测试（假数据跑通写库，不联网）
 ├── pipeline/             # 合同 → BOM → 库存审核 → 正式采购订单
 │   ├── inventory_sources.py # PartDB / API / MCP / Excel·CSV 适配器
 │   └── rules.yaml        # 无客户信息的公共采购规则模板

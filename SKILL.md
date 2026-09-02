@@ -1,4 +1,4 @@
-# 生产交付协同助手（解耦版 v1.4.5）
+# 生产交付协同助手（解耦版 v1.5.0）
 
 **描述**：通过自然语言控制「生产」业务数据的增删改查，覆盖项目立项 → 生产计划 → 采购 → 生产执行 → 库存核对 → 发货 → 维修售后的完整周期，并支持工时/成本/质量/供应链四维分析。
 
@@ -11,10 +11,20 @@
 - ✅ **新增微信情报反哺（v1.3.3 双引擎）**：引擎A 直读微信 4.x 本地加密库（`wxengine/wa_db.py`，主密钥从运行中的 Weixin.exe 内存提取，无需第三方工具）；引擎B 回退 `merge_all.db`（微信3.x + win-wechat-summary）。拉监控群消息 → 事件待确认 → 确认后写入 SeaTable 业务表，全程留痕。
 - ✅ **新增第二大脑三件套（v1.4.0）**：`wxwatch.py` 实时哨兵（1 秒轮询监听，关键词命中自动登记事件+通知）、`alerts.py` 异常检测引擎（A1-A7 七条规则，让数据主动喊）、`daily_brief.py` 站会摘要（四路数据合成一段话）+ `notify.py` 发件箱（Agent Mail 触达）。
 - ✅ **新增物料行情监控**：从采购记录自动生成物料监控清单，保存价格快照，计算涨跌幅并跟踪 NRND/EOL 停产状态，驾驶舱展示趋势和告警。
+- ✅ **新增代理商 API 自动查价（v1.5.0）**：`suppliers.py` 接入得捷 DigiKey（OAuth2 + Search/v3）与贸泽 Mouser（Search API，一次 10 个型号），官方报价与生命周期直接入库，统一折算人民币 ¥。凭证只存本地 `config.yaml`（不入库、日志脱敏），**只读不碰下单**。按库存电子料数量自适应复查节奏（≤100 每周 / ≤300 半月 / >300 每月），未到期跳过以省配额。
 
 ---
 
 ## 版本历史
+
+### v1.5.0（2026-09-02）
+- 🆕 **代理商 API 自动查价**：新增 `suppliers.py`，接入得捷（DigiKey API v3，OAuth2 client_credentials + `Search/v3/Products/{mpn}`，locale 头指定 CNY/CN）与贸泽（Mouser Search API v1，`/search/partnumber`，**一次最多 10 个型号**，代码自动分批省配额）。统一吐出 `{price, currency, price_cny, stock, lifecycle, url}`，生命周期文案归一到「在产/NRND/EOL停产/未知」。
+- 💱 **默认人民币 ¥**：返回原始币种 + 折算 `price_cny`；汇率优先当日缓存 → 免费汇率接口 → `market.fx.static` 静态兜底，来源写进备注列便于追溯。
+- 🔑 **凭证纪律**：只从本地 `config.yaml` 的 `market.api_keys` 读取（已 gitignore），仓库只有 `config.yaml.example` 空占位符，clone 的人自己申请。日志/报错一律脱敏（前 4 位）。**只读**，绝不调下单接口。
+- ⏱ **自适应节奏**：按「库存电子料数量」（`partdb_snapshot.json` 的 `part_count`，当前 369）自动选复查间隔——≤100 种每 7 天 / 101~300 种每 15 天 / >300 种每 30 天；逐型号比对上次快照日期，未到期跳过。`market.cadence` 写死数字可关闭自适应，`cadence_tiers` 可自定义阈值。
+- 🆕 `market.py` 三命令：`lookup`（只查不写）、`compare`（多源比价，标最低/最高/差价）、`sync`（批量拉价写快照，支持 `--dry-run/--limit/--force`）。
+- 🐞 **修掉串渠道假涨跌**：多渠道各写一条快照时，涨跌幅原本拿「同型号上一条」比，会把得捷价跟贸泽价对比，渠道差价轻易超 10% 阈值刷出假告警。改为**有渠道时只跟同渠道的上一条比**。
+- 🧪 新增 `test_market_sync.py` 离线回归测试（假数据跑通写库/跳过/强制重查，不联网不污染真实 CSV）。
 
 ### v1.4.5（2026-09-01）
 - 🎯 **监控群选择工作流固化**：监控范围属于用户偏好配置，**必须先列候选让用户勾选，禁止默认替用户决定**。标准流程：`python wechat_intake.py groups` 列出全部群（380 个，缓存到 `groups.json`）→ 按业务关键词（生产/贴片/组装/供应商/客户）筛出候选 → 用户确认后写入 `config.yaml` 的 `wechat.watch_groups` → `python wxwatch.py once` 验证。
@@ -572,6 +582,39 @@ python notify.py send --subject "💬 群聊总结 <日期>" \
 ```
 
 > 每日 9 点自动化已内置此流程（步骤 4），产物随发件箱一并推企微。
+
+### 11.2 物料行情与代理商查价速查（`market.py` / `suppliers.py`）
+
+```bash
+python market.py watchlist [--refresh]        # 生成/刷新监控清单
+python market.py report                       # 最新行情 vs 上次采购价
+python market.py alerts                       # 涨跌超阈值 / 停产·NRND 告警
+
+# 代理商自动查价（得捷 DigiKey / 贸泽 Mouser）
+python suppliers.py doctor [--live]           # 凭证自检（脱敏）；--live 联网探测
+python market.py lookup <型号> [--qty 100]    # 只查不写
+python market.py compare <型号>               # 多源比价，标出最低/最高/差价
+python market.py sync [--dry-run] [--limit N] [--force]   # 按节奏批量拉价写快照
+```
+
+**执行顺序建议**：用户要行情/比价时，先 `doctor` 确认凭证在位 → `lookup` 或 `compare` 看即时价
+（**只读，不写任何文件**）→ 确认无误才 `sync` 写快照。`sync` 会真写 `data/物料行情记录.csv`，
+属于写操作，**给用户看预览更稳妥时先跑 `--dry-run`**。
+
+**自适应节奏**：按库存电子料数量（取 `data/partdb_snapshot.json` 的 `part_count`）
+自动选复查间隔——≤100 种每 7 天、101~300 种每 15 天、>300 种每 30 天，
+逐型号比对上次快照日期，未到期跳过以省 API 配额。当前 369 种 → 每月一次。
+
+**涨跌幅口径（易错）**：有渠道时**只跟同渠道的上一条比**。多渠道各写一条快照时，
+若拿得捷价去比贸泽价，渠道差价随随便便超 10% 阈值，会刷出假涨跌告警。
+
+**凭证纪律**：得捷/贸泽凭证只存本地 `config.yaml` 的 `market.api_keys`
+（已被 `.gitignore` 排除）。报错与日志里**一律脱敏**（只显示前 4 位），
+**禁止把 key 写进 skill 文件、仓库或对话输出**。仓库里只有 `config.yaml.example` 的空占位符，
+从 GitHub clone 的人自行去官网申请。
+
+**只读铁律**：这批凭证只用于查价与生命周期查询，**绝不调下单/报价/购物车接口**，
+下单必须人工在官网完成。
 
 ---
 
