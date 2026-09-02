@@ -84,15 +84,34 @@ class SeaTableAdapter(BaseAdapter):
                          json=payload, timeout=30)
         r.raise_for_status()
         resp = r.json()
+        # SeaTable add_row 响应：{"inserted_row_count":1,"row_ids":[{"_id":...}],"first_row":{...}}
+        if resp.get("row_ids"):
+            return resp["row_ids"][0].get("_id")
+        if resp.get("first_row"):
+            return resp["first_row"].get("_id")
         new = resp.get("rows") or []
         return (new[0].get("_id") if new else None)
 
+    def _row_with_keys(self, table: str, data: dict) -> dict:
+        """把写入 dict 的中文列名解析为 SeaTable 列 key。
+
+        ⚠️ 2026-09-01 实测结论：**update 不能用这个方法**。
+        PUT /rows/ 传列 key 会返回 `{"success":true}`（HTTP 200）但数据不落库，
+        静默失败，极易误以为写入成功。实测传中文列名才生效。
+        保留此方法仅供需要列 key 的特殊场景（如未来的批量接口），update_row 已不再调用。
+        """
+        cols = {c["name"]: c["key"] for c in self._table(table)["columns"]}
+        return {cols.get(k, k): v for k, v in data.items() if k != "__row_id__"}
+
     def update_row(self, table: str, row_id: str, data: dict):
-        # SeaTable 更新单行接口：updates 必须是 [{row_id, row:{...}}] 的数组结构
+        # SeaTable 更新单行接口：updates 必须是 [{row_id, row:{...}}] 的数组结构。
+        # ⚠️ row 必须用**中文列名**：实测传列 key 会返回 success:true 但不落库（静默失败）。
+        #    append_row 同理按列名匹配。两个写接口都不要转 key。
+        row = {k: v for k, v in data.items() if k != "__row_id__"}
         payload = {
             "table_name": table,
             "updates": [
-                {"row_id": row_id, "row": {k: v for k, v in data.items() if k != "__row_id__"}}
+                {"row_id": row_id, "row": row}
             ],
         }
         r = requests.put(self._base() + "/rows/", headers={**self._h, "Content-Type": "application/json"},

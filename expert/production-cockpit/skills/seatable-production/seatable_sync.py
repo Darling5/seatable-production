@@ -55,7 +55,8 @@ def _load_cfg():
             if in_seat:
                 if raw.startswith(" ") and ":" in raw:
                     k, _, v = raw.strip().partition(":")
-                    cfg[k.strip()] = v.strip()
+                    # 兼容带引号写法：server: "https://..." → 剥掉两侧引号
+                    cfg[k.strip()] = v.strip().strip('"').strip("'")
                 else:
                     # 遇到新的顶层段，结束
                     if not raw.startswith(" "):
