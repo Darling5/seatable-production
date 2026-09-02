@@ -698,13 +698,9 @@ def cmd_sync(source=None, force=False, dry_run=False, limit=None, qty=1):
     if not due:
         print("全部未到期，无事可做（加 --force 强制重查）")
         return
-    if dry_run:
-        print("--dry-run 预览（不联网、不写库）：")
-        for m in due:
-            print("  将查 %s（%s）" % (m, "、".join(due[m])))
-        return
-
     # 三道省配额闸门：本地预筛（非型号）→ 未知缓存（TTL 内）→ 节奏到期（已在 due 里）
+    # 注意：闸门必须在 dry-run 之前算，否则预览会显示「将查 25 个」而实际只查 1 个，
+    # 给出错误预期（2026-09-02 修）。
     todo0 = list(due.keys())
     prescreen = [m for m in todo0 if not _looks_like_mpn(m)]
     todo = [m for m in todo0 if _looks_like_mpn(m)]
@@ -720,6 +716,15 @@ def cmd_sync(source=None, force=False, dry_run=False, limit=None, qty=1):
     if not todo:
         print("三道闸门后无可查型号，未消耗任何 API 配额。")
         return
+
+    if dry_run:
+        print("--dry-run 预览（不联网、不写库）：")
+        for m in todo:
+            print("  将查 %s（%s）" % (m, "、".join(due[m])))
+        print("\n以上已应用%s过滤，实际只会查这 %d 个型号。" % (
+            "预筛（--force 已绕过缓存）" if force else "预筛与缓存", len(todo)))
+        return
+
     print("开始查询 %d 个型号…（贸泽 10 个/批，得捷逐个）\n" % len(todo))
     res = sp.lookup_many(todo, sources=srcs, qty=qty)
     ok = fail = wrote = noprice = 0
