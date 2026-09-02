@@ -46,6 +46,9 @@
   th,td{border:1px solid var(--line);padding:9px 12px;text-align:left}
   th{background:var(--primary-soft);color:var(--primary);font-weight:600}
   td code{background:#f1f3f9;padding:2px 6px;border-radius:5px;font-size:13px}
+  /* sparkline 走势条：必须等宽字体，否则 ▁▂▃ 对不齐 */
+  .spark{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Courier New",monospace;
+    letter-spacing:1px;font-size:15px;white-space:nowrap;color:var(--primary);line-height:1.4}
   .pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
   .pill.admin{background:#fff0e6;color:var(--warn)}
   .pill.role{background:var(--primary-soft);color:var(--primary)}
@@ -221,9 +224,77 @@
       <div class="card"><b>物料库存预警</b><br>缺料、零库存、安全库存不足提示；数据可来自 PartDB 或客户 ERP 的 API/MCP/文件库存源。</div>
       <div class="card"><b>微信情报台</b><br>监控群消息自动提取为「待确认事件」（交期变更 / 价格变动 / 催货 / 进度 / 停产…），你确认后才写入业务表，全程留痕。微信 4.x 直接读本地库，无需第三方工具。</div>
       <div class="card"><b>物料行情监控</b><br>采购价 vs 渠道价偏差、环比涨跌、NRND / EOL 停产生命周期告警，趋势集中展示。</div>
+      <div class="card"><b>原料行情（上游成本）</b><br>金 / 银 / 铜 / <b>锡</b> / 铝 / 镍等金属自动盯盘，PP / LLDPE / PVC 作为塑料代理指标，ABS / PC / PS 现货人工录入。Sparkline 走势 + 波动告警。</div>
       <div class="card"><b>快速导航 + 分页</b><br>长页面顶部吸顶导航，长表格分页，不再一拉到底。</div>
       <div class="card"><b>一键分享</b><br>老板 / 销售视图可点按钮复制带口令的微信文案，直接转发。</div>
     </div>
+  </section>
+
+  <!-- 原料行情 -->
+  <section>
+    <h2><span class="num">原</span>原料行情（金 / 银 / 铜 / 锡 + 塑料原料）</h2>
+    <p>元器件之外，还有一层更上游的成本在悄悄影响毛利：<b>锡价</b>直接决定 SMT 焊料成本，<b>铜价</b>决定 PCB 与线材，<b>金银</b>决定镀层与键合线，<b>ABS / PC / PS</b> 决定外壳与结构件。这一层单独监控，成本异动时你比供应商先知道。</p>
+
+    <h3>三个层级：全自动 / 代理指标 / 人工录入</h3>
+    <table>
+      <thead>
+        <tr><th>品种</th><th>类别</th><th>数据源</th><th>单位</th><th>怎么更新</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>黄金 / 白银 / 铜 / <b>锡</b> / 铝 / 镍</td><td>金属</td><td>新浪期货连续合约</td><td>元/克、元/千克、元/吨</td><td><b>全自动</b>，跑一次全部取回</td></tr>
+        <tr><td>聚丙烯 PP / 聚乙烯 LLDPE / PVC</td><td>塑料<b>代理</b>指标</td><td>新浪期货连续合约</td><td>元/吨</td><td><b>全自动</b></td></tr>
+        <tr><td>ABS / PC / PS 树脂</td><td>塑料现货</td><td>—</td><td>元/吨</td><td><b>人工录入</b>（填你的采购报价）</td></tr>
+      </tbody>
+    </table>
+
+    <div class="warnbox">
+      <b>关于塑料，说句实话：</b>ABS、PC、PS 是石化下游<b>现货</b>品种，<b>没有公开的免费 API</b> —— 报价被生意社、卓创、中塑在线等资讯商垄断（付费）。
+      所以本模块的做法是：金属全自动；<b>PP / LLDPE / PVC 期货作为其上游石化链的代理指标</b>（趋势相关，能提前感知塑料成本拐点）；
+      ABS / PC / PS 现货走人工录入，把你的实际采购价填进去即可积累走势。
+      日后若接入含产业数据的付费源（如同花顺 iFinD 有化工品现货库），只需加一个 source 适配器，<b>数据结构与展示都不用动</b>。
+    </div>
+
+    <h3>常用命令</h3>
+    <div class="card">
+      <code>python market.py raw list</code> &nbsp;看有哪些品种、各自的数据源<br>
+      <code>python market.py raw fetch</code> &nbsp;拉一次实时价并写库（每天跑一次即可积累走势）<br>
+      <code>python market.py raw show --days 30</code> &nbsp;走势表（sparkline + 区间涨跌）<br>
+      <code>python market.py raw trend --days 30</code> &nbsp;波动超阈值告警（默认 ±3%）<br>
+      <code>python market.py raw add ABS --price 11800</code> &nbsp;人工录入现货价<br>
+      <code>python market.py raw backfill AU --contract au2612 --days 60</code> &nbsp;一次性补历史
+    </div>
+
+    <h3>输出长什么样</h3>
+    <table>
+      <thead>
+        <tr><th>原料</th><th>口径</th><th>最新价</th><th>单位</th><th>区间涨跌</th><th>走势（近 40 天）</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>聚丙烯</td><td>pp2612·历史</td><td>8,682</td><td>元/吨</td><td style="color:#e03131;font-weight:600">+20.13%</td><td class="spark">▂▂▂▁▁▁▁▂▂▂▃▃▄▄▄▅▅▅▃▄▄▆▇█</td></tr>
+        <tr><td>聚乙烯</td><td>l2612·历史</td><td>8,461</td><td>元/吨</td><td style="color:#e03131;font-weight:600">+19.98%</td><td class="spark">▁▁▁▁▁▁▁▂▂▂▃▃▄▄▄▄▄▄▃▃▄▆▆█</td></tr>
+        <tr><td>白银</td><td>ag2612·历史</td><td>15,659</td><td>元/千克</td><td style="color:#e03131;font-weight:600">+8.22%</td><td class="spark">▁▁▁▃▃▄▄▄▅▄▄▅▅▃▅▆▇▆▆▆█▅▅▄</td></tr>
+        <tr><td>PVC</td><td>v2612·历史</td><td>4,869</td><td>元/吨</td><td style="color:#e03131;font-weight:600">+5.46%</td><td class="spark">▃▃▃▃▄▃▃▄▄▄▃▅▅▅▄▄▃▂▁▁▂▆▇█</td></tr>
+        <tr><td>铜</td><td>cu2612·历史</td><td>107,460</td><td>元/吨</td><td style="color:#e03131;font-weight:600">+4.39%</td><td class="spark">▁▂▃▄▄▆▅▅▅▄▄█▅▃▃▄▅▅▇▆▇▇▇▅</td></tr>
+        <tr><td>黄金</td><td>au2612·历史</td><td>940.62</td><td>元/克</td><td style="color:#e03131;font-weight:600">+4.12%</td><td class="spark">▁▁▁▂▃▃▄▄▅▄▄▅▅▄▆▆█▇▇▇▇▅▅▄</td></tr>
+        <tr><td>铝</td><td>al2612·历史</td><td>24,040</td><td>元/吨</td><td style="color:#e03131;font-weight:600">+3.78%</td><td class="spark">▁▁▃▃▃▅▇▇█▆▃▅▄▂▁▂▃▃▃▃▄▅▆▆</td></tr>
+        <tr><td><b>锡</b></td><td>sn2612·历史</td><td>413,330</td><td>元/吨</td><td>+0.25%</td><td class="spark">▄▄▅▇▇█▅▄▇▅▅▇▅▃▅▆▅▅▅▃▄▃▄▁</td></tr>
+        <tr><td>黄金</td><td>连续·实时</td><td>938.22</td><td>元/克</td><td>—</td><td class="spark">—</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">上表为 2026-09-02 抓取的<b>公开市场行情</b>示例（非公司数据），仅用于说明展示形式。涨跌按中国习惯：<span style="color:#e03131">红涨</span>。</p>
+
+    <details>
+      <summary>数据源要不要申请 API key？</summary>
+      <p><b>不需要。</b>金属与塑料代理指标走新浪财经的期货公开接口（上期所 / 大商所连续合约），免费、无需注册、无配额风险，人民币计价。历史补录走东方财富 K 线（新浪的日 K 线服务已下线）。整个模块<b>不保存任何 API key</b>。</p>
+    </details>
+    <details>
+      <summary>为什么同一原料会有两行（连续·实时 / xxxx·历史）？</summary>
+      <p>因为口径不同：每日自动抓取的是「连续合约」当日价；补录的历史是「具体合约」（如 au2612）的 K 线。两者数值天然有差异，<b>环比只在同口径内计算</b> —— 拼接不同口径会凭空造出假涨跌。这也是为什么「连续·实时」刚建库时区间涨跌显示「—」：它还没有同口径的历史点，每天跑一次就有了。</p>
+    </details>
+    <details>
+      <summary>同花顺 / iFinD 这类付费源值得接吗？</summary>
+      <p>看你要什么：<b>期货部分不用</b>——免费源已覆盖金 / 银 / 铜 / 锡 / 铝 / 镍 / PP / LLDPE / PVC；<b>ABS / PC / PS 现货才是真缺口</b>，这块 iFinD 有化工品现货库但要付费，MindGo 等量化平台只有行情、没有现货报价。若确认要接，在 <code>commodities.py</code> 里加一个 source 适配器即可，CSV 结构与展示层不用改。</p>
+    </details>
   </section>
 
   <!-- 你的链接 -->

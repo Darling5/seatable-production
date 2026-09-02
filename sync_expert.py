@@ -27,11 +27,12 @@ FILES = [
     "cockpit.py", "op.py", "setup.py", "seed_demo.py", "test_smoke.py",
     "intake.py", "doctor.py",
     "market.py", "suppliers.py", "test_market_sync.py",
+    "commodities.py", "test_commodities.py",
     "seatable_sync.py", "partdb_sync.py", "backfill_seatable.py",
     "config.yaml.example",
     "adapters/__init__.py", "adapters/factory.py", "adapters/schema.py",
     "adapters/local.py", "adapters/seatable.py", "adapters/partdb.py",
-    "docs/manual.md",
+    "docs/manual.md", "docs/usage-guide.html",
 ]
 
 # 绝不同步：本地数据、凭证、缓存、产物

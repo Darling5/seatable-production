@@ -786,6 +786,35 @@ def cmd_sync(source=None, force=False, dry_run=False, limit=None, qty=1):
         print("建议：确认替代料 / 抓住最后采购窗口")
 
 
+def cmd_raw(a):
+    """原料行情转发到 commodities.py —— 统一入口，免去记两个脚本。"""
+    try:
+        import commodities as cm
+    except Exception as e:
+        print("原料模块不可用：%s" % e)
+        return 1
+    if a.action == "fetch":
+        keys = [k.strip().upper() for k in (a.only or "").split(",") if k.strip()] or None
+        cm.cmd_fetch(dry_run=a.dry_run, keys=keys)
+    elif a.action == "show":
+        cm.cmd_show(days=a.days)
+    elif a.action == "trend":
+        cm.cmd_trend(days=a.days)
+    elif a.action == "list":
+        cm.cmd_list()
+    elif a.action == "add":
+        if not a.key or not a.price:
+            print("用法：market.py raw add ABS --price 11800")
+            return 1
+        cm.cmd_add(a.key, a.price, a.date, a.note)
+    elif a.action == "backfill":
+        if not a.key or not a.contract:
+            print("用法：market.py raw backfill AU --contract au2612 [--days 60]")
+            return 1
+        cm.backfill(a.key.upper(), a.contract, a.days)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="物料行情监控（价格涨跌 + 停产/EOL）")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -807,6 +836,17 @@ def main():
     p.add_argument("--note", default="")
     sub.add_parser("report", help="打印行情报表")
     sub.add_parser("alerts", help="打印告警")
+    p = sub.add_parser("raw", help="原料行情（金/银/铜/锡 + 塑料原料）")
+    p.add_argument("action", choices=["fetch", "show", "trend", "list", "add", "backfill"],
+                   help="fetch 拉价写库 / show 看走势 / trend 波动告警 / list 品种 / add 人工录入 / backfill 补历史")
+    p.add_argument("key", nargs="?", help="品种代码（add/backfill 用，如 ABS / AU）")
+    p.add_argument("--price", help="add 用：现货价")
+    p.add_argument("--date", help="add 用：日期")
+    p.add_argument("--note", default="")
+    p.add_argument("--days", type=int, default=30, help="show/trend 的回看天数")
+    p.add_argument("--contract", help="backfill 用：东财合约代码，如 au2612")
+    p.add_argument("--only", help="fetch 用：只查指定品种，逗号分隔，如 AU,CU,SN")
+    p.add_argument("--dry-run", action="store_true")
     p = sub.add_parser("lookup", help="代理商 API 查价（只查不写）")
     p.add_argument("model")
     p.add_argument("--source", choices=["digikey", "mouser"])
@@ -834,6 +874,7 @@ def main():
      "lookup": lambda: cmd_lookup(a.model, a.source, a.qty),
      "compare": lambda: cmd_compare(a.model, a.qty),
      "sync": lambda: cmd_sync(a.source, a.force, a.dry_run, a.limit, a.qty),
+     "raw": lambda: cmd_raw(a),
      }[a.cmd]()
 
 
