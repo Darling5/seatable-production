@@ -2,6 +2,7 @@
 """离线自测：用假 offer 跑通 market.cmd_sync 的写库路径（不联网、不碰真实 CSV）。"""
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import market
@@ -96,6 +97,51 @@ print("数字解析自测：")
 from suppliers import _float, _int
 for v in ("$4.49", "¥ 31.9", "1,234.5", "733 In Stock", "", None, "110 Days"):
     print("   %-16r -> float=%s int=%s" % (v, _float(v), _int(v)))
+
+# ---------------------------------------------------------------- 省配额闸门
+print()
+print("=" * 66)
+print("测试 5：本地预筛 _looks_like_mpn（非型号条目不该烧配额）")
+print("=" * 66)
+_MPN_CASES = [
+    ("P1", False), ("Z3.5", False), ("Z6.0", False), ("458*3", False),
+    ("26MHz/0.5ppm", False), ("Z3.5 PG2.0-3.5-2.5-1.54", False),
+    ("GNSS 1.57G", False), ("0402 100nF", False),
+    ("2SK3541", True), ("FR8018HD", True), ("GLF71311", True),
+    ("ML307N-DC 4+4", True), ("ML307N-DL", True), ("0402ESDA-05N", True),
+    ("B5819S", True), ("LM620S", True), ("OM6626B_X311", True),
+    ("GRM155R71C104KA88D", True),
+]
+_mpn_bad = 0
+for s, want in _MPN_CASES:
+    got = market._looks_like_mpn(s)
+    if got != want:
+        _mpn_bad += 1
+        print("   ✗ %-26r -> %s（期望 %s）" % (s, got, want))
+print("   预筛 %d 项，差异 %d 项 %s" % (
+    len(_MPN_CASES), _mpn_bad, "✓" if _mpn_bad == 0 else "✗"))
+
+print()
+print("=" * 66)
+print("测试 6：未知缓存（拿不到有效报价的型号，TTL 内不重复查）")
+print("=" * 66)
+_orig_cache = market.UNKNOWN_CACHE
+market.UNKNOWN_CACHE = os.path.join(tempfile.gettempdir(), "_t_unknown_mpn.json")
+try:
+    if os.path.exists(market.UNKNOWN_CACHE):
+        os.remove(market.UNKNOWN_CACHE)
+    market._mark_unknown(["AAA111", "BBB222", "CCC333"])
+    skip = market._unknown_skip(["AAA111", "BBB222", "CCC333", "DDD444"])
+    print("   缓存 3 项后，再查 4 个型号 → 应跳过 3 个：", sorted(skip))
+    assert set(skip) == {"AAA111", "BBB222", "CCC333"}, "未知缓存未按预期命中"
+    forced = market._unknown_skip(["AAA111"], force=True)
+    print("   --force 时应跳过 0 个：", forced)
+    assert not forced, "--force 未绕过未知缓存"
+    print("   ✓ 未知缓存正常，--force 可绕过")
+finally:
+    if os.path.exists(market.UNKNOWN_CACHE):
+        os.remove(market.UNKNOWN_CACHE)
+    market.UNKNOWN_CACHE = _orig_cache
 
 # 清理
 for p in (market.WATCH_PATH, market.HIST_PATH):

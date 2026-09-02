@@ -73,6 +73,25 @@ def _mask(s):
     return s[:4] + "…" + ("(%d位)" % len(s))
 
 
+def _dk_subscription_hint(body):
+    """识别得捷「app 已创建但未订阅 API」这类 401，返回可操作指引。
+
+    2026-09-02 实测取证：client_id/secret 有效、令牌能正常拿到（HTTP 200），
+    但所有 /Search/v3/* 查询一律 401 且 ErrorDetails 为
+    "You are not subscribed to this API. Please subscribe and try again."
+    这跟「令牌过期」不是一回事——重试、清缓存、换端点都无效，
+    必须在得捷开发者后台给 App 订阅 API Product。此处提前拦截，
+    避免代码把配额浪费在无意义的自动重试上。
+    """
+    t = str(body or "")
+    if "not subscribed" not in t.lower():
+        return ""
+    return ("得捷 App 未订阅 API（令牌可正常获取，但查询被拒）。"
+            "请到 https://developer.digikey.com → My Apps → 选该 App → "
+            "Subscribe to API Product，订阅 Product Search API（注意选 Production 而非 Sandbox），"
+            "订阅生效后再跑一次 suppliers.py doctor --live。")
+
+
 # ------------------------------------------------------------------ 汇率
 def _static_fx():
     fx = (_market_cfg().get("fx") or {}).get("static") or {}
@@ -299,6 +318,11 @@ class DigiKeySupplier(object):
                 off["error"] = "得捷无此型号"
                 return off
             if r.status_code == 401:
+                # 订阅缺失类错误：重试也无用，直接给出可操作指引，别浪费配额
+                sub = _dk_subscription_hint(r.text)
+                if sub:
+                    off["error"] = sub
+                    return off
                 # 令牌可能过期：清缓存后重试一次
                 try:
                     if os.path.exists(TOKEN_CACHE):

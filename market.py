@@ -28,6 +28,16 @@
     ≤100 种 → 每 7 天（每周） · 101~300 种 → 每 15 天（半月） · >300 种 → 每 30 天（每月）
   数量来源 data/partdb_snapshot.json 的 part_count，阈值可用 config.yaml
   market.cadence / market.cadence_tiers 覆盖；market.cadence 写死数字则不做自适应。
+  节奏之外还有两道闸门（sync 依次过滤，越往后越省）：
+    ① 本地预筛：P1 / Z3.5 / 458*3 / 26MHz/0.5ppm 这类内部料号与规格描述，
+       不是制造商型号，永远查不到 —— 本地判掉，不烧配额
+    ② 未知缓存：近 30 天确认「查无此型号 / 无报价」的型号记进
+       data/.cache/unknown_mpn.json，TTL 内不再查（--force 可绕过）
+
+注意：得捷/贸泽是欧美代理商，对国产料与定制料号基本零覆盖。
+本仓库 25 个启用型号（国产芯片为主）实测贸泽有效命中 0 条 ——
+这两个 API 适合选型阶段查新料号（lookup/compare），国产 BOM 的行情巡检
+仍以人工录入与立创商城为主。
 
 涨跌幅口径：
   有渠道时，**只跟同渠道的上一条有单价快照比**（得捷跟得捷比、贸泽跟贸泽比）——
@@ -51,6 +61,12 @@ HIST_PATH = os.path.join(DATA, "物料行情记录.csv")
 
 WATCH_COLS = ["物料型号", "物料名称", "类别", "来源", "上次采购价", "上次采购日期", "启用", "备注"]
 HIST_COLS = ["日期", "物料型号", "渠道", "单价", "涨跌幅", "生命周期", "来源链接", "备注"]
+
+# 查无此型号的缓存：代理商不代理的料，没必要每月重复消耗配额。
+# 2026-09-02 实测：25 个启用型号里 24 个在贸泽查无此型号（多为国产料/内部规格描述），
+# 若不缓存，每月白白烧掉 24 次配额且刷屏。--force 可绕过。
+UNKNOWN_CACHE = os.path.join(DATA, ".cache", "unknown_mpn.json")
+UNKNOWN_TTL_DAYS = 30
 
 LIFECYCLE_OK = "在产"
 LIFECYCLE_WARN = "NRND"
@@ -590,6 +606,71 @@ def cmd_compare(model, qty=1):
             (hi["price_cny"] - lo["price_cny"]) / lo["price_cny"] * 100))
 
 
+# 不匹配制造商型号的特征：规格描述、单位、运算符、中文、过短、纯数字
+_MPN_BAD_RE = [
+    re.compile(r"[\u4e00-\u9fff]"),                                  # 中文
+    re.compile(r"[/*]"),                                             # 458*3 / 26MHz/0.5ppm
+    re.compile(r"^\d+(\.\d+)?$"),                                    # 纯数字
+    re.compile(r"\d\s*(mhz|khz|ghz|ppm|mm|cm|uf|pf|nf|mh|uh|kω|ω|ma|a|v)(?![a-z0-9])", re.I),
+    re.compile(r"^[A-Za-z]{1,2}\d+\.\d+$"),    # Z3.5 / Z6.0 —— 内部简称
+    re.compile(r"\s+\S*\d+\.\d+"),             # 空格后带小数：GNSS 1.57G、Z3.5 PG2.0-...
+]
+
+
+def _looks_like_mpn(s):
+    """本地预筛：明显不是制造商型号的条目不必浪费 API 配额。
+
+    监控清单是从采购记录自动生成的，里面有不少「内部料号/规格描述」，
+    例如 P1、Z3.5、458*3、26MHz/0.5ppm、Z3.5 PG2.0-3.5-2.5-1.54 —— 这些
+    在得捷/贸泽永远查不到，直接本地判掉，省配额也减少噪音。
+    """
+    s = (s or "").strip()
+    if len(s) < 4:
+        return False
+    return not any(p.search(s) for p in _MPN_BAD_RE)
+
+
+def _load_unknown():
+    try:
+        if os.path.exists(UNKNOWN_CACHE):
+            return json.load(open(UNKNOWN_CACHE, "r", encoding="utf-8")) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _mark_unknown(mpns):
+    """把查无此型号的型号记进缓存（含日期），TTL 内不再重复查。"""
+    try:
+        d = _load_unknown()
+        today = datetime.now().strftime("%Y-%m-%d")
+        for m in mpns:
+            d[m] = today
+        os.makedirs(os.path.dirname(UNKNOWN_CACHE), exist_ok=True)
+        json.dump(d, open(UNKNOWN_CACHE, "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+
+def _unknown_skip(mpns, force=False):
+    """返回 {型号: 上次确认日期} —— 缓存里未过期的型号。"""
+    if force:
+        return {}
+    d = _load_unknown()
+    cutoff = (datetime.now() - timedelta(days=UNKNOWN_TTL_DAYS)).strftime("%Y-%m-%d")
+    return {m: dt for m, dt in d.items() if m in mpns and str(dt) >= cutoff}
+
+
+def _brief_err(e, n=26):
+    """把长错误压成一行短标签，完整原文留给末尾汇总。
+
+    得捷「未订阅 API」这类指引有上百字符，78 个型号会刷 78 遍。
+    """
+    e = " ".join(str(e or "").split())
+    return e if len(e) <= n else e[:n] + "…（见下方汇总）"
+
+
 def cmd_sync(source=None, force=False, dry_run=False, limit=None, qty=1):
     """按自适应节奏批量拉价并写行情快照。"""
     sp = _load_suppliers()
@@ -623,26 +704,75 @@ def cmd_sync(source=None, force=False, dry_run=False, limit=None, qty=1):
             print("  将查 %s（%s）" % (m, "、".join(due[m])))
         return
 
-    todo = list(due.keys())
+    # 三道省配额闸门：本地预筛（非型号）→ 未知缓存（TTL 内）→ 节奏到期（已在 due 里）
+    todo0 = list(due.keys())
+    prescreen = [m for m in todo0 if not _looks_like_mpn(m)]
+    todo = [m for m in todo0 if _looks_like_mpn(m)]
+    unk = _unknown_skip(todo, force=force)
+    todo = [m for m in todo if m not in unk]
+    if prescreen:
+        print("本地预筛跳过 %d 项（非制造商型号，如内部料号/规格描述）：%s\n" % (
+            len(prescreen), "、".join(prescreen[:6]) + ("…" if len(prescreen) > 6 else "")))
+    if unk:
+        print("未知缓存跳过 %d 项（近 %d 天已确认代理商无此型号，--force 可绕过）：%s\n" % (
+            len(unk), UNKNOWN_TTL_DAYS,
+            "、".join(list(unk)[:6]) + ("…" if len(unk) > 6 else "")))
+    if not todo:
+        print("三道闸门后无可查型号，未消耗任何 API 配额。")
+        return
     print("开始查询 %d 个型号…（贸泽 10 个/批，得捷逐个）\n" % len(todo))
     res = sp.lookup_many(todo, sources=srcs, qty=qty)
-    ok = fail = wrote = 0
+    ok = fail = wrote = noprice = 0
     bad_lc = []
+    notfound = []            # 确认查无此型号的，结束前记进未知缓存
+    err_groups = {}          # 错误原文 -> [型号]，末尾去重汇总，避免同因刷屏
     for m in todo:
         for o in (res.get(m) or []):
             if not o.get("ok"):
                 fail += 1
-                print("  ✗ %-24s %-6s %s" % (m, o["source"], o.get("error") or "无结果"))
+                e = o.get("error") or "无结果"
+                err_groups.setdefault(e, []).append(m)
+                # 只把「确实查无此型号」的记进未知缓存；鉴权/网络类错误不记，
+                # 否则订阅修好后这些型号反而被缓存挡住。
+                if "无此型号" in e:
+                    notfound.append(m)
+                print("  ✗ %-24s %-6s %s" % (m, o["source"], _brief_err(e)))
+                continue
+            pc = _num(o.get("price_cny"))
+            lc = o.get("lifecycle") or ""
+            if pc <= 0 and lc not in _BAD_LIFECYCLE:
+                # 命中但无人民币报价：不写库。
+                # 一旦写进去，这条空价快照会成为该型号的「上次快照日期」，
+                # 后续按节奏判定时被当作已复查而跳过——等于用一条废记录
+                # 把该型号在整个复查间隔内屏蔽掉（2026-09-02 实测踩到）。
+                # 例外：生命周期已是 NRND/EOL 的照写，停产预警比价格重要。
+                noprice += 1
+                e = "有记录但无人民币报价（可能已停产/不备货）"
+                err_groups.setdefault(e, []).append(m)
+                # 同样不值得重复消耗配额：无报价 = 写不进有效快照。
+                # 2SK3541 就属于此类（贸泽有 ROHM 的记录，但 PriceBreaks 为空）。
+                notfound.append(m)
+                print("  ! %-24s %-6s %s" % (m, o["source"], e))
                 continue
             ok += 1
-            cmd_snapshot(m, price=o.get("price_cny"), channel=o["source"],
-                         lifecycle=o.get("lifecycle") or "", source=o.get("url") or "",
+            cmd_snapshot(m, price=(pc if pc > 0 else None), channel=o["source"],
+                         lifecycle=lc, source=o.get("url") or "",
                          note=_offer_note(o))
             wrote += 1
-            if (o.get("lifecycle") or "") in _BAD_LIFECYCLE:
-                bad_lc.append("%s（%s：%s）" % (m, o["source"], o.get("lifecycle")))
+            if lc in _BAD_LIFECYCLE:
+                bad_lc.append("%s（%s：%s）" % (m, o["source"], lc))
+    if notfound:
+        _mark_unknown(sorted(set(notfound)))
+        print("\n已把 %d 个「拿不到有效报价」的型号记入缓存（查无此型号 / 无报价，%d 天内不再重复查，--force 可绕过）" % (
+            len(set(notfound)), UNKNOWN_TTL_DAYS))
     print("\n" + "-" * 62)
-    print("完成：命中 %d 条 · 无结果 %d 条 · 写入快照 %d 条" % (ok, fail, wrote))
+    print("完成：命中 %d 条 · 无结果 %d 条 · 无报价跳过 %d 条 · 写入快照 %d 条" % (
+        ok, fail, noprice, wrote))
+    if err_groups:
+        print("\n失败原因汇总（同一原因只展开一次）：")
+        for e, ms in sorted(err_groups.items(), key=lambda kv: -len(kv[1])):
+            print("  [%d 项] %s" % (len(ms), e))
+            print("       型号：%s%s" % ("、".join(ms[:8]), "…" if len(ms) > 8 else ""))
     if bad_lc:
         print("\n[!!!] 生命周期告警 %d 项：" % len(bad_lc))
         for x in bad_lc:
