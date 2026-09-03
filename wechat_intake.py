@@ -649,17 +649,22 @@ def cmd_list(status=None):
             r.get("分类", ""), r.get("状态", ""), r.get("原文", "")[:36]))
 
 
-def _get_adapter_for_business():
-    """业务表写入优先 SeaTable 云端（防本地写被次日同步覆盖）；无配置退回本地。"""
+def _get_adapter_for_business(base_name=None):
+    """业务表写入优先 SeaTable 云端；支持按命名 Base 路由。
+
+    ``base_name`` 可由调用方显式指定（例如 ``production``）；默认解析
+    ``seatable.default_base``/production，并继续兼容旧的扁平 seatable 配置。
+    """
     cfg = load_config() or {}
-    sc = cfg.get("seatable") or {}
-    if sc.get("api_token") and sc.get("base_uuid"):
-        try:
-            from adapters.seatable import SeaTableAdapter
-            return SeaTableAdapter(sc["api_token"], sc.get("server") or "https://cloud.seatable.cn",
-                                   sc["base_uuid"]), "seatable云"
-        except Exception as e:
-            print("[warn] SeaTable 初始化失败，退回本地：%s" % e)
+    try:
+        from adapters.factory import get_adapter, get_base_config
+        selected = get_base_config(cfg, base_name)
+        if selected and selected.get("api_token") and selected.get("base_uuid"):
+            adapter = get_adapter(cfg, base_name=base_name)
+            if adapter.__class__.__name__ == "SeaTableAdapter":
+                return adapter, "seatable云「%s」" % selected.get("name", base_name or "default")
+    except Exception as e:
+        print("[warn] SeaTable 初始化失败，退回本地：%s" % e)
     from adapters.local import LocalAdapter
     return LocalAdapter(os.path.join(HERE, "data"), cfg), "local"
 

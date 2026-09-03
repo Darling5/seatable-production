@@ -129,6 +129,7 @@ python publish.py --status                                     # 查看当前发
 5. **消息↔业务表逐条核对**——`wxmatch.py` 把群消息里的收款、新下单、合同 PDF 与 SeaTable 业务表对账，专抓「群里说了但表里没有」的缺口；**只读核对**，高置信项生成预填意图等人确认。
 6. **行情可追踪**——从采购记录生成物料监控清单，记录渠道价快照、采购价偏差、环比涨跌和 NRND/EOL 生命周期；上游原料（金/银/铜/锡/塑料）另有独立行情线看成本走向。
 7. **风险可预知**——`foresee.py` 用历史真实工期给新合同倒排各环节最晚开始日（哪些必须立刻执行），用承诺 vs 实际交期给供应商画像（组装料平均晚 29 天，排程自动加 buffer），BOM 缺口 × 在途 ETA 判断哪些计划必须立刻下单补料。
+8. **事项与证据可治理**——微信群里的业务事实进入 `production` 候选，负责人/截止日期/追问进入 `tasks` 候选；图片证据允许确认后上传，普通文件优先文本化；季度只列 90 天以上已闭环证据的清理候选，显式 `--yes` 才删除。
 
 ```mermaid
 flowchart LR
@@ -157,8 +158,14 @@ flowchart LR
         ↓ 只读，不连接微信服务器
 wechat_intake.py pull（引擎A优先，自动回退引擎B）
         ↓
-微信事件.csv（待确认） → 用户确认 → SeaTable 业务表 + 工作日志
+微信事件.csv（待确认）
+        ↓ AI 分流，同一消息可拆两条
+production：业务事实候选 / tasks：负责人·截止日期·追问候选
+        ↓ 分别展示目标 Base/表/字段，用户确认后才写入
+SeaTable 业务表 + 事项表 + 工作日志
 
+图片：先登记摘要/来源/哈希，允许确认后上传
+普通文件：优先文本化，失败或需核验版式/签章时才上传原件
         ↓ 同一批消息换个用法：对账而非提取
 wxmatch.py scan（只读核对，绝不自动写库）
         ↓ 收款/下单/合同PDF ↔ 业务表逐条匹配
@@ -245,6 +252,28 @@ python wechat_intake.py ignore WX20260821-002
 ```
 
 可识别分类：交期变更、价格变动、停产通知、催货、进度、库存、其他。驾驶舱的「微信情报台」展示原文、来源群、分类、待确认状态和最终写入结果。
+
+### 微信事项双 Base 分流与证据保留
+
+启用命名 Base 后，微信候选不要全部写进默认 Base：
+
+| Base | 内容 | 示例 |
+|---|---|---|
+| `production` | 已发生或待登记的业务事实 | 回款、订单、交期变更、采购/库存/生产/发货/质量记录 |
+| `tasks` | 需要执行和追踪的事项 | 负责人、截止日期、提醒、催办、追问、未闭环问题 |
+
+「已到账 3 万，请小王今天核对发票」应拆为 production 回款候选和 tasks 核票事项候选。
+自动化只生成待确认清单；人工确认前不执行 `approve`，也不得把“高置信”说成“已写入”。
+需要手工核验 Base 时使用 `python op.py --base production ...` 或 `python op.py --base tasks ...`。
+
+附件采用“可检索优先”策略：
+
+- 图片允许在确认后上传到目标记录的图片/附件列，但先登记 OCR/视觉摘要、来源群、发送人、时间和哈希；
+- PDF、Word、Excel、PPT、TXT 等普通文件优先提取正文/表格，文本化失败或必须查看版式/签章时再上传原件；
+- 每季度运行 `python evidence.py scan --root data/wechat_intake --days 90 --json`，只列出超过 90 天、已闭环且非长期保留的候选；
+- 真正删除必须由人工明确批准后运行 `python evidence.py prune --root data/wechat_intake --days 90 --yes`。不带 `--yes` 永远只预览。
+
+每日和季度自动化模板见 [`automations/README.md`](automations/README.md)，AI 总结分流规范见 [`references/wx-ai-summary-prompt.md`](references/wx-ai-summary-prompt.md)。
 
 > 事件提取解决的是「群里说了什么」。如果你还想知道「**群里说的和表里记的对不对得上**」，继续看 [消息↔SeaTable 核对](#消息seatable-核对v162)——同一批消息，换个用法从提取变成对账。
 
@@ -505,7 +534,8 @@ seatable-production/
 ├── config.yaml.example   # 配置模板（复制为 config.yaml 后填写）
 ├── op.py                 # 统一数据操作 CLI（模型与用户都只调它）
 ├── cockpit.py            # 驾驶舱网页生成器（单文件 HTML）
-├── wechat_intake.py      # 微信本地库 → 待确认事件 → 业务表（双引擎）
+├── wechat_intake.py      # 微信本地库 → 待确认事件 → production/tasks 分流候选（双引擎）
+├── evidence.py           # 图片证据元数据 + 90 天清理候选（显式 --yes 才删除）
 ├── wxengine/wa_db.py     # 微信 4.x 解密引擎（SQLCipher4 直读，主密钥从进程内存提取）
 ├── wxmatch.py            # 消息↔SeaTable 核对引擎（只读对账，高置信生成预填意图）
 ├── foresee.py            # 风险预测引擎（合同倒排·供应商画像·缺料预警 → data/foresee.json）
@@ -529,8 +559,8 @@ seatable-production/
 │   ├── partdb.py         #   PartDB（可选）
 │   └── schema.py         #   14 表结构 + 15 条语义关联 + 默认值
 ├── references/           # 长文档（业务流程 / 分析公式）
-├── tests/                # 离线回归测试（smoke 187 项 / wxmatch / market / commodities，不碰真实 data/）
-├── automations/          # 每日自动化的分发说明 + bridge/ 桥接脚本（挂到项目分组用）
+├── tests/                # 离线回归测试（含双 Base、证据清理与自动化文档契约，不碰线上数据）
+├── automations/          # 每日/季度自动化模板 + bridge/ 桥接脚本（挂到项目分组用）
 ├── scripts/              # 便捷 shell（SeaTable token / PartDB 查询）
 ├── partdb-price-import/  # 子技能：采购合同 PDF → PartDB 价格录入
 ├── partdb-part-create/   # 子技能：PartDB 新建物料 + 供应商件

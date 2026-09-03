@@ -6,6 +6,6 @@
   - seatable: 你自己的 SeaTable Base（配置驱动，不再写死 token/uuid）
   - partdb : 可选的物料库存后端（仅缺料检查用）
 """
-from .factory import get_adapter, load_config
+from .factory import get_adapter, get_adapters, get_base_config, load_config
 
-__all__ = ["get_adapter", "load_config"]
+__all__ = ["get_adapter", "get_adapters", "get_base_config", "load_config"]
