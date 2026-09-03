@@ -120,7 +120,7 @@ python publish.py --status                                     # 查看当前发
 小批量电子制造的活儿，数据散在一堆地方：项目在 SeaTable、物料在 PartDB、发货记录在某个 Excel 里。
 每个人都要问别人「那个单子到哪一步了」。
 
-这个技能做六件事：
+这个技能做七件事：
 
 1. **统一读写**——`op.py` 一个入口管业务表，不管后端是本地 CSV 还是 SeaTable 云。
 2. **按角色出网页**——`cockpit.py` 把数据算成 KPI、甘特图、缺料预警，生成**单文件 HTML**，5 个角色各一套视图，可设口令分享给同事。
@@ -128,6 +128,7 @@ python publish.py --status                                     # 查看当前发
 4. **微信消息变业务情报**——双引擎只读本地微信数据库（4.x 直读加密库 / 3.x 走 merge_all.db），按监控群拉取新消息，提取交期、价格、停产、催货、进度和库存事件，确认后才写回业务表。
 5. **消息↔业务表逐条核对**——`wxmatch.py` 把群消息里的收款、新下单、合同 PDF 与 SeaTable 业务表对账，专抓「群里说了但表里没有」的缺口；**只读核对**，高置信项生成预填意图等人确认。
 6. **行情可追踪**——从采购记录生成物料监控清单，记录渠道价快照、采购价偏差、环比涨跌和 NRND/EOL 生命周期；上游原料（金/银/铜/锡/塑料）另有独立行情线看成本走向。
+7. **风险可预知**——`foresee.py` 用历史真实工期给新合同倒排各环节最晚开始日（哪些必须立刻执行），用承诺 vs 实际交期给供应商画像（组装料平均晚 29 天，排程自动加 buffer），BOM 缺口 × 在途 ETA 判断哪些计划必须立刻下单补料。
 
 ```mermaid
 flowchart LR
@@ -141,6 +142,9 @@ flowchart LR
     H -- 对不上 --> J[待核对清单<br/>提示漏立项 / 漏登记]
     I --> B
     J --> C
+    K[历史工期 · 供应商交期<br/>BOM缺口 × 在途] --> L[foresee.py 风险预测]
+    L --> M[合同倒排 · 必须立刻执行<br/>缺料必须立刻下单]
+    M --> C
 ```
 
 ### 微信情报 · 行情监控 · 消息核对
@@ -504,7 +508,7 @@ seatable-production/
 ├── wechat_intake.py      # 微信本地库 → 待确认事件 → 业务表（双引擎）
 ├── wxengine/wa_db.py     # 微信 4.x 解密引擎（SQLCipher4 直读，主密钥从进程内存提取）
 ├── wxmatch.py            # 消息↔SeaTable 核对引擎（只读对账，高置信生成预填意图）
-├── test_wxmatch.py       # 核对引擎离线回归测试（33 项断言）
+├── foresee.py            # 风险预测引擎（合同倒排·供应商画像·缺料预警 → data/foresee.json）
 ├── wxwatch.py            # 实时哨兵：监听监控群，关键词命中自动登记事件+通知
 ├── alerts.py             # 异常检测引擎：超期/应收/在途/停滞/行情 → data/alerts.json
 ├── daily_brief.py        # 站会摘要：异常+微信情报+业务面 合成一段话
@@ -512,8 +516,6 @@ seatable-production/
 ├── market.py             # 物料监控清单 / 价格涨跌 / NRND-EOL（含 raw 子命令入口）
 ├── suppliers.py          # 得捷·贸泽官方 API 只读查价（凭证本地化 / 失败降级 / 统一 ¥）
 ├── commodities.py        # 上游原料行情（金/银/铜/锡/塑料，零凭证数据源）
-├── test_market_sync.py   # 行情同步离线回归测试（假数据跑通写库，不联网）
-├── test_commodities.py   # 原料行情离线回归测试（同口径环比 / sparkline / 人工录入）
 ├── seatable_sync.py      # 拉 SeaTable 云表快照供驾驶舱离线渲染
 ├── partdb_sync.py        # 拉 PartDB 库存与缺料快照
 ├── backfill_seatable.py  # 历史数据补录（确定性字段预填，需拍板的留空）
@@ -527,6 +529,12 @@ seatable-production/
 │   ├── partdb.py         #   PartDB（可选）
 │   └── schema.py         #   14 表结构 + 15 条语义关联 + 默认值
 ├── references/           # 长文档（业务流程 / 分析公式）
+├── tests/                # 离线回归测试（smoke 187 项 / wxmatch / market / commodities，不碰真实 data/）
+├── automations/          # 每日自动化的分发说明 + bridge/ 桥接脚本（挂到项目分组用）
+├── scripts/              # 便捷 shell（SeaTable token / PartDB 查询）
+├── partdb-price-import/  # 子技能：采购合同 PDF → PartDB 价格录入
+├── partdb-part-create/   # 子技能：PartDB 新建物料 + 供应商件
+├── expert/               # 专家包（内嵌技能副本，python sync_expert.py 同步，CI 校验漂移）
 ├── data/                 # 本地数据（自动生成，已 gitignore）
 └── docs/                 # 手册、配图、在线指南
 ```

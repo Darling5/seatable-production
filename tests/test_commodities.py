@@ -8,7 +8,7 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 模块在上一级
 import commodities as cm
 
 # 指向临时文件，绝不污染真实历史

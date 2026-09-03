@@ -299,6 +299,22 @@ def _load_commodities(days=None):
             "days": days, "series_count": len(rows)}
 
 
+def _load_foresee():
+    """风险预测模型（foresee.py 维护：data/foresee.json）。无数据返回 None。
+
+    三路预测：合同倒排（历史周期分位→环节最晚开始日）、供应商交期画像（承诺vs实际偏差→buffer）、
+    缺料预警（BOM缺口×在途→必须立刻下单）。只读消费，缺失时驾驶舱不渲染该 section。
+    """
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "foresee.json")
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def _load_wxmatch():
     """消息↔SeaTable 核对模型（wxmatch.py 维护：data/核对结果.csv）。无数据返回 None。
 
@@ -847,6 +863,21 @@ def compute(adapter, today):
     commodities_model = _load_commodities()
     # 消息↔SeaTable 核对（wxmatch.py 维护 data/核对结果.csv；缺失则 None）
     wxmatch_model = _load_wxmatch()
+    # 风险预测（foresee.py 维护 data/foresee.json；缺失则 None）
+    foresee_model = _load_foresee()
+    # 风险预测 → 行动建议：已逾期/高风险置顶为高优，缺料必须立刻下单次之
+    if foresee_model:
+        fb = foresee_model.get("backward") or {}
+        for a in (fb.get("act_now") or [])[:5]:
+            txt = "风险雷达：%s %s 剩%d天，环节已过最晚开始日（%s）" % (
+                a["plan"], a["product"][:14], a["days_left"], "、".join(a["do_now"][:2]))
+            actions.insert(0, {"pri": "高" if a["days_left"] < 0 else "中", "cat": "risk",
+                               "text": txt})
+        for e in (foresee_model.get("shortage", {}).get("must_order") or [])[:3]:
+            actions.append({"pri": "高" if e["verdict"] == "必须立刻下单" else "中", "cat": "risk",
+                            "text": "风险雷达：%s 缺料 %d 项（共%d件，零库存 %d 项）%s" % (
+                                e["product"][:16], e["gap_items"], e["total_gap"],
+                                e["zero_stock_items"], e["verdict"])})
     if wechat_model and wechat_model["pending_count"]:
         cats = "/".join(sorted({e.get("分类", "") for e in wechat_model["pending"] if e.get("分类")}))
         actions.insert(0, {"pri": "高", "cat": "wechat",
@@ -966,6 +997,8 @@ def compute(adapter, today):
         "commodities": commodities_model,
         # 消息↔SeaTable 核对（wxmatch.py 维护 data/核对结果.csv；缺失则 None）
         "wxmatch": wxmatch_model,
+        # 风险预测（foresee.py 维护 data/foresee.json；缺失则 None）
+        "foresee": foresee_model,
     }
 
 
@@ -994,6 +1027,7 @@ ICONS = {
     "IC_KEY": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M14 7a4 4 0 1 0-3.6 5.9L7 17v3H4v-3l5.4-5.4A4 4 0 0 0 14 7zm-1.6 2.4a2 2 0 1 1-2.8 2.8 2 2 0 0 1 2.8-2.8z"/></svg>',
     "IC_ADD": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
     "IC_CHECK": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 12l3 3 5-6"/></svg>',
+    "IC_RADAR": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/><path d="M12 12L20 7"/></svg>',
     "IC_THEME": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
     "IC_USER": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3 20v-1.5C3 16 5.7 14.5 9 14.5s6 1.5 6 4V20"/><path d="M17 8.5h4"/><path d="M17 12h4"/><path d="M17 15.5h4"/></svg>',
 }
@@ -1706,17 +1740,17 @@ function renderGantt(g, todayStr){
 const ROLES={
   // 老板：只看数据，不含任何写入口（新建/补录均为项目经理职责，不出现在老板页）
   // core = 首屏核心模块（≤4）；more = 折叠进「更多分析」的二级模块
-  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv","Rs","WXC","WXM","Mkt","Raw"],
-              core:["K","A","PW"],                more:["WXC","WXM","Mkt","Raw","Rs","G","T","C","Q","P","Sup","Inv"], actions:null},
+  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv","Rs","WXC","WXM","FC","Mkt","Raw"],
+              core:["K","A","PW"],                more:["WXC","WXM","FC","Mkt","Raw","Rs","G","T","C","Q","P","Sup","Inv"], actions:null},
   // 仓库/采购：非项目经理，不开放「新建」写入口（仅看数据 + 各自作业动作）
   warehouse: {name:"仓库",     sections:["K","A","Inv","P"],
               core:["K","A","Inv"],               more:["P"],                     actions:["warehouse"]},
   // 原料行情对采购最有用：决定报价有效期与备货节奏，故给采购页也开
-  purchase:  {name:"采购",     sections:["K","A","Sup","Mkt","Raw"],
-              core:["K","A","Sup"],               more:["Mkt","Raw"],             actions:["purchase","market"]},
-  // 生产经理：项目经理职责 → 新建生产计划（写「生产计划」表）+ 资源排程
-  production:{name:"生产经理", sections:["K","A","WZ","Rs","G","T","Q","P","Inv","WXC","WXM"],
-              core:["K","A","Rs","WZ"],           more:["WXC","WXM","P","G","T","Q","Inv"],   actions:["production","warehouse","delivery","resource","wechat"]},
+  purchase:  {name:"采购",     sections:["K","A","Sup","FC","Mkt","Raw"],
+              core:["K","A","Sup","FC"],          more:["Mkt","Raw"],             actions:["purchase","market"]},
+  // 生产经理：项目经理职责 → 新建生产计划（写「生产计划」表）+ 资源排程 + 风险雷达
+  production:{name:"生产经理", sections:["K","A","WZ","Rs","FC","G","T","Q","P","Inv","WXC","WXM"],
+              core:["K","A","Rs","FC","WZ"],      more:["WXC","WXM","P","G","T","Q","Inv"],   actions:["production","warehouse","delivery","resource","wechat"]},
   // 销售：立项职责 → 新建项目（写「项目」表，对应销售立项表单）
   sales:     {name:"销售",     sections:["K","A","PW","WZ","G","WXM"],
               core:["K","A","PW","WZ"],           more:["G","WXM"],                     actions:["sales","delivery"]},
@@ -1863,7 +1897,7 @@ function render(m){
   // 每类事项按「候选模块」顺序找第一个当前角色可见的模块，保证「去处理」按钮总有落点
   const CAT_SEC={purchase:["Sup","Inv","P"],warehouse:["Inv","P","Sup"],
     delivery:["PW","P","G"],production:["P","G","T","PW"],sales:["PW","G"],boss:["PW","G"],
-    resource:["Rs","G","T"],wechat:["WXC"],market:["Mkt"]};
+    resource:["Rs","G","T"],wechat:["WXC"],market:["Mkt"],risk:["FC"]};
   const visible=(kk)=>CORE.includes(kk)||MORE.includes(kk);
   const urgent=acts.filter(a=>a.pri==="高"||a.pri==="中").slice(0,6);
   const todayBody=urgent.length
@@ -2365,6 +2399,72 @@ function render(m){
     put("WXM", secWXM);
   }
 
+  /* 风险雷达：foresee.py 维护的 data/foresee.json
+     （合同倒排 / 供应商交期画像 / 缺料预警 三路预测，只读展示） */
+  const fc=m.foresee;
+  if(fc){
+    const fb=fc.backward||{}, fs=fc.supplier||{}, fsh=fc.shortage||{};
+    const vBadge=(v)=>{
+      const cls=(v==="已逾期"||v==="必须立刻下单"||v==="在途来不及")?"tag-red":
+                ((v==="高风险")?"tag-amber":((v==="偏紧")?"tag-amber":""));
+      return `<span class="pill ${cls}">${v}</span>`;
+    };
+    const bkRows=(fb.plans||[]).map(r=>{
+      if(r.verdict==="缺数据")
+        return `<tr><td><b>${r.plan}</b></td><td>${r.product}</td><td colspan="5" class="rs-sub">${r.note}</td></tr>`;
+      const stageBadges=(r.stages||[]).filter(s=>s.urgent)
+        .map(s=>`<span class="pill tag-red" style="margin:1px 2px">${s.stage} 已过最晚开始</span>`).join("");
+      return `<tr>
+        <td><b>${r.plan}</b><div class="rs-sub">${r.product}</div></td>
+        <td>${r.due}<div class="rs-sub">${r.basis}</div></td>
+        <td class="${r.days_left<0?"neg":""}"><b>${r.days_left}</b> 天</td>
+        <td>${r.est_cycle!=null?r.est_cycle+" 天":"—"}</td>
+        <td>${vBadge(r.verdict)}</td>
+        <td style="max-width:340px">${r.note}${stageBadges?`<div style="margin-top:2px">${stageBadges}</div>`:""}</td></tr>`;
+    }).join("")||`<tr><td colspan="6" class="empty">暂无在制计划。运行 <code>python foresee.py</code> 生成风险预测。</td></tr>`;
+    const supRows=(fs.cat_order||[]).map(c=>{
+      const cp=fs.cat_profile[c]||{};
+      const bad=(fs.sup_detail[c]||[]).filter(x=>x.mean>5).slice(0,4)
+        .map(x=>`<span class="pill tag-amber" style="margin:1px 2px">${x.supplier.slice(0,12)} +${x.mean}天(最差+${x.max})</span>`).join("");
+      return `<tr>
+        <td><b>${c}</b></td><td>${cp.n||0}</td>
+        <td class="${(cp.mean||0)>10?"neg":""}"><b>+${cp.mean!=null?cp.mean:"—"} 天</b></td>
+        <td>+${cp.max!=null?cp.max:"—"} 天</td>
+        <td><b>+${cp.buffer||0} 天</b></td>
+        <td>${bad||'<span class="rs-sub">无显著风险供应商</span>'}</td></tr>`;
+    }).join("")||`<tr><td colspan="6" class="empty">暂无供应商交期数据</td></tr>`;
+    const shRows=(fsh.plans||[]).map(e=>{
+      const gaps=(e.top_gaps||[]).slice(0,3)
+        .map(g=>`<span class="pill ${g.confirmed===0?"tag-red":""}" style="margin:1px 2px">${g.name} ${g.confirmed}/${g.need}</span>`).join("");
+      return `<tr>
+        <td><b>${e.product}</b>${e.plan?`<div class="rs-sub">${e.plan}</div>`:""}${e.matched?"":'<div class="rs-sub">未关联生产计划</div>'}</td>
+        <td>${e.due||"—"}</td>
+        <td class="neg"><b>${e.gap_items}</b> 项</td>
+        <td>${e.total_gap} 件 / 零库存 ${e.zero_stock_items}</td>
+        <td>${e.intransit_n?`${e.intransit_n} 条<div class="rs-sub">ETA ${e.intransit_eta||"未知"}</div>`:"<b class='neg'>无在途</b>"}</td>
+        <td>${vBadge(e.verdict)}</td>
+        <td style="max-width:280px">${gaps||'<span class="rs-sub">—</span>'}</td></tr>`;
+    }).join("")||`<tr><td colspan="7" class="empty">活动计划无缺料缺口（PartDB 快照 ${fsh.snapshot_at||"缺失"}）</td></tr>`;
+    const secFC=el(`<section id="sec-FC" class="sec"><div class="sec-title">__IC_RADAR__ 风险雷达（合同倒排 · 供应商画像 · 缺料预警 · 生成于 ${fc.generated_at||"?"}）</div>
+      <div class="card"><h3>【1】合同倒排 — 按历史工期预警（样本 n=${fb.hist_n||0}，中位 ${fb.hist_median||"—"} / p75 ${fb.hist_p75||"—"} / p90 ${fb.hist_p90||"—"} 天）</h3>
+        <div style="overflow-x:auto"><table data-paginate="10"><thead><tr>
+          <th>计划/产品</th><th>目标交期</th><th>剩余</th><th>历史周期 p75</th><th>风险</th><th>环节预警</th>
+        </tr></thead><tbody>${bkRows}</tbody></table></div>
+        <div class="note">周期基准取<b>已交付计划的实际工期</b>（立项→交货）而非合同承诺；剩余天数 &lt; p75 即高风险。环节链：${(fb.plans&&fb.plans[0]&&fb.plans[0].stages?fb.plans[0].stages.map(s=>s.stage+"(提前"+s.lead+"天)").join(" → "):"BOM核对→IC/PCB采购→组装料采购→贴片组装→测试发货")}。生成命令：<code>python foresee.py</code>。</div></div>
+      <div class="card" style="margin-top:14px"><h3>【2】供应商交期画像 — 承诺 vs 实际（样本 ${fs.samples||0} 条）</h3>
+        <div style="overflow-x:auto"><table><thead><tr>
+          <th>类别</th><th>样本</th><th>平均偏差</th><th>最差</th><th>建议 buffer</th><th>风险供应商</th>
+        </tr></thead><tbody>${supRows}</tbody></table></div>
+        <div class="note">偏差 = 实际交期 − 承诺交期（正数=比承诺晚）。排程/缺料 ETA 计算时自动加该类别 buffer；对平均偏差 &gt;5 天的供应商下单时承诺交期需打折看待。</div></div>
+      <div class="card" style="margin-top:14px"><h3>【3】缺料预警 — BOM 缺口 × 在途采购（PartDB 快照 ${fsh.snapshot_at||"缺失"}）</h3>
+        <div style="overflow-x:auto"><table data-paginate="10"><thead><tr>
+          <th>产品/计划</th><th>交期</th><th>缺口</th><th>缺口量</th><th>在途</th><th>结论</th><th>主要缺口料</th>
+        </tr></thead><tbody>${shRows}</tbody></table></div>
+        <div class="note">在途 ETA = 下单日 + 承诺交期 + 类别 buffer。「必须立刻下单」= 有缺口且无任何在途；「在途来不及」= 在途 ETA 晚于合同交期，需催货或加急补单。BOM 缺口来自 <code>python partdb_sync.py</code>，之后重跑 <code>python foresee.py</code>。</div></div>
+    </section>`);
+    put("FC", secFC);
+  }
+
   /* 新建向导：销售→「项目」表（销售立项表单）；其余角色→「生产计划」表（生产经理建计划）。
      老板/仓库/采购页不显示（已在 ROLES 裁剪：WZ 不在其 sections 中） */
   const _isSales = (role==="sales");
@@ -2414,7 +2514,7 @@ function render(m){
   const SEC_NAV={K:['核心指标','__IC_GRID__'],KM:['更多指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],
     WZ:['新建项目','__IC_ADD__'],BF:['补录数据','__IC_EDIT__'],Rs:['资源负载','__IC_USER__'],
     WXC:['微信情报','__IC_CHAT__'],Mkt:['物料行情','__IC_MKT__'],Raw:['原料行情','__IC_MKT__'],
-    WXM:['消息核对','__IC_CHECK__'],
+    WXM:['消息核对','__IC_CHECK__'],FC:['风险雷达','__IC_RADAR__'],
     PW:['项目&在制','__IC_PROJ__'],G:['甘特图','__IC_GANT__'],T:['工时','__IC_TIME__'],
     C:['成本','__IC_COST__'],Q:['质量','__IC_QUAL__'],P:['产线流转','__IC_PROJ__'],
     Sup:['供应链','__IC_SUP__'],Inv:['库存预警','__IC_BOX__']};

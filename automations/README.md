@@ -6,7 +6,7 @@
 
 ---
 
-## 1. 为什么需要桥接脚本（automation-bridge/）
+## 1. 为什么需要桥接脚本（automations/bridge/）
 
 能力脚本（seatable_sync.py / partdb_sync.py / cockpit.py）和 `data/` 都在
 `seatable-production` 技能目录里，而我们希望自动化挂在 WorkBuddy 的
@@ -26,7 +26,7 @@
 
 ## 3. 部署步骤（团队照做）
 
-1. **放置桥接脚本**：把 `automation-bridge/` 下的 4 个文件
+1. **放置桥接脚本**：把 `automations/bridge/` 下的 4 个文件
    （`bridge_common.py` + `seatable_sync.py` / `partdb_sync.py` / `cockpit.py`）
    复制到你的 WorkBuddy「生产交付」项目目录（即自动化 cwds 的第一个目录）。
 2. **（可选但推荐）设置环境变量**：

@@ -22,7 +22,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: 零依赖冒烟测试（不装任何三方包，验证开箱即用）
-        run: python test_smoke.py
+        run: python tests/test_smoke.py
 
       - name: 语法编译全量文件
         run: python -m compileall -q . -x '\.git'
