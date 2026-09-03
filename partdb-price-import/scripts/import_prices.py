@@ -616,14 +616,14 @@ def _do_write(db, action, part_id, supplier_id, price, it):
         if action == "NEW_ORDER":
             # 新建 orderdetail + pricedetail
             od, s1, b1 = db.post("/orderdetails", {
-                "part": f"/parts/{part_id}", "supplier": f"/suppliers/{supplier_id}",
+                "part": f"/api/parts/{part_id}", "supplier": f"/api/suppliers/{supplier_id}",
                 "supplierpartnr": "待补"})
             if s1 >= 400:
                 return False, f"orderdetail 失败 {s1}: {b1[:200]}"
             odj = json.loads(b1)
             odid = odj.get("id") or (odj.get("@id") and odj["@id"].split("/")[-1])
             s2, b2 = db.post("/pricedetails", {
-                "orderdetail": f"/orderdetails/{odid}", "price": price,
+                "orderdetail": f"/api/orderdetails/{odid}", "price": price,
                 "price_per_unit": price, "min_discount_quantity": 1,
                 "price_related_quantity": 1})
             if s2 >= 400:
@@ -642,7 +642,7 @@ def _do_write(db, action, part_id, supplier_id, price, it):
             if odid is None:
                 return False, "找不到之安传感 orderdetail"
             s2, b2 = db.post("/pricedetails", {
-                "orderdetail": f"/orderdetails/{odid}", "price": price,
+                "orderdetail": f"/api/orderdetails/{odid}", "price": price,
                 "price_per_unit": price, "min_discount_quantity": 1,
                 "price_related_quantity": 1})
             if s2 >= 400:
@@ -700,14 +700,14 @@ def _create_part_and_price(db, it, supplier_id, price):
     db.patch(f"/parts/{pid}", {"ipn": ipn})
     # 建之安传感采购记录 + 价格
     s2, b2 = db.post("/orderdetails", {
-        "part": f"/parts/{pid}", "supplier": f"/suppliers/{supplier_id}",
+        "part": f"/api/parts/{pid}", "supplier": f"/api/suppliers/{supplier_id}",
         "supplierpartnr": "待补"})
     if s2 >= 400:
         return False, f"orderdetail 失败 {s2}: {b2[:200]}"
     odj = json.loads(b2)
     odid = odj.get("id")
     s3, b3 = db.post("/pricedetails", {
-        "orderdetail": f"/orderdetails/{odid}", "price": price,
+        "orderdetail": f"/api/orderdetails/{odid}", "price": price,
         "price_per_unit": price, "min_discount_quantity": 1,
         "price_related_quantity": 1})
     if s3 >= 400:
