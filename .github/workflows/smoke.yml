@@ -15,9 +15,9 @@ jobs:
         # 覆盖用户可能自带的 Python：3.9 是很多国产办公机的老版本
         python-version: ["3.9", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
