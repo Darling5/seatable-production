@@ -108,7 +108,7 @@
   <!-- 核心流程 -->
   <section>
     <h2><span class="num">i</span>一眼看懂：你只需要选一条路</h2>
-    <p>这个工具不是一张复杂的“技术架构图”，而是帮生产经理完成两件事：<b>管生产</b>，以及<b>把合同变成采购单</b>。</p>
+    <p>这个工具不是一张复杂的“技术架构图”，而是帮生产经理完成三件事：<b>管生产</b>、<b>把合同变成采购单</b>，以及<b>把微信群消息变成可核对的业务情报</b>。</p>
     <div class="system-map">
       <div class="flow-lane">
         <div class="lane-head">
@@ -144,6 +144,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v5c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg>
       <span><b>共同底线：</b>任何写入都先给人确认；客户公司信息、BOM、库存和 ERP 凭证只放在本地，不进入公共仓库。</span>
     </div>
+    <div class="flow-summary">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 12l3 3 5-6"/></svg>
+      <span><b>第三条路 · 消息核对：</b>微信保持 PC 版登录，跑一次 <code>python wxmatch.py scan</code>，群里的收款、新下单、合同 PDF 就会与业务表<b>逐条对账</b>——专抓「群里说了但表里没有」的缺口。核对引擎<b>只读</b>，高置信项只生成预填意图，你确认后才写库。</span>
+    </div>
   </section>
 
   <!-- 快速开始 -->
@@ -153,6 +157,7 @@
     <div class="step"><b>第 2 步 · 接数据</b><br>业务台账选择本地 CSV 或 SeaTable；采购库存选择 PartDB、ERP API、MCP 或 Excel/CSV。全部客户字段和凭证只填本地配置，不进入公开仓库。</div>
     <div class="step"><b>第 3 步 · 生成与采购</b><br>可以生成生产驾驶舱并分享；也可以只上传采购合同，自动匹配标准 BOM、生成库存审核表，人工批准后输出按供应商分组的正式采购订单 PDF。</div>
     <div class="step"><b>可选 · 开微信情报</b><br>微信 4.x 保持 PC 版登录即可（<code>pip install cryptography</code>），AI 自动从本地加密库拉监控群消息；用 <code>python wechat_intake.py doctor</code> 体检、<code>groups</code> 挑监控群。</div>
+    <div class="step"><b>可选 · 开消息核对（v1.6.2）</b><br>同一批群消息换个用法：<code>python wxmatch.py scan</code> 把收款 / 下单 / 合同 PDF 与业务表<b>逐条对账</b>，结果进驾驶舱「消息↔SeaTable 核对台」。<b>只读核对</b>——高置信收款生成预填意图，你在对话里说出核对编号确认后才写库。</div>
     <div class="okbox">✅ 驾驶舱可按需设置自动更新；采购链路始终保留人工库存审核，SeaTable 写入也必须显式确认。</div>
   </section>
 
@@ -166,9 +171,11 @@
       <div class="card"><b>记一笔采购</b><br>「记录一笔 IC 采购，关联生产计划 #12」</div>
       <div class="card"><b>合同出采购单</b><br>「用这份合同自动匹配 BOM，生成库存审核表」</div>
       <div class="card"><b>问进度</b><br>「项目 B 现在到哪一步了？有没有逾期的？」</div>
+      <div class="card"><b>对账群消息</b><br>「跑一遍消息核对，看看群里说的和表里记的对不对得上」</div>
+      <div class="card"><b>确认一条核对</b><br>「核对 WX-M-20260903-001 处理掉」（确认前不会改任何业务表）</div>
     </div>
     <p class="muted">写之前 AI 会把完整内容念给你确认，你点头它才落库——不会稀里糊涂改了你的数据。</p>
-    <div class="okbox">💡 <b>在网页里建数据（一键发起，仍需确认）：</b>驾驶舱网页按角色自带不同的「新建」向导，写入口只开放给该角色——<b>老板 / 仓库 / 采购页没有新建、也没有补录**（补录缺失数据、新建均为项目经理职责）。具体分流：<br>· <b>销售</b>：看到「🆕 新建项目」向导，提交后写入 SeaTable「<b>项目</b>」表（即销售立项表单）；<br>· <b>生产经理</b>：看到「🆕 新建生产计划」向导，提交后写入「<b>生产计划</b>」表。<br>填产品/数量/交期，点「🚀 一键发起 → WorkBuddy 预填待确认」——它会把信息整理成文字、<b>复制到剪贴板</b>，并用真实深链 <code>workbuddy://task?action=start&amp;prompt=…&amp;skills=seatable-production</code> <b>拉起本地 WorkBuddy、自动预填任务并开始执行</b>。注意：按技能铁律「任何增删改必须先向你确认」，专家会先列出完整数据<b>等你点头</b>，你确认后才会写库、算缺料、刷新驾驶舱——所以<b>不是全自动落库</b>，但仍省去了手动复制粘贴（和百度云/夸克在网页点下载、自动拉起本地客户端同理）。<br>· 「一键发起」通常<b>安装/首次启动即自动注册</b> <code>workbuddy://</code> 协议，无需手动设置；<b>仅当点击没反应时</b>，才去 WorkBuddy 桌面端 <b>Claw设置 → 协议注册</b> 开启一次（开关为一次性，开过即永久生效）。<br>· 没装桌面端 / 没启用协议：点表单里的「🌐 网页版提交（workbuddy.cn）」按钮，在浏览器打开 <code>https://www.workbuddy.cn/</code> 粘贴发送同样可以（网页版需先登录）。<br>· 也给想用命令行的人保留了「下载 JSON（备用）」按钮。</div>
+    <div class="okbox">💡 <b>在网页里建数据（一键发起，仍需确认）：</b>驾驶舱网页按角色自带不同的「新建」向导，写入口只开放给该角色——<b>老板 / 仓库 / 采购页没有新建、也没有补录</b>（补录缺失数据、新建均为项目经理职责）。具体分流：<br>· <b>销售</b>：看到「🆕 新建项目」向导，提交后写入 SeaTable「<b>项目</b>」表（即销售立项表单）；<br>· <b>生产经理</b>：看到「🆕 新建生产计划」向导，提交后写入「<b>生产计划</b>」表。<br>填产品/数量/交期，点「🚀 一键发起 → WorkBuddy 预填待确认」——它会把信息整理成文字、<b>复制到剪贴板</b>，并用真实深链 <code>workbuddy://task?action=start&amp;prompt=…&amp;skills=seatable-production</code> <b>拉起本地 WorkBuddy、自动预填任务并开始执行</b>。注意：按技能铁律「任何增删改必须先向你确认」，专家会先列出完整数据<b>等你点头</b>，你确认后才会写库、算缺料、刷新驾驶舱——所以<b>不是全自动落库</b>，但仍省去了手动复制粘贴（和百度云/夸克在网页点下载、自动拉起本地客户端同理）。<br>· 「一键发起」通常<b>安装/首次启动即自动注册</b> <code>workbuddy://</code> 协议，无需手动设置；<b>仅当点击没反应时</b>，才去 WorkBuddy 桌面端 <b>Claw设置 → 协议注册</b> 开启一次（开关为一次性，开过即永久生效）。<br>· 没装桌面端 / 没启用协议：点表单里的「🌐 网页版提交（workbuddy.cn）」按钮，在浏览器打开 <code>https://www.workbuddy.cn/</code> 粘贴发送同样可以（网页版需先登录）。<br>· 也给想用命令行的人保留了「下载 JSON（备用）」按钮。</div>
   </section>
 
   <!-- 采购流水线 -->
@@ -229,6 +236,49 @@
       <div class="card"><b>快速导航 + 分页</b><br>长页面顶部吸顶导航，长表格分页，不再一拉到底。</div>
       <div class="card"><b>一键分享</b><br>老板 / 销售视图可点按钮复制带口令的微信文案，直接转发。</div>
     </div>
+  </section>
+
+  <!-- 消息核对 -->
+  <section>
+    <h2><span class="num">核</span>消息↔SeaTable 核对（v1.6.2）</h2>
+    <p>微信情报解决「群里说了什么」，核对引擎解决更难的一件事：<b>群里说的和表里记的对不对得上</b>。它专抓「群里说了但表里没有」的缺口——比如群里发了盖章合同 PDF，项目表的合同列却还是空的。</p>
+
+    <h3>四类对账</h3>
+    <table>
+      <thead>
+        <tr><th>类型</th><th>群里看到的</th><th>对哪张表</th><th>匹配规则</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>收款</td><td>「已打款 xx 万」「到账了」</td><td>项目表「待收」</td><td>金额 ±2% 容差 → 高置信</td></tr>
+        <tr><td>下单</td><td>「下单」「返单」</td><td>项目表客户名</td><td>匹配不到 → 提示可能漏立项</td></tr>
+        <tr><td>客户合同</td><td>合同 PDF 文件</td><td>项目表「合同」列</td><td>客户名 + 产品词双维度，≥2 词重叠</td></tr>
+        <tr><td>供应商合同</td><td>采购合同 PDF</td><td>5 张采购记录表</td><td>供应商名归一（含一字之差），金额差 &gt;5% 警示</td></tr>
+      </tbody>
+    </table>
+
+    <h3>常用命令</h3>
+    <div class="card">
+      <code>python wxmatch.py scan</code> &nbsp;扫描群消息 + 合同 PDF，写核对台账<br>
+      <code>python wxmatch.py list</code> &nbsp;查看待核对项（按置信度排序）<br>
+      <code>python wxmatch.py done WX-M-...001</code> &nbsp;处置留痕<br>
+      <code>python wxmatch.py intent</code> &nbsp;导出高置信项预填意图
+    </div>
+
+    <h3>输出长什么样</h3>
+    <table>
+      <thead>
+        <tr><th>编号</th><th>类型</th><th>信号内容</th><th>匹配项目</th><th>建议动作</th><th>置信度</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>WX-M-001</td><td>合同PDF</td><td>发卡充电柜及定位卡采购合同（盖章版）.pdf</td><td>客户A-智能发卡充电柜及定位卡</td><td>确认是否登记到该项目合同列</td><td style="color:#e8a33d;font-weight:600">中</td></tr>
+        <tr><td>WX-M-002</td><td>供应商合同</td><td>外壳采购合同.pdf</td><td>示例电子B（外壳采购记录）</td><td>金额与台账差 8%，需复核</td><td style="color:#e8a33d;font-weight:600">中</td></tr>
+        <tr><td>WX-M-003</td><td>收款</td><td>「尾款已打款 3.65 万」</td><td>客户B-蓝牙信标</td><td>确认后写入实收 36,500</td><td style="color:#e03131;font-weight:600">高</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">上表为<b>脱敏示例</b>（客户/供应商已泛化为「示例电子A/B」），仅用于说明展示形式；真实核对结果只存在本地 <code>data/核对结果.csv</code>，不进公共仓库。</p>
+
+    <div class="okbox">🔒 <b>只读铁律：</b>核对引擎<b>绝不自动写 SeaTable</b>。高置信收款项只生成「预填意图」，你在对话里说出核对编号确认后，才走与微信情报同一条 approve 链路落库。</div>
+    <div class="okbox">💡 <b>为什么能读到合同文件名：</b>微信 4.x 的文件消息在数据库里是加密容器解不开，但磁盘 <code>msg/file/月份/</code> 下存的文件名是<b>明文</b>——核对引擎走磁盘扫描，不解密、不连微信服务器。附件与重传文件（<code>(1)(2)</code> 后缀）已自动去重，不会重复报。</div>
   </section>
 
   <!-- 原料行情 -->
