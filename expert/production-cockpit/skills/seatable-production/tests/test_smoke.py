@@ -19,7 +19,8 @@ import shutil
 import sys
 import tempfile
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
+# 测试已归入 tests/，模块与 data/ 在上一级仓库根目录
+_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _HERE)
 
 _FAIL = []
@@ -98,9 +99,9 @@ def main():
             check(any(a.get("cat") == "resource" for a in acts), "未生成资源类行动建议")
             # 每条建议都要有 pri / cat / text，且 cat 在驾驶舱有映射
             # （KNOWN 必须与 cockpit.py 的 CAT_SEC 一致：v1.3 加了 wechat，v1.5 加了 market，
-            #  v1.6 又把 market 类建议翻倍（物料+原料），漏登记会导致测试 FAIL 而非静默漏报）
+            #  v1.6 又把 market 类建议翻倍（物料+原料），v1.7 加了 risk（风险雷达），漏登记会导致测试 FAIL 而非静默漏报）
             KNOWN = {"purchase", "warehouse", "delivery", "production", "sales",
-                     "boss", "resource", "wechat", "market"}
+                     "boss", "resource", "wechat", "market", "risk"}
             for a in acts:
                 check(a.get("pri") in ("高", "中", "提示"), "行动建议优先级非法: %r" % a.get("pri"))
                 check(a.get("cat") in KNOWN, "行动建议 cat 未在 CAT_SEC 中登记: %r" % a.get("cat"))
@@ -193,7 +194,7 @@ def main():
             check(md.get("供应商") == "张三厂", "config 的 defaults 未生效")
             check(md.get("采购时间") == "__TODAY__", "覆盖 defaults 时把内置默认值弄丢了")
             # SKILL.md 里也不该再有成串的真实供应商名
-            _sk = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SKILL.md")
+            _sk = os.path.join(_HERE, "SKILL.md")
             if os.path.exists(_sk):
                 _txt = open(_sk, encoding="utf-8").read()
                 for _leak in ("鸿运电子", "环宇电子", "禾平", "烽天华", "聚力半导体",

@@ -24,11 +24,11 @@ _DEST = os.path.join(_HERE, "expert", "production-cockpit", "skills", "seatable-
 # 需要保持一致的文件（相对主库根目录）
 FILES = [
     "SKILL.md", "README.md", "LICENSE",
-    "cockpit.py", "op.py", "setup.py", "seed_demo.py", "test_smoke.py",
+    "cockpit.py", "op.py", "setup.py", "seed_demo.py", "tests/test_smoke.py",
     "intake.py", "doctor.py",
-    "market.py", "suppliers.py", "test_market_sync.py",
-    "commodities.py", "test_commodities.py",
-    "wechat_intake.py", "wxmatch.py", "test_wxmatch.py",
+    "market.py", "suppliers.py", "tests/test_market_sync.py",
+    "commodities.py", "tests/test_commodities.py",
+    "wechat_intake.py", "wxmatch.py", "tests/test_wxmatch.py",
     "wxengine/wa_db.py",
     "seatable_sync.py", "partdb_sync.py", "backfill_seatable.py",
     "foresee.py",

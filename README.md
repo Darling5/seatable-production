@@ -509,7 +509,6 @@ seatable-production/
 ├── wxengine/wa_db.py     # 微信 4.x 解密引擎（SQLCipher4 直读，主密钥从进程内存提取）
 ├── wxmatch.py            # 消息↔SeaTable 核对引擎（只读对账，高置信生成预填意图）
 ├── foresee.py            # 风险预测引擎（合同倒排·供应商画像·缺料预警 → data/foresee.json）
-├── test_wxmatch.py       # 核对引擎离线回归测试（33 项断言）
 ├── wxwatch.py            # 实时哨兵：监听监控群，关键词命中自动登记事件+通知
 ├── alerts.py             # 异常检测引擎：超期/应收/在途/停滞/行情 → data/alerts.json
 ├── daily_brief.py        # 站会摘要：异常+微信情报+业务面 合成一段话
@@ -517,8 +516,6 @@ seatable-production/
 ├── market.py             # 物料监控清单 / 价格涨跌 / NRND-EOL（含 raw 子命令入口）
 ├── suppliers.py          # 得捷·贸泽官方 API 只读查价（凭证本地化 / 失败降级 / 统一 ¥）
 ├── commodities.py        # 上游原料行情（金/银/铜/锡/塑料，零凭证数据源）
-├── test_market_sync.py   # 行情同步离线回归测试（假数据跑通写库，不联网）
-├── test_commodities.py   # 原料行情离线回归测试（同口径环比 / sparkline / 人工录入）
 ├── seatable_sync.py      # 拉 SeaTable 云表快照供驾驶舱离线渲染
 ├── partdb_sync.py        # 拉 PartDB 库存与缺料快照
 ├── backfill_seatable.py  # 历史数据补录（确定性字段预填，需拍板的留空）
@@ -532,6 +529,12 @@ seatable-production/
 │   ├── partdb.py         #   PartDB（可选）
 │   └── schema.py         #   14 表结构 + 15 条语义关联 + 默认值
 ├── references/           # 长文档（业务流程 / 分析公式）
+├── tests/                # 离线回归测试（smoke 187 项 / wxmatch / market / commodities，不碰真实 data/）
+├── automations/          # 每日自动化的分发说明 + bridge/ 桥接脚本（挂到项目分组用）
+├── scripts/              # 便捷 shell（SeaTable token / PartDB 查询）
+├── partdb-price-import/  # 子技能：采购合同 PDF → PartDB 价格录入
+├── partdb-part-create/   # 子技能：PartDB 新建物料 + 供应商件
+├── expert/               # 专家包（内嵌技能副本，python sync_expert.py 同步，CI 校验漂移）
 ├── data/                 # 本地数据（自动生成，已 gitignore）
 └── docs/                 # 手册、配图、在线指南
 ```

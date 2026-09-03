@@ -19,7 +19,8 @@ import shutil
 import sys
 import tempfile
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
+# 测试已归入 tests/，模块与 data/ 在上一级仓库根目录
+_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _HERE)
 
 _FAIL = []
@@ -193,7 +194,7 @@ def main():
             check(md.get("供应商") == "张三厂", "config 的 defaults 未生效")
             check(md.get("采购时间") == "__TODAY__", "覆盖 defaults 时把内置默认值弄丢了")
             # SKILL.md 里也不该再有成串的真实供应商名
-            _sk = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SKILL.md")
+            _sk = os.path.join(_HERE, "SKILL.md")
             if os.path.exists(_sk):
                 _txt = open(_sk, encoding="utf-8").read()
                 for _leak in ("鸿运电子", "环宇电子", "禾平", "烽天华", "聚力半导体",
