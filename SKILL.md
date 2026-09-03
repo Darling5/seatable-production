@@ -25,7 +25,7 @@
   - **合同倒排**：以 24 个已交付计划的**真实工期**（立项→交货，中位 24 / p75 33 / p90 49 天）为基准，对每个在制计划算剩余天数 vs 历史分位，输出 已逾期/高风险/偏紧/正常 四档判定 + 各环节（BOM核对→IC/PCB采购→组装料采购→贴片组装→测试发货）最晚开始日，「必须立刻执行」清单。
   - **供应商交期画像**：5 张采购表 承诺交期 vs 实际交期 按类别/供应商统计偏差（样本 86 条：组装料平均 +29 天是最不稳环节，IC 最准 +0.2 天），自动生成采购 buffer 建议；缺料 ETA 计算时按类别自动加 buffer。
   - **缺料预警**：PartDB BOM 缺口 × 在途采购（状态∈已下单/已付款-未到货/未下单，ETA=下单日+承诺+buffer），按产品名/编号关联生产计划，输出 必须立刻下单/在途来不及/在途可覆盖 三档结论。PartDB 项目名与生产计划产品名非同一体系，精确→前 6 字模糊匹配，匹配不上诚实标注「未关联生产计划」。
-  - 产出 `data/foresee.json`，`python foresee.py` 一键重算，终端打印三段风险摘要。
+  - 产出 `data/foresee.json`，`python foresee.py` 一键重算（自动落预测台账），终端打印三段风险摘要；`review` 子命令复盘预测准度（预警正确/误报/漏报），`ask` 子命令支持对话式追问（计划/产品/供应商/类别）。
 - 🖥 **驾驶舱「风险雷达」section**：老板/生产/采购页接入（`sec-FC`）——合同倒排表（环节最晚开始日红标）、供应商画像表（类别 buffer + 风险供应商徽章）、缺料预警表（缺口×在途×结论）；已逾期/高风险/必须立刻下单自动进「下一步行动建议」（`cat: "risk"` → 跳转 FC section，CAT_SEC 已登记）。
 - 🧪 `test_smoke.py` 187 项断言全过（KNOWN 集合同步补 `risk` 类别）。
 
@@ -783,8 +783,11 @@ python wxmatch.py intent                                           # 导出高�
 ### 11.5 风险预测速查（`foresee.py`）
 
 ```bash
-python foresee.py            # 三路预测重算 + 写 data/foresee.json + 终端摘要
-python foresee.py --json     # 只输出 JSON（调试用）
+python foresee.py                     # 三路预测重算 + 写 data/foresee.json + 落预测台账 + 终端摘要
+python foresee.py --json              # 只输出 JSON（调试用）
+python foresee.py review              # 预测复盘：台账预测 vs 实际交货 → 准度报告（预警准确率/误报/漏报）
+python foresee.py ask <编号|产品|供应商|类别>   # 对话式追问：某计划的风险细节/环节最晚开始日/供应商画像
+python foresee.py log                 # 只更新预测台账（不重算）
 ```
 
 **三个计算模块**（全部只读，数据源均为 data/ 本地快照）：
@@ -797,9 +800,15 @@ python foresee.py --json     # 只输出 JSON（调试用）
 3. **缺料预警**：PartDB BOM 缺口 × 在途采购 ETA → 必须立刻下单 / 在途来不及 /
    在途可覆盖 三档结论。
 
+**预测台账与复盘（自我学习闭环，`data/预测台账.csv`）**：每次运行自动落当日
+预测快照（同日同计划去重覆盖）；`review` 子命令把已到期/已交付的预测与实际
+对照——预警且真晚了=预警正确、预警但没晚=误报（可容忍）、判「正常」却晚了=
+**漏报**（最伤，逐条点名）。预警准确率随台账积累逐月可信。
+
 **刷新链路**：`seatable_sync.py`（业务表）→ `partdb_sync.py`（BOM/库存）→
-`foresee.py`（预测）→ `cockpit.py`（驾驶舱）。驾驶舱「风险雷达」section（sec-FC，
-老板/生产/采购页）消费 `data/foresee.json`；已逾期/高风险项自动进「下一步行动建议」。
+`foresee.py`（预测+台账）→ `cockpit.py`（驾驶舱）。驾驶舱「风险雷达」section
+（sec-FC，老板/生产/采购页）消费 `data/foresee.json`；已逾期/高风险项自动进
+「下一步行动建议」。每日 9 点自动化跑 `foresee.py` + `foresee.py review`。
 
 ---
 

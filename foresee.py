@@ -15,8 +15,11 @@
 产出：data/foresee.json —— cockpit.py 驾驶舱「风险雷达」section 消费。
 
 用法：
-  python foresee.py            # 计算并写 data/foresee.json，终端打印风险摘要
-  python foresee.py --json     # 只输出 JSON 到 stdout（调试用）
+  python foresee.py                     # 计算并写 data/foresee.json + 落预测台账，终端打印风险摘要
+  python foresee.py --json              # 只输出 JSON 到 stdout（调试用）
+  python foresee.py review              # 预测复盘：台账预测 vs 实际结果 → 准度报告
+  python foresee.py ask <编号|产品|供应商|类别>   # 对话式追问风险细节
+  python foresee.py log                 # 只更新预测台账（不重算）
 """
 import csv
 import json
@@ -370,6 +373,250 @@ def shortage_forecast(today, sup_profile):
     return result
 
 
+# ────────────────── 模块 4：预测台账 + 复盘（自我学习闭环）──────────────────
+LEDGER_FILE = "预测台账.csv"
+LEDGER_COLS = ["记录日期", "计划编号", "产品", "预测类型", "预测值", "目标交期",
+               "剩余天数", "判定", "结论", "实际交货", "误差天数", "复盘状态"]
+
+# 何时算「预测对了」——复盘的裁判规则（plan 类型）：
+#   高风险/偏紧 预警 → 实际晚于合同交期 = 预警正确（救了一命 or 至少判断对趋势）
+#                      实际没晚        = 误报（宽松可接受：宁可虚惊）
+#   正常        → 实际晚于交期 = 漏报（这是最伤的，重点盯）
+#                      实际没晚 = 正确
+VERDICT_REVIEW = {
+    ("高风险", "晚了"): "预警正确", ("偏紧", "晚了"): "预警正确",
+    ("高风险", "没晚"): "误报", ("偏紧", "没晚"): "误报",
+    ("正常", "晚了"): "漏报", ("正常", "没晚"): "正确",
+}
+
+
+def update_ledger(model):
+    """把本次预测追加进台账（同日同计划同类型只留最新一条）。
+
+    台账是「预测快照的时间序列」：每天跑 foresee 自动调用，
+    复盘时回看每个计划历史上被判定过什么、最后实际如何。
+    """
+    ledger = _read_csv(LEDGER_FILE)
+    today_key = model["generated_date"]
+    # 先构造本次新预测，再按 (计划编号, 预测类型) 替换当日旧条目
+    # （同日重跑 = 覆盖当日快照，预测历史按天去重；复盘价值在跨天对照）
+    new_rows = []
+    for r in model["backward"]["plans"]:
+        if r["verdict"] == "缺数据":
+            continue
+        new_rows.append({
+            "记录日期": today_key, "计划编号": r["plan"], "产品": r["product"],
+            "预测类型": "plan", "预测值": r.get("est_cycle") or "",
+            "目标交期": r.get("due") or "", "剩余天数": r.get("days_left"),
+            "判定": r["verdict"], "结论": r.get("note", ""),
+            "实际交货": "", "误差天数": "", "复盘状态": "待复盘",
+        })
+    for e in model["shortage"].get("must_order") or []:
+        new_rows.append({
+            "记录日期": today_key, "计划编号": e.get("plan") or "", "产品": e["product"],
+            "预测类型": "shortage", "预测值": "缺口%d项/%d件" % (e["gap_items"], e["total_gap"]),
+            "目标交期": e.get("due") or "", "剩余天数": "",
+            "判定": e["verdict"], "结论": "零库存 %d 项" % e.get("zero_stock_items", 0),
+            "实际交货": "", "误差天数": "", "复盘状态": "待复盘",
+        })
+    today_keys = {(r["记录日期"], r["计划编号"], r["预测类型"]) for r in new_rows}
+    keep = [r for r in ledger
+            if (r.get("记录日期"), r.get("计划编号"), r.get("预测类型")) not in today_keys]
+    out = keep + new_rows
+    with open(os.path.join(DATA, LEDGER_FILE), "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=LEDGER_COLS)
+        w.writeheader()
+        w.writerows(out)
+    return len(new_rows)
+
+
+def review_predictions(today=None):
+    """复盘：台账里的预测 vs 生产计划表的实际结果 → 准度报告。
+
+    规则（VERDICT_REVIEW）：预警（高风险/偏紧）实际晚了=预警正确，没晚=误报（可容忍）；
+    判「正常」实际却晚了=漏报（最伤，重点盯）。误差 = 实际交货日 - 目标交期。
+    """
+    today = today or date.today()
+    ledger = _read_csv(LEDGER_FILE)
+    if not ledger:
+        return {"total": 0, "message": "台账为空，先跑 python foresee.py 积累预测"}
+    plans = {p.get("生产计划编号", ""): p for p in _read_csv("生产计划.csv")}
+
+    stats = defaultdict(int)          # 复盘结论 → 条数
+    by_verdict = defaultdict(lambda: defaultdict(int))  # 判定 → 结论 → 条数
+    reviewed = 0
+    for r in ledger:
+        if r.get("预测类型") != "plan" or r.get("复盘状态") == "已复盘":
+            continue
+        pid = r.get("计划编号", "")
+        p = plans.get(pid)
+        # 可复盘条件：计划已交付（有实际交货时间），或目标交期已过且状态停/取消
+        actual = _date((p or {}).get("交货时间（自动记录）"))
+        due = _date(r.get("目标交期"))
+        if not actual:
+            # 计划未交付：交期已过 30 天仍未交付 → 按「晚了≥30天」记漏报/预警正确
+            if due and (today - due).days > 30 and (p or {}).get("状态") not in ("计划中", ""):
+                late_days = (today - due).days
+                outcome = "晚了"
+            elif due and (today - due).days > 0:
+                # 交期刚过还没交付：直接记「晚了（仍在制）」
+                late_days = (today - due).days
+                outcome = "晚了"
+            else:
+                continue  # 还没到期，无法复盘
+        else:
+            late_days = (actual - due).days if due else None
+            outcome = "晚了" if (due and actual > due) else "没晚"
+        key = (r.get("判定"), outcome)
+        conclusion = VERDICT_REVIEW.get(key, "已逾期（判定时已过交期）" if r.get("判定") == "已逾期" else "未定义")
+        if r.get("判定") == "已逾期":
+            conclusion = "已逾期（判定时已过交期）"
+        stats[conclusion] += 1
+        by_verdict[r.get("判定")][conclusion] += 1
+        r["实际交货"] = actual.isoformat() if actual else "（未交付）"
+        r["误差天数"] = late_days if late_days is not None else ""
+        r["复盘状态"] = "已复盘"
+        r["结论"] = ("%s | %s" % (r.get("结论", ""), conclusion)).strip(" |")
+        reviewed += 1
+
+    if reviewed:
+        with open(os.path.join(DATA, LEDGER_FILE), "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=LEDGER_COLS)
+            w.writeheader()
+            w.writerows(ledger)
+
+    warned = stats["预警正确"] + stats["误报"]
+    precision = round(stats["预警正确"] / warned * 100, 1) if warned else None
+    total_judged = sum(stats.values())
+    return {
+        "total": len(ledger), "reviewed": reviewed,
+        "stats": dict(stats), "by_verdict": {k: dict(v) for k, v in by_verdict.items()},
+        "precision": precision,  # 预警准确率：说「会晚」的真晚了的占比
+        "missed": stats["漏报"],  # 漏报数：判「正常」却晚了的——最伤
+    }
+
+
+def print_review(rep):
+    print("=" * 64)
+    print("预测复盘 review · 台账 %d 条，本次复盘 %d 条" % (rep["total"], rep["reviewed"]))
+    print("=" * 64)
+    if rep.get("message"):
+        print(rep["message"])
+        return
+    print("  复盘结论分布：")
+    for k, v in sorted(rep["stats"].items(), key=lambda x: -x[1]):
+        print("    %-22s %d 条" % (k, v))
+    if rep.get("precision") is not None:
+        print("  预警准确率（预警且真晚/全部预警）：%.1f%%" % rep["precision"])
+    print("  漏报（判「正常」却晚了，最伤）：", rep.get("missed", 0), "条")
+    for verdict, dist in rep.get("by_verdict", {}).items():
+        print("    判[%s] → %s" % (verdict, dist))
+    print()
+
+
+# ────────────────── 模块 5：对话式追问 ask ──────────────────
+def ask(query):
+    """自然语言追问：查风险雷达任意细节。只读，直接打印答案。
+
+    支持：计划编号/产品名模糊匹配（风险判定、环节最晚开始日、缺口、在途），
+    供应商名（交期画像），类别（组装料/IC/PCBA/成品/外壳），或无关键词看总览。
+    """
+    q = (query or "").strip()
+    if not q:
+        print("用法：python foresee.py ask <计划编号|产品名|供应商|类别>")
+        return
+    try:
+        with open(os.path.join(DATA, "foresee.json"), encoding="utf-8") as f:
+            model = json.load(f)
+    except FileNotFoundError:
+        print("无 foresee.json，先跑 python foresee.py")
+        return
+    today = date.today()
+    gen = model.get("generated_at", "?")
+    b, s, sh = model.get("backward", {}), model.get("supplier", {}), model.get("shortage", {})
+
+    # 1) 匹配倒排计划（编号精确 / 产品名包含）
+    hits = [r for r in b.get("plans", []) if r.get("plan") == q
+            or q in (r.get("product") or "")]
+    if hits:
+        for r in hits:
+            print("━━ %s %s（快照 %s）" % (r["plan"], r.get("product", ""), gen))
+            if r.get("verdict") == "缺数据":
+                print("   %s" % r["note"])
+                continue
+            print("   目标交期 %s（%s）· 剩余 %d 天 · 判定 %s"
+                  % (r["due"], r.get("basis"), r["days_left"], r["verdict"]))
+            print("   %s" % r.get("note", ""))
+            print("   环节最晚开始日（快照日视角）：")
+            for st in r.get("stages", []):
+                mark = "🔴已过" if st["urgent"] else "    "
+                print("     %s %s ← 最晚 %s（提前%d天）"
+                      % (mark, st["stage"], st["latest"], st["lead"]))
+            # 同产品缺料与在途
+            for e in sh.get("plans", []):
+                if e.get("plan") == r["plan"] or q in e.get("product", ""):
+                    print("   缺料：%d 项/共 %d 件，在途 %d 条（ETA %s）→ %s"
+                          % (e["gap_items"], e["total_gap"], e["intransit_n"],
+                             e["intransit_eta"] or "—", e["verdict"]))
+                    for g in e.get("top_gaps", [])[:5]:
+                        print("     · %s（%s）确认 %s/需 %s，缺 %s %s"
+                              % (g["name"], g["ipn"], g["confirmed"], g["need"],
+                                 g["gap"], ("[" + g["risk"] + "]") if g.get("risk") else ""))
+        return
+
+    # 2) 匹配供应商（名字包含）
+    sup_hits = []
+    for cat, lst in (s.get("sup_detail") or {}).items():
+        for x in lst:
+            if q in x["supplier"]:
+                sup_hits.append((cat, x))
+    if sup_hits:
+        for cat, x in sup_hits:
+            print("━━ 供应商 %s（类别 %s，快照 %s）" % (x["supplier"], cat, gen))
+            print("   样本 %d 单 · 平均偏差 %+.1f 天 · 最差 %+.0f 天 → 建议 buffer +%d 天"
+                  % (x["n"], x["mean"], x["max"], x["buffer"]))
+            cp = (s.get("cat_profile") or {}).get(cat, {})
+            print("   （%s 类整体：n=%s 平均 %s 天 buffer +%s 天）"
+                  % (cat, cp.get("n"), cp.get("mean"), cp.get("buffer")))
+        return
+
+    # 3) 匹配类别
+    if q in (s.get("cat_profile") or {}):
+        cp = s["cat_profile"][q]
+        print("━━ 类别 %s（快照 %s）" % (q, gen))
+        print("   样本 %d 单 · 平均偏差 %s 天 · 最差 %s 天 → 建议 buffer +%d 天"
+              % (cp["n"], cp["mean"], cp["max"], cp["buffer"]))
+        for x in (s.get("sup_detail", {}).get(q) or [])[:8]:
+            print("   · %-16s n=%-2d 平均 %+.1f 最差 %+.0f"
+                  % (x["supplier"][:16], x["n"], x["mean"], x["max"]))
+        return
+
+    # 4) 匹配缺料产品
+    for e in sh.get("plans", []):
+        if q in e.get("product", ""):
+            print("━━ 缺料 %s（快照 %s）" % (e["product"], gen))
+            print("   %s · 交期 %s · 在途 %d 条（ETA %s）"
+                  % (e["verdict"], e.get("due") or "—", e["intransit_n"], e["intransit_eta"] or "—"))
+            for g in e.get("top_gaps", [])[:8]:
+                print("   · %s（%s）确认 %s/需 %s，缺 %s %s"
+                      % (g["name"], g["ipn"], g["confirmed"], g["need"],
+                         g["gap"], ("[" + g["risk"] + "]") if g.get("risk") else ""))
+            return
+
+    # 5) 都没匹配上 → 总览 + 提示
+    print("未匹配到「%s」。当前快照（%s）总览：" % (q, gen))
+    flags = defaultdict(list)
+    for r in b.get("plans", []):
+        if r.get("verdict") and r["verdict"] != "缺数据":
+            flags[r["verdict"]].append(r["plan"])
+    for v in ("已逾期", "高风险", "偏紧", "正常"):
+        if flags.get(v):
+            print("  %s %d 个：%s" % (v, len(flags[v]), "、".join(flags[v][:6])))
+    if sh.get("must_order"):
+        print("  必须立刻下单：%s" % "、".join(e["product"] for e in sh["must_order"][:5]))
+    print("提示：ask 支持计划编号（20260831-001）、产品名、供应商名、类别（组装料/IC/PCBA/成品）")
+
+
 # ────────────────────────── 主流程 ──────────────────────────
 def compute(today=None):
     today = today or date.today()
@@ -423,7 +670,21 @@ def print_summary(model):
 
 def main():
     args = sys.argv[1:]
+    # 子命令：review（预测复盘）/ ask <query>（对话追问）
+    if args and args[0] == "review":
+        rep = review_predictions()
+        print_review(rep)
+        return
+    if args and args[0] == "ask":
+        ask(" ".join(args[1:]))
+        return
+    if args and args[0] == "log":
+        n = update_ledger(compute())
+        print("预测台账已更新：%d 条新预测" % n)
+        return
     model = compute()
+    # 每次计算顺手落台账（自我学习闭环：预测快照 → 到期复盘 → 准度报告）
+    update_ledger(model)
     if "--json" in args:
         print(json.dumps(model, ensure_ascii=False, indent=1))
         return
