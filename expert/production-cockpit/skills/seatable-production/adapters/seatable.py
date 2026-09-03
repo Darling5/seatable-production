@@ -10,10 +10,14 @@ from .base import BaseAdapter
 
 
 class SeaTableAdapter(BaseAdapter):
-    def __init__(self, api_token: str, server: str, base_uuid: str):
+    def __init__(self, api_token: str, server: str, base_uuid: str, base_name: str = None):
         self.token = api_token
         self.server = server.rstrip("/")
         self.uuid = base_uuid
+        # Human-readable name is useful for routing/diagnostics and is kept
+        # separate from the UUID.  Every adapter owns its own auth + metadata
+        # cache, so multiple Bases can safely coexist in one process.
+        self.base_name = base_name or "default"
         self._access = None
         self._server = None
         self._meta = None

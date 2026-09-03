@@ -398,6 +398,8 @@ def cmd_stage(adapter, args):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", default=None)
+    p.add_argument("--base", dest="base_name", default=None,
+                   help="SeaTable 命名 Base（如 production/tasks）；省略则用默认 Base")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("list").add_argument("table")
@@ -462,7 +464,7 @@ def main():
 
     args = p.parse_args()
     cfg = load_config(args.config)
-    adapter = get_adapter(cfg)
+    adapter = get_adapter(cfg, base_name=args.base_name)
     adapter.auth()
 
     if args.cmd == "list":

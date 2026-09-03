@@ -15,6 +15,7 @@
 - ✅ **新增原料行情监控（v1.6.0）**：`commodities.py` 跟上游原料成本——金/银/铜/锡/铝/镍全自动（新浪期货实时，零凭证），PP/LLDPE/PVC 作石化链代理指标，ABS/PC/PS 现货人工录入。统一入口 `python market.py raw`。**同口径环比**（连续合约不与具体合约混比），走势用 sparkline 字符条。
 - ✅ **新增消息↔SeaTable 核对引擎（v1.6.2）**：`wxmatch.py` 把微信情报从归纳总结升级为结构化对账——群消息收款/下单/合同 PDF 与业务表**逐条匹配**（客户合同 ↔ 项目表、供应商合同 ↔ 5 张采购记录表），发现「群里说了但表里没有」的缺口；**只读核对**，高置信项生成预填意图等人确认。
 - ✅ **新增风险预测引擎（v1.7.0）**：`foresee.py` 补上第二大脑最后一层「想」——**合同倒排**（已交付计划真实工期分位 → 各环节最晚开始日 → 必须立刻执行清单）、**供应商交期画像**（承诺 vs 实际偏差，组装料平均晚 29 天自动加 buffer）、**缺料预警**（BOM 缺口 × 在途 ETA，判断必须立刻下单/在途来不及）。产出 `data/foresee.json`，驾驶舱「风险雷达」section + 行动建议联动。
+- ✅ **微信事项双表分流与证据治理**：微信候选按 `production`（业务事实）/`tasks`（待办执行）两个命名 Base 分流，同一消息可拆两条且全部先待确认；图片证据允许在确认后上传，普通文件优先文本化；每季度只扫描超过 90 天、已闭环且非长期保留的清理候选，只有显式 `--yes` 才删除。
 
 ---
 
@@ -203,8 +204,11 @@ python3 op.py partdb-search 电容 10        # 仅 PartDB 启用时
 6. **「立项日期」默认今天，「交货日期」按交期天数自动计算，禁止追问。**
 7. **询问 link 列时，必须先 `op.py list` 目标表全部记录，完整列出供用户选择，禁止只描述不列表！**
 8. **一句自然语言涉及多表新增时，必须自动建立所有双向关联**（每对表调一次 `op.py link`）。
-9. **后补字段（标记 📥 的）未提及就留空；每周五下午 2 点 cron 自动提醒填写。**（cron 在 WorkBuddy 自动化里配置，本技能只定义字段清单，见 §8）
-10. **库存核对必须配置有效 `inventory.source`；通用库存列默认未确认，未确认库存不得用于生产承诺，人工审核关卡不可跳过。**
+9. **微信候选必须先分流再确认**：生产业务事实进命名 Base `production`，负责人/截止日期/提醒/追问等执行事项进 `tasks`；同一消息可拆两条，禁止把事项都写进默认 Base。任何候选都不因自动化或高置信而跳过人工确认。
+10. **图片证据允许上传但不默认自动上传**；先保留摘要/来源/哈希。PDF、Word、Excel 等普通文件优先文本化，只有文本化失败、必须核验版式/签章或用户明确要求时才上传原文件。
+11. **证据季度复核、90 天候选**：只有超过 90 天、已闭环且非长期保留的证据可列入候选；`evidence.py scan` 或不带 `--yes` 的 `prune` 只预览，显式 `--yes` 才能删除。
+12. **后补字段（标记 📥 的）未提及就留空；每周五下午 2 点 cron 自动提醒填写。**（cron 在 WorkBuddy 自动化里配置，本技能只定义字段清单，见 §8）
+13. **库存核对必须配置有效 `inventory.source`；通用库存列默认未确认，未确认库存不得用于生产承诺，人工审核关卡不可跳过。**
 
 ---
 
@@ -552,6 +556,11 @@ python3 op.py partdb-shortage <项目ID> <生产数量>
 | `op.py resolve-link <A> <B>` | 显示语义关联标识 |
 | `op.py export-excel [文件]` | 全部表导出为 Excel |
 | `op.py partdb-search / partdb-shortage` | PartDB 缺料（可选） |
+| `op.py --base production ...` | 显式操作生产业务 Base |
+| `op.py --base tasks ...` | 显式操作待办事项 Base |
+| `evidence.py register-image <图片> ...` | 登记图片证据元数据；允许后续确认上传，但此命令本身不上传 |
+| `evidence.py scan --days 90` | 季度扫描清理候选，不删除 |
+| `evidence.py prune --days 90 [--yes]` | 无 `--yes` 只预览；显式确认才删除 |
 
 > 完整业务流程速查、BOM 成本算法、分析公式明细见 `references/` 目录。
 
@@ -632,9 +641,24 @@ python notify.py send --subject "💬 群聊总结 <日期>" \
     --body-file data/wechat_intake/ai_summary_24h.md --level info
 ```
 
-> 每日 9 点自动化已内置此流程（步骤 4），产物随发件箱一并推企微。
+> 每日 9 点自动化已内置此流程，产物随发件箱一并推企微。自动化还必须把微信候选
+> 标为 `production` / `tasks`，但只生成待确认清单，不运行 `approve`。完整模板见
+> `automations/README.md`。
 
-### 11.2 物料行情与代理商查价速查（`market.py` / `suppliers.py`）
+#### 11.1.2 双 Base 分流、附件与证据保留
+
+- `production`：项目、订单、收付款、交期、采购、库存、生产、发货、质量等业务事实。
+- `tasks`：负责人、截止日期、提醒、催办、追问、未闭环问题等执行事项。
+- 一条消息同时含业务事实和行动要求时拆成两条候选；写入前分别读取目标 Base metadata，
+  完整展示目标 Base、目标表和字段，等用户确认。CLI 显式选择方式为
+  `python op.py --base production ...` / `python op.py --base tasks ...`。
+- 图片允许在确认后上传为证据；默认先登记本地路径、OCR/视觉摘要、来源、时间、哈希。
+  普通文件先文本化，失败或必须看版式/签章时才考虑上传原件。
+- 季度运行 `python evidence.py scan --root data/wechat_intake --days 90 --json` 只列候选。
+  仅超过 90 天、已闭环、非长期保留的证据入选；明确批准后才运行
+  `python evidence.py prune --root data/wechat_intake --days 90 --yes`。没有 `--yes` 不得删除。
+
+### 11.2 物料行情与代理商查价速查（`market.py` / `suppliers.py`)
 
 ```bash
 python market.py watchlist [--refresh]        # 生成/刷新监控清单

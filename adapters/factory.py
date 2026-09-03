@@ -75,26 +75,116 @@ def load_config(path: str = None) -> dict:
             return _minimal_yaml(f.read())
 
 
-def get_adapter(config: dict = None):
+def _seatable_bases(config: dict) -> dict:
+    """Return normalized named SeaTable Base definitions.
+
+    New configurations may use ``seatable.bases`` (the preferred form), or a
+    top-level ``bases`` mapping.  A flat ``seatable.api_token/base_uuid`` block
+    remains valid and is exposed as the implicit/default Base.  Values are not
+    copied to logs or persisted here; credentials stay in the caller's config.
+    """
+    sc = config.get("seatable")
+    sc = sc if isinstance(sc, dict) else {}
+    named = sc.get("bases")
+    if not isinstance(named, dict):
+        named = config.get("bases")
+    if not isinstance(named, dict):
+        named = config.get("seatable_bases")
+    if not isinstance(named, dict):
+        # Also accept ``seatable: {production: {...}, tasks: {...}}`` for
+        # concise deployments; reserved legacy keys are not treated as names.
+        named = {k: v for k, v in sc.items()
+                 if k not in {"api_token", "token", "base_uuid", "uuid", "server", "default_base"}
+                 and isinstance(v, dict)}
+    result = {}
+    for name, value in named.items():
+        if not isinstance(value, dict):
+            continue
+        item = dict(value)
+        # Accept the common token/uuid spellings while exposing one stable
+        # shape to the rest of the factory.
+        if not item.get("api_token") and item.get("token"):
+            item["api_token"] = item["token"]
+        if not item.get("base_uuid") and item.get("uuid"):
+            item["base_uuid"] = item["uuid"]
+        result[str(name)] = item
+    # Legacy flat configuration is deliberately retained, but named entries
+    # win when the same name is present.
+    if (sc.get("api_token") or sc.get("base_uuid")) and "default" not in result:
+        result["default"] = {k: sc.get(k) for k in ("api_token", "base_uuid", "server")}
+    return result
+
+
+def get_base_config(config: dict = None, base_name: str = None):
+    """Resolve one named Base's config without authenticating or doing I/O.
+
+    ``base_name`` defaults to ``seatable.default_base`` then ``production``
+    when present, preserving the historical flat config when no named Bases
+    are configured.  ``None`` is returned when the requested Base is absent.
+    """
+    config = config or load_config()
+    if not isinstance(config, dict):
+        raise SystemExit("[错误] 配置文件格式不对（顶层应为 key: value）。"
+                         "请检查 config.yaml，或运行 python setup.py 重新生成。")
+    sc = config.get("seatable") if isinstance(config.get("seatable"), dict) else {}
+    bases = _seatable_bases(config)
+    if not bases:
+        return None
+    if base_name is None:
+        base_name = sc.get("default_base") or ("production" if "production" in bases else None)
+        if base_name is None:
+            base_name = "default" if "default" in bases else next(iter(bases))
+    selected = bases.get(str(base_name))
+    if selected is None:
+        return None
+    out = dict(selected)
+    out["name"] = str(base_name)
+    out.setdefault("server", sc.get("server") or "https://cloud.seatable.cn")
+    return out
+
+
+def get_adapters(config: dict = None):
+    """Build a mapping of configured named adapters (not authenticated).
+
+    This is useful to callers that need to inspect multiple Bases.  Each
+    value is a separate adapter instance, so auth tokens and metadata caches
+    can never leak between Bases.
+    """
+    config = config or load_config()
+    backend = str(config.get("backend", "local") or "local").lower()
+    if backend != "seatable":
+        return {}
+    return {name: get_adapter(config, base_name=name)
+            for name in _seatable_bases(config)
+            if get_base_config(config, name)}
+
+
+def get_adapter(config: dict = None, base_name: str = None):
     config = config or load_config()
     if not isinstance(config, dict):
         raise SystemExit("[错误] 配置文件格式不对（顶层应为 key: value）。"
                          "请检查 config.yaml，或运行 python setup.py 重新生成。")
     backend = (config.get("backend") or "local").lower()
     if backend == "seatable":
-        sc = config.get("seatable")
-        if not isinstance(sc, dict):
-            sc = {}
-        token = sc.get("api_token") or ""
-        uuid = sc.get("base_uuid") or ""
-        server = sc.get("server") or "https://cloud.seatable.cn"
-        if token and uuid:
-            try:
-                from .seatable import SeaTableAdapter
-                return SeaTableAdapter(token, server, uuid)
-            except Exception as e:
-                print(f"[warn] SeaTable 初始化失败，退回 local：{e}", file=sys.stderr)
-        else:
+        sc = config.get("seatable") if isinstance(config.get("seatable"), dict) else {}
+        selected = get_base_config(config, base_name)
+        if selected is None and base_name is not None and _seatable_bases(config):
+            print("[warn] 未配置 SeaTable Base「%s」，退回 local 模式" % base_name, file=sys.stderr)
+        if selected:
+            token = selected.get("api_token") or ""
+            uuid = selected.get("base_uuid") or ""
+            server = selected.get("server") or "https://cloud.seatable.cn"
+            if token and uuid:
+                try:
+                    from .seatable import SeaTableAdapter
+                    return SeaTableAdapter(token, server, uuid, base_name=selected.get("name"))
+                except Exception as e:
+                    print(f"[warn] SeaTable 初始化失败，退回 local：{e}", file=sys.stderr)
+            else:
+                print("[warn] 未配置 SeaTable Base「%s」的 api_token/base_uuid，退回 local 模式" %
+                      (selected.get("name") or base_name or "default"), file=sys.stderr)
+        elif not _seatable_bases(config):
+            # Keep the old diagnostic for a flat, empty seatable block.
             print("[warn] 未配置 seatable.api_token/base_uuid，退回 local 模式", file=sys.stderr)
     # 默认 / 兜底：本地
     lc = config.get("local")

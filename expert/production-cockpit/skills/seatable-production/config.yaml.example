@@ -13,10 +13,23 @@ local:
 # ── SeaTable 模式（可选）──────────────────────────────────
 # 只有你想把数据存到自己的 SeaTable Base 时才填；留空则禁用
 seatable:
-  api_token: ""          # 你的 SeaTable API Token（在 Base → 设置 → API 获取）
+  api_token: ""          # 兼容旧配置：默认 Base 的 API Token
   server: "https://cloud.seatable.cn"
-  base_uuid: ""          # 你的 Base 的 dtable_uuid（不要写 access_token）
-  # 不填 api_token / base_uuid → 自动退回 local 模式
+  base_uuid: ""          # 兼容旧配置：默认 Base 的 dtable_uuid（不要写 access_token）
+  # 多 Base 配置（推荐）：每个 Base 独立 token/UUID、认证会话与 metadata 缓存。
+  # 真实凭证只填写本机 config.yaml（已被 .gitignore 排除），不要提交仓库。
+  default_base: production
+  bases:
+    production:
+      api_token: ""
+      base_uuid: ""
+      server: "https://cloud.seatable.cn"
+    tasks:
+      api_token: ""
+      base_uuid: ""
+      server: "https://cloud.seatable.cn"
+  # 未配置命名 Base 时，仍可只填上面的 api_token/base_uuid；空配置自动退回 local 模式
+  # CLI 可用 --base production 或 --base tasks 选择目标 Base。
 
 # ── 采购流水线库存源 ───────────────────────────────────────
 # source: partdb | api | mcp | file
