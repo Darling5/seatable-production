@@ -98,9 +98,9 @@ def main():
             check(any(a.get("cat") == "resource" for a in acts), "未生成资源类行动建议")
             # 每条建议都要有 pri / cat / text，且 cat 在驾驶舱有映射
             # （KNOWN 必须与 cockpit.py 的 CAT_SEC 一致：v1.3 加了 wechat，v1.5 加了 market，
-            #  v1.6 又把 market 类建议翻倍（物料+原料），漏登记会导致测试 FAIL 而非静默漏报）
+            #  v1.6 又把 market 类建议翻倍（物料+原料），v1.7 加了 risk（风险雷达），漏登记会导致测试 FAIL 而非静默漏报）
             KNOWN = {"purchase", "warehouse", "delivery", "production", "sales",
-                     "boss", "resource", "wechat", "market"}
+                     "boss", "resource", "wechat", "market", "risk"}
             for a in acts:
                 check(a.get("pri") in ("高", "中", "提示"), "行动建议优先级非法: %r" % a.get("pri"))
                 check(a.get("cat") in KNOWN, "行动建议 cat 未在 CAT_SEC 中登记: %r" % a.get("cat"))

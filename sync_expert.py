@@ -31,6 +31,7 @@ FILES = [
     "wechat_intake.py", "wxmatch.py", "test_wxmatch.py",
     "wxengine/wa_db.py",
     "seatable_sync.py", "partdb_sync.py", "backfill_seatable.py",
+    "foresee.py",
     "config.yaml.example",
     "adapters/__init__.py", "adapters/factory.py", "adapters/schema.py",
     "adapters/local.py", "adapters/seatable.py", "adapters/partdb.py",
