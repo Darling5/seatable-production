@@ -40,7 +40,14 @@ INTERNAL_PREFIX = ("_",)
 
 
 def _load_cfg():
-    """极简 YAML 解析：只取 [seatable] 段的 key: value。"""
+    """极简 YAML 解析：只取 [seatable] 段的**顶层** key: value。
+
+    v1.8.0 起 seatable 段支持 `bases:` 命名 Base（production/tasks/crm，供
+    adapters.factory.get_adapter(base_name=...) 使用）。这里只需扁平的
+    「默认 Base」凭证，因此必须跳过 bases 子树里的嵌套键——否则最后一个
+    Base 的 api_token/base_uuid 会覆盖默认 Base，导致同步拉错库
+    （曾出现：配了 tasks/crm 后，同步拉到的却是 CRM 库）。
+    """
     path = os.path.join(HERE, "config.yaml")
     cfg = {}
     in_seat = False
@@ -54,7 +61,14 @@ def _load_cfg():
                 continue
             if in_seat:
                 if raw.startswith(" ") and ":" in raw:
+                    # 只认 seatable 段下缩进 2 格的顶层键；
+                    # 缩进更深的（bases: 子树里的各 Base 凭证）一律跳过。
+                    indent = len(raw) - len(raw.lstrip(" "))
+                    if indent > 2:
+                        continue
                     k, _, v = raw.strip().partition(":")
+                    if k.strip() == "bases":
+                        continue       # 子树根节点本身也不是键值
                     # 兼容带引号写法：server: "https://..." → 剥掉两侧引号
                     cfg[k.strip()] = v.strip().strip('"').strip("'")
                 else:
