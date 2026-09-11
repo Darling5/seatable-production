@@ -679,7 +679,11 @@ def cmd_approve(no):
     if ev.get("状态") != "待确认":
         print("[skip] 事件 %s 状态已是「%s」" % (no, ev.get("状态")))
         return
-    print("确认事件：%s [%s] %s" % (no, ev.get("分类"), ev.get("原文", "")[:60]))
+    print("── 确认事件 %s ──" % no)
+    print("  分类：%s" % ev.get("分类",""))
+    print("  出处：%s / %s  %s %s" % (ev.get("来源群",""), ev.get("发送人",""),
+                                      ev.get("日期",""), ev.get("时间","")))
+    print("  原文：%s" % ev.get("原文",""))
     intent_raw = (ev.get("意图") or "").strip()
     results = []
     if not intent_raw or intent_raw in ("{}", "[]"):
@@ -694,6 +698,10 @@ def cmd_approve(no):
             return
         adapter, where = _get_adapter_for_business()
         print("  写入目标：%s" % where)
+        for it in intents:
+            _op=it.get("op","log"); _tbl=it.get("table","工作日志"); _rid=it.get("row_id","")
+            _flds=",".join((it.get("data") or {}).keys())
+            print("  · 意图 op=%s 表=%s 行=%s 字段=[%s]" % (_op,_tbl,_rid,_flds))
         from intake import Intent
         for it in intents:
             try:
@@ -731,11 +739,20 @@ def cmd_approve(no):
 
 def cmd_ignore(no):
     rows = _read_csv(EVENTS_PATH)
-    for r in rows:
-        if r.get("事件编号") == no and r.get("状态") == "待确认":
-            r["状态"] = "已忽略"
-            r["确认时间"] = _now().strftime("%Y-%m-%d %H:%M")
+    hits = [r for r in rows if r.get("事件编号") == no and r.get("状态") == "待确认"]
+    if not hits:
+        print("[skip] 没有待忽略的事件 %s（先 list 看编号，或已处理）" % no)
+        return
+    for r in hits:
+        r["状态"] = "已忽略"
+        r["确认时间"] = _now().strftime("%Y-%m-%d %H:%M")
     _write_csv(EVENTS_PATH, EVENT_COLS, rows)
+    r = hits[0]
+    print("── 忽略事件 %s ──" % no)
+    print("  分类：%s" % r.get("分类",""))
+    print("  出处：%s / %s  %s %s" % (r.get("来源群",""), r.get("发送人",""),
+                                      r.get("日期",""), r.get("时间","")))
+    print("  原文：%s" % r.get("原文",""))
     print("[ok] 事件 %s 已忽略（留痕不写业务表）" % no)
 
 

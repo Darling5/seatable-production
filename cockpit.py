@@ -2327,15 +2327,18 @@ function render(m){
 
   /* 微信情报台：wechat_intake.py 维护的 data/微信事件.csv */
   const wx=m.wechat;
+  window.__WX_EVENTS = {};
+  (wx&&wx.pending||[]).forEach(e=>{ if(e&&e["事件编号"]) window.__WX_EVENTS[e["事件编号"]]=e; });
   if(wx){
     const catPill=(c)=>`<span class="pill ${c==='停产通知'?'tag-red':((c==='价格变动'||c==='交期变更')?'tag-amber':'')}">${c||"其他"}</span>`;
     const pendRows=wx.pending.length?wx.pending.map(e=>`<tr>
+        <td style="text-align:center;width:34px"><input type="checkbox" class="wx-sel" value="${e["事件编号"]||""}"></td>
         <td><b>${e["事件编号"]||""}</b><div class="rs-sub">${e["日期"]||""} ${e["时间"]||""}</div></td>
         <td>${(e["来源群"]||"").slice(0,16)}<div class="rs-sub">${(e["发送人"]||"").slice(0,12)}</div></td>
         <td>${catPill(e["分类"])}</td>
         <td style="max-width:340px">${(e["原文"]||"").slice(0,110)}</td>
         <td><span class="pill tag-red">待确认</span></td></tr>`).join("")
-      :`<tr><td colspan="5" class="empty">暂无待确认事件。每日 9 点自动拉取微信监控群新消息并提取事件；「示例」开头的演示数据可运行 python wechat_intake.py clear-demo 清除。</td></tr>`;
+      :`<tr><td colspan="6" class="empty">暂无待确认事件。每日 9 点自动拉取微信监控群新消息并提取事件；「示例」开头的演示数据可运行 python wechat_intake.py clear-demo 清除。</td></tr>`;
     const catStat=Object.entries(wx.by_cat||{}).map(([c,n])=>
       `<span class="pill" style="margin-right:6px">${c} ${n}</span>`).join("")
       ||`<span class="rs-sub">近 7 天无事件</span>`;
@@ -2345,11 +2348,16 @@ function render(m){
         <td style="max-width:300px">${(e["原文"]||"").slice(0,80)}</td>
         <td class="rs-sub">${e["状态"]||""}${e["写入结果"]?` · ${(e["写入结果"]||"").slice(0,28)}`:""}</td></tr>`).join("");
     const secWXC=el(`<section id="sec-WXC" class="sec"><div class="sec-title">__IC_CHAT__ 微信情报台（今日 ${wx.today_count} 条 · 待确认 ${wx.pending_count} 条）</div>
-      <div class="card"><h3>待确认事件（确认前不写业务表）</h3>
+      <div class="card"><h3>待确认事件（勾选 → 确认写 SeaTable / 忽略）</h3>
         <div style="overflow-x:auto"><table data-paginate="8"><thead><tr>
-          <th>编号/时间</th><th>来源</th><th>分类</th><th>原文</th><th>状态</th>
+          <th style="width:34px;text-align:center">✓</th><th>编号/时间</th><th>来源</th><th>分类</th><th>原文</th><th>状态</th>
         </tr></thead><tbody>${pendRows}</tbody></table></div>
-        <div class="note">确认方式：在 WorkBuddy 对话里说「确认 WXxxx-001」或「忽略 WXxxx-001」，专家执行 wechat_intake.py approve/ignore——approve 直接写 SeaTable 云端业务表（交期变更/价格变动等自动落到对应行），结果回填留痕。来源：win-wechat-summary 本地微信库（只读，零封号风险）。</div></div>
+        <div class="wx-actions" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px">
+          <button class="btn-primary" onclick="wxApproveSelected()">✅ 确认选中（写 SeaTable）</button>
+          <button class="btn-ghost" onclick="wxIgnoreSelected()">🚫 忽略选中</button>
+          <span class="rs-sub">勾选事件后点「确认选中」：拉起 WorkBuddy 专家执行 <code>wechat_intake.py approve</code>，按意图(op=update/append)写对应业务表行（交期/价格/数量等自动落位），结果回填留痕；「忽略选中」执行 ignore。写入前专家会再向你确认一遍（技能铁律）。</span>
+        </div>
+        <div class="note">也可在对话里直接说「确认 WXxxx-001」/「忽略 WXxxx-001」。来源：win-wechat-summary 本地微信库（只读，零封号风险）。</div></div>
       <div class="card" style="margin-top:14px"><h3>近 7 天事件分布</h3>${catStat}
         <div class="note" style="margin-top:8px">分类：交期变更 / 价格变动 / 停产通知 / 催货 / 进度 / 库存 / 其他。</div></div>
       ${recRows?`<div class="card" style="margin-top:14px"><h3>最近事件（留痕）</h3>
@@ -2603,6 +2611,48 @@ function invokeWorkBuddyAuto(txt){
     document.body.appendChild(a); a.click();
     setTimeout(()=>{ try{document.body.removeChild(a);}catch(e){} }, 2000);
   }catch(e){ /* 忽略：交给 toast / 网页版按钮兜底 */ }
+}
+/* 微信情报台：勾选确认/忽略 → 拉起专家执行 wechat_intake.py approve/ignore 写 SeaTable */
+function wxCollectSelected(){
+  return [...document.querySelectorAll('#sec-WXC input.wx-sel:checked')].map(c=>c.value).filter(Boolean);
+}
+function wxApproveSelected(){
+  const ids=wxCollectSelected();
+  if(!ids.length){ toast('请先勾选要确认的事件'); return; }
+  const evs=ids.map(id=>(window.__WX_EVENTS||{})[id]).filter(Boolean);
+  if(!evs.length){ toast('未找到事件数据，请刷新页面'); return; }
+  let blk='请核对以下微信事件，确认无误后写入 SeaTable 业务表（写入前请再向我确认一遍，可指定只写哪几条）。事件详情已附原文与出处，无需另行翻查：\n\n';
+  evs.forEach((e,i)=>{
+    const no=e["事件编号"]||"";
+    const src=[e["来源群"],e["发送人"],e["日期"],e["时间"]].filter(Boolean).join("  ·  ");
+    const cat=e["分类"]||"其他";
+    const txt=(e["原文"]||"").trim();
+    let intent=e["意图"]||"";
+    try{ const j=JSON.parse(intent||"{}"); if(j&&typeof j==="object") intent=JSON.stringify(j,null,0); }catch(_){}
+    blk+=`【${i+1}】${no}  [${cat}]\n`;
+    blk+=`· 出处：${src}\n`;
+    blk+=`· 原文：${txt}\n`;
+    if(intent && intent!=="{}" && intent!=="[]") blk+=`· 意图：${intent}\n`;
+    blk+=`\n`;
+  });
+  blk+='核对要点：① 原文与出处是否准确；② 意图 op=update/append/log 与目标表/行(row_id)是否正确。确认后运行 `wechat_intake.py approve <编号>` 逐条写入（同一编号也可只写指定几条）。';
+  invokeWorkBuddyAuto(blk);
+}
+function wxIgnoreSelected(){
+  const ids=wxCollectSelected();
+  if(!ids.length){ toast('请先勾选要忽略的事件'); return; }
+  const evs=ids.map(id=>(window.__WX_EVENTS||{})[id]).filter(Boolean);
+  if(!evs.length){ toast('未找到事件数据，请刷新页面'); return; }
+  let blk='请核对以下微信事件，确认后标记为「忽略」（不写业务表，仅留痕）。事件详情已附原文与出处：\n\n';
+  evs.forEach((e,i)=>{
+    const no=e["事件编号"]||"";
+    const src=[e["来源群"],e["发送人"],e["日期"],e["时间"]].filter(Boolean).join("  ·  ");
+    const cat=e["分类"]||"其他";
+    const txt=(e["原文"]||"").trim();
+    blk+=`【${i+1}】${no}  [${cat}]\n· 出处：${src}\n· 原文：${txt}\n\n`;
+  });
+  blk+='确认忽略请运行 `wechat_intake.py ignore <编号>`。';
+  invokeWorkBuddyAuto(blk);
 }
 function submitWizardCopy(){
   const d=collectWizard(); if(!d) return;
