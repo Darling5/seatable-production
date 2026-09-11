@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""微信事项双 Base 分流的离线预览器。
+"""微信事项多 Base 分流的离线预览器。
 
 本模块只把已经标准化的微信事件/意图转换为候选 JSON，不读取或写入
 SeaTable，也不会上传证据图片。路由必须由 ``target`` 或 ``base`` 明确给出；
 没有明确路由的意图会进入 ``unrouted``，绝不会默认为 production。
+v1.9：新增 ``crm`` 目标——候选标记 ``auto_write: true``，由 crm_dispatch.py
+执行自动写入（查重→建线索/跟进→自动关联→写台账），遵循「自动写入 +
+台账核对」的新原则；production/tasks 仍保持候选制。
 
 可接受的输入示例::
 
@@ -28,7 +31,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-BASES = ("production", "tasks")
+BASES = ("production", "tasks", "crm")
 TASK_FIELDS = (
     "名称", "负责人", "部门", "优先级", "详情", "执行时间", "计划完成时间", "状态"
 )
@@ -74,7 +77,7 @@ def _as_list(value: Any) -> list[Any]:
 
 
 def _normalise_base(value: Any) -> str | None:
-    """只接受明确的 production/tasks（及不含歧义的英文大小写）。"""
+    """只接受明确的 production/tasks/crm（及不含歧义的英文大小写）。"""
     if value is None:
         return None
     text = str(value).strip().lower()
@@ -82,6 +85,7 @@ def _normalise_base(value: Any) -> str | None:
         "production": "production", "prod": "production",
         "生产": "production", "生产业务": "production",
         "tasks": "tasks", "task": "tasks", "待办": "tasks", "任务": "tasks",
+        "crm": "crm", "客户": "crm", "线索": "crm", "商机": "crm",
     }
     return aliases.get(text)
 
@@ -104,7 +108,7 @@ def _explicit_targets(item: Mapping[str, Any], event: Mapping[str, Any] | None =
         return [], "缺少明确 target/base"
     bases = [_normalise_base(v) for v in vals]
     if any(v is None for v in bases):
-        return [], "target/base 必须是 production 或 tasks"
+        return [], "target/base 必须是 production、tasks 或 crm"
     out = list(dict.fromkeys(v for v in bases if v))
     return out, None
 
@@ -180,6 +184,22 @@ def _candidate(event: Mapping[str, Any], intent: Mapping[str, Any], base: str, i
         candidate["fields"] = mapped
         candidate["data"] = mapped
         candidate["field_mapping"] = {"source": dict(data), "target_fields": list(TASK_FIELDS)}
+    elif base == "crm":
+        # v1.9：CRM 候选附带自动写入器（crm_dispatch.py）的字段。
+        # crm_dispatch.lead/follow 负责查重、写入与台账，此处只做字段清洗。
+        import crm_dispatch as _cd
+        intent_op = str(intent.get("op") or intent.get("action") or "").lower()
+        if intent_op in ("follow", "跟进", "add_follow"):
+            allowed, kind = _cd.FOLLOW_FIELDS, "follow"
+        else:
+            allowed, kind = _cd.LEAD_FIELDS, "lead"
+        cleaned = {k: v for k, v in (data or {}).items()
+                   if k in allowed and v not in (None, "")}
+        candidate["table"] = _cd.LEAD_TABLE if kind == "lead" else _cd.FOLLOW_TABLE
+        candidate["fields"] = cleaned
+        candidate["data"] = cleaned
+        candidate["field_mapping"] = {"crm_kind": kind}
+        candidate["auto_write"] = True  # v1.9 原则：CRM 自动写入 + 台账核对
     else:
         # table 只有上层明确给出时才展示；不从分类、文本或关键词推断。
         if "table" in intent:

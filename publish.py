@@ -154,9 +154,10 @@ def main():
 
     space_id = a.space_id or pcfg.get("space_id")
     node_id = pcfg.get("node_id")
-    if not space_id:
-        print("[error] 缺少 space_id。首次发布：--setup --space-id <空间ID>；"
-              "或先在 config.yaml 配好 publish 段。")
+    # 覆盖更新模式（publish 段含 node_id）无需 space_id；import_html.py 靠
+    # --node-block-id 定位已有节点。仅首次新建（无 node_id 且非 --setup）才必须给 space_id。
+    if not node_id and not a.setup and not space_id:
+        print("[error] 缺少 space_id。覆盖更新只需 node_id；首次发布请加 --setup --space-id <空间ID>。")
         return 1
     if not node_id and not a.setup:
         print("[error] config.yaml 的 publish 段缺 node_id。首次发布请加 --setup。")
