@@ -860,6 +860,21 @@ python won_deal.py ledger                       # 写入台账核对
 付款支持百分比（合计必须等于总价）或绝对值三段；`--profile '{...}'` 补充开票/
 银行等档案字段。至此「来单→跟进→赢单→立项」前半链闭环，立项后走 pipeline 采购。
 
+### 11.7 v2.0 P0 架构收口（已完成）
+
+- **写入与渲染解耦**：`op.py` 的 `apply-wizard / apply-text / intake` 默认**不再**自动
+  刷新驾驶舱；需要旧行为时加 `--refresh` 或设 `SEATABLE_AUTO_REFRESH_COCKPIT=1`。
+  驾驶舱刷新统一由 `workflow.py run daily` 的 cockpit 步骤或手动 `python cockpit.py` 负责。
+- **口令移出自动播报**：新增 `passwords.py`（show / check / rotate），
+  自动化提示词不再读取或播报任何口令明文；口令只在用户手动运行时当面展示。
+- **统一幂等键**：`crm_dispatch.py` 的 lead/follow 支持 `--idem-key`（省略则自动用
+  日期+客户+内容生成）；台账新增「幂等键」列，旧台账自动迁移补列。同键重写 →
+  `idempotent_reuse`，不再重复写。自动化重跑同批微信消息不会再写两遍跟进。
+- **DataService（`application/dataservice.py`）**：统一写入入口。所有 SeaTable 写入
+  走 `DataService.write(WriteRequest(...))`：按路由策略收口（production/tasks → 候选，
+  crm → 自动+台账）、写后**读回验证**（中文列名静默丢列会被判 verify_failed）、
+  幂等键查重、统一台账 `data/write_ledger.csv`。新代码优先走这里，旧 CLI 行为不变。
+
 ---
 
 ## 12. 在自定义脚本里调 adapter（踩坑记录）
