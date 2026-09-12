@@ -95,15 +95,20 @@ print("测试 4：scan_events（收款/下单信号 → 匹配 → 意图生成�
 print("=" * 70)
 tmp_ev = os.path.join(TMP, "wxmatch_test_events.csv")
 tmp_prj = os.path.join(TMP, "wxmatch_test_projects.csv")
+# 事件日期改为相对日期：原写死 2026-09-02，scan_events(days=7) 随日期推移会全部过期
+# （2026-09-12 实测 7 项失败，均为时间敏感导致，非代码回归）
+import datetime as _dt
+_d_recent = (_dt.date.today() - _dt.timedelta(days=1)).isoformat()
+_d_stale = (_dt.date.today() - _dt.timedelta(days=30)).isoformat()
 with open(tmp_ev, "w", encoding="utf-8-sig", newline="") as f:
     w = csv.writer(f)
     w.writerow(wm._read_csv.__globals__ and ["事件编号", "日期", "时间", "来源群", "发送人",
                                              "分类", "原文", "意图", "状态", "确认时间", "写入结果"])
-    w.writerow(["E1", "2026-09-02", "10:00", "客户群", "张三", "其他",
+    w.writerow(["E1", _d_recent, "10:00", "客户群", "张三", "其他",
                 "郑州云峰这边已打款 58225 元，请查收", "", "待确认", "", ""])
-    w.writerow(["E2", "2026-09-02", "11:00", "客户群", "李四", "其他",
+    w.writerow(["E2", _d_recent, "11:00", "客户群", "李四", "其他",
                 "我们确认订单，这周先订 300 台", "", "待确认", "", ""])
-    w.writerow(["E3", "2026-01-01", "11:00", "客户群", "王五", "其他",
+    w.writerow(["E3", _d_stale, "11:00", "客户群", "王五", "其他",
                 "已打款 50000（超时事件，不该出现）", "", "待确认", "", ""])
 with open(tmp_prj, "w", encoding="utf-8-sig", newline="") as f:
     w = csv.writer(f)
