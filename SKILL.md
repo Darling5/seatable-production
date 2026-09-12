@@ -874,6 +874,11 @@ python won_deal.py ledger                       # 写入台账核对
   走 `DataService.write(WriteRequest(...))`：按路由策略收口（production/tasks → 候选，
   crm → 自动+台账）、写后**读回验证**（中文列名静默丢列会被判 verify_failed）、
   幂等键查重、统一台账 `data/write_ledger.csv`。新代码优先走这里，旧 CLI 行为不变。
+  `crm_dispatch.py` 的 lead/follow 已实际接入（`write_verified()` 原语）：查重 → 幂等键 →
+  读回验证 → 单向关联 → 台账，验证失败不入账不关联。
+- **运行验收（`workflow.py verify latest`）**：每日自动化跑完后的一键核对——
+  步骤状态全绿 + 成功步骤必须有新鲜产物（mtime 防旧文件充数，专治「静默跳步」）+
+  final.json 零口令。退出码 0=通过。周一实战验收流程见 `docs/avatar-loop-v2.md` §9。
 
 ---
 

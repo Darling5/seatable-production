@@ -1,6 +1,6 @@
 # 项目经理替身 · 闭环 v2 设计（决策稿）
 
-> 日期：2026-09-12 ｜ 状态：已与用户确认方向（替身 + 闭环）
+> 日期：2026-09-12 ｜ 状态：**P0-P2 框架已落地，2026-09-14（周一）实战验收**
 > 基线：v1.9（d3c1cbe）｜ 本文档是 v2.x 的唯一架构依据，冲突时以本文为准
 
 ## 0. 目标定义（用户原话的工程化翻译）
@@ -101,13 +101,14 @@ related_object: (对象类型, 对象ID)   # 可空，未关联=待处理
 
 ## 6. 分期实施
 
-| 阶段 | 内容 | 不做什么 |
-|---|---|---|
-| P0（本次） | contracts.py 契约 + crm Base 示例补齐 + 本设计文档 | 不动任何现有脚本行为 |
-| P1 | workflow runner（subprocess 包装旧脚本）+ 每日自动化改走 `workflow.py daily` | 不重写业务逻辑 |
-| P2 | domain 层收回分流/风险/证据/行情策略；ID 生成器 + 状态轨迹写入 | 不迁移 data/ 目录 |
-| P3 | 根脚本变薄壳；补报价/方案版本对象（最大新功能增量） | 不动 SeaTable adapter 语义 |
-| P4 | 拆 cockpit/wechat_intake/market；SKILL.md 缩到 ~250 行 | 不上微服务/消息队列 |
+| 阶段 | 内容 | 不做什么 | 状态 |
+|---|---|---|---|
+| P0 | contracts.py 契约 + crm Base 示例补齐 + 本设计文档 | 不动任何现有脚本行为 | ✅ 426f9eb |
+| P1 | workflow runner（subprocess 包装旧脚本）+ 每日自动化改走 `workflow.py daily` | 不重写业务逻辑 | ✅ 5c43d51 |
+| P1.5 | 四项架构收口：写入渲染解耦 / 口令私有化 / 统一幂等键 / DataService | 旧 CLI 行为不变 | ✅ 340f603 |
+| P2 | 写链迁移 DataService（crm_dispatch 读回验证）+ `workflow.py verify` 验收命令 + 本文档定稿 | 不迁移 data/ 目录 | ✅ 2026-09-12 |
+| P3 | 根脚本变薄壳；补报价/方案版本对象（最大新功能增量） | 不动 SeaTable adapter 语义 | 待启动 |
+| P4 | 拆 cockpit/wechat_intake/market；SKILL.md 缩到 ~250 行 | 不上微服务/消息队列 | 待启动 |
 
 ## 7. 与 v1.x 的兼容
 
@@ -115,3 +116,84 @@ related_object: (对象类型, 对象ID)   # 可空，未关联=待处理
 - 现有表不动结构，只**加列**（prj_id/mo_id/po_id/shp_id/as_id 可空，旧数据回填脚本另做）；
 - CRM「自动写入+台账」原则升格为 v2 通用原则：`auto_with_ledger`；
 - production/tasks 候选制原则不变，升格为 `approval_required`。
+
+## 8. v2.0 执行框架全景（当前真实形态）
+
+```
+┌─ 自动化 Prompt 层（每日 9 点，automation-1786757548346）
+│    只做三件事：启动工作流 / AI 语义步骤（事件登记·CRM 识别·群聊总结）
+│    / 发布通知播报（读 final.json，禁止凭记忆；禁止播报口令）
+│
+├─ workflow.py（统一入口）
+│    run daily --mode apply        10 步 DAG 真实执行
+│    run daily --mode preview      演练（写入类步骤全拦截）
+│    run daily --resume <run_id>   断点续跑（成功步骤跳过）
+│    status / list                 历史查询
+│    verify latest                 ★ 运行后验收（周一实战核对工具）
+│
+├─ application/（执行框架核心，零业务逻辑）
+│    contracts.py   RunContext/StepSpec/三道闸/12 类对象 ID/14 态状态机
+│    runner.py      DAG 拓扑执行 + checkpoint（data/runs/<run_id>/NN_*.json）
+│                   + final.json（播报唯一数据源）+ retry/abort/resume
+│    dataservice.py 统一写入：路由策略（production/tasks 候选，crm 自动+台账）
+│                   + 读回验证（中文列名静默丢列 → verify_failed）
+│                   + 幂等键 + data/write_ledger.csv
+│                   + write_verified() 原语（供写链复用）
+│
+├─ workflows/daily_refresh.py（10 步 DAG 定义）
+│    seatable_sync → partdb_sync →(abort 级) 微信 pull/summary → wxmatch
+│    → alerts → foresee(+review) → daily_brief(--push) → cockpit
+│    AI 语义步骤（分流/AI 总结/CRM 识别/播报）留在 Prompt 层
+│
+├─ 写入链（已收口 DataService）
+│    crm_dispatch.py  lead/follow：查重 → 幂等键 → write_verified()
+│                     （读回验证）→ 单向关联 → crm_dispatch_ledger.csv
+│    won_deal.py      plan 只读 → 人核对 → apply --yes 三表写入+读回+台账
+│    op.py            数据写入与驾驶舱刷新解耦（--refresh 或环境变量显式开）
+│
+└─ 安全边界
+     口令：passwords.py（show/check/rotate）手动专用，自动播报零口令
+     台账：crm_dispatch_ledger / won_deal_ledger / write_ledger 三账并行可核对
+     幂等：同键重写 → idempotent_reuse，自动化重跑不重复写
+```
+
+**`workflow.py verify` 验收逻辑**（退出码 0=通过，可接 CI）：
+1. 步骤状态：failed/blocked 任何一步 → 不通过；
+2. 产物核对：声称成功的步骤必须在 data/ 留下新鲜产物（mtime ≥ 运行日期-1 天，
+   防止拿旧文件充数——这正是 9-12 晨「微信 summary 静默跳过」事故的检测器）；
+3. 安全检查：final.json 不得出现口令字段名；CRM 台账幂等键列迁移状态提示。
+
+## 9. 2026-09-14（周一）实战验收清单
+
+自动化 9 点跑完后，按序执行：
+
+```
+# ① 核心验收：工作流自身声称的 vs 磁盘真实存在的
+python workflow.py verify latest
+
+# ② 播报一致性：抽 2-3 个数字（异常数/待确认事件数/CRM 写入数）
+#    对照 final.json 与收到的播报文本，不一致 = 播报凭记忆（违规）
+python workflow.py status <当日 run_id>
+
+# ③ 口令零泄露：搜当日播报全文（含企微/邮件正文）中不得出现任何口令
+python passwords.py check          # 确认口令体系完整
+
+# ④ CRM 幂等实测：人为触发一次重跑（同一条来单消息再写一次）
+python crm_dispatch.py follow --customer "<测试客户>" --data '{"跟进状态":"初步沟通","本次跟进内容":"<当日已有内容>"}'
+#    预期：返回 idempotent_reuse，台账不新增行；若 created = 幂等失效
+
+# ⑤ 驾驶舱新鲜度：打开「项目管理驾驶舱.html」确认数据是当日（对照①的产物核对）
+
+# ⑥ （可选）断点恢复演练：删掉当日 final.json 里某步的 checkpoint 不会发生——
+#    直接观察真实失败时的 --resume 行为即可，不必人为制造
+```
+
+**判定标准**：①②③④ 全过 = v2.0 框架实战验收通过，P3 启动；
+任一失败 = 记录现象 + final.json + 台账，当天修复后周二复验。
+
+## 10. P3 起步清单（验收通过后）
+
+1. 根脚本薄壳化：op.py 的 apply-wizard/apply-text 内部切 DataService；
+2. 报价对象落地：报价表（新）+ QUO-xxx ID + 版本快照，接 pipeline BOM 成本；
+3. ID 生成器：12 类对象 ID 的统一发放与查重（contracts.new_object_id 已有雏形）；
+4. 状态轨迹表扩展：把阶段轨迹泛化为 (对象类型, 对象ID, 原状态, 新状态, …)。

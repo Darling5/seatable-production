@@ -147,13 +147,17 @@ def create_lead(a, data: Mapping[str, Any], idem_key: str = "") -> dict[str, Any
     if existing:
         return {"row_id": existing.get("__row_id__"), "action": "reused",
                 "note": "客户已存在，复用现有线索"}
-    row_id = a.append_row(LEAD_TABLE, fields)
-    if not row_id:
+    # v2.0：写入走 DataService 原语，写后读回验证（防中文列名静默丢列）
+    from application.dataservice import DataService
+    rid, verified, detail = DataService.write_verified(a, LEAD_TABLE, fields)
+    if not rid:
         return {"error": "写入失败（返回空 row_id）"}
-    _ledger_append("create_lead", fields.get("客户名称", ""), row_id,
+    if not verified:
+        return {"error": "读回验证失败：%s（写入可能被静默丢弃，未记台账）" % detail}
+    _ledger_append("create_lead", fields.get("客户名称", ""), rid,
                    LEAD_TABLE, json.dumps(fields, ensure_ascii=False)[:200],
                    idem_key=idem_key)
-    return {"row_id": row_id, "action": "created"}
+    return {"row_id": rid, "action": "created"}
 
 
 def add_follow(a, lead_row_id: str, data: Mapping[str, Any],
@@ -172,9 +176,13 @@ def add_follow(a, lead_row_id: str, data: Mapping[str, Any],
     if idem_key and _ledger_key_used(idem_key):
         return {"action": "idempotent_reuse", "note": "幂等键已写入过，跳过",
                 "idem_key": idem_key}
-    follow_id = a.append_row(FOLLOW_TABLE, fields)
+    # v2.0：写入走 DataService 原语，写后读回验证（防中文列名静默丢列）
+    from application.dataservice import DataService
+    follow_id, verified, detail = DataService.write_verified(a, FOLLOW_TABLE, fields)
     if not follow_id:
         return {"error": "跟进记录写入失败"}
+    if not verified:
+        return {"error": "读回验证失败：%s（写入可能被静默丢弃，未记台账）" % detail}
     # 自动关联：只用单向调用（跟进记录→销售线索）。
     # ⚠️ adapter.link() 的双向调用会把线索的「跟进记录」列表整体替换，
     #    导致历史跟进记录的关联被冲掉（2026-09-11 实测踩坑）。
