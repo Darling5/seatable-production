@@ -138,10 +138,9 @@ class DataService:
         标量字段（str/int/float/bool）逐一比对；list/dict（链接列、多选）
         跳过精确比对只查存在性 —— 云端会归一化这类值，硬比必误报。
         """
-        try:
-            rows = adapter.list_rows(req.table)
-        except Exception as e:
-            return False, "读回 list_rows 异常：%s" % e
+        rows = self._safe_list_rows(adapter, req.table)
+        if isinstance(rows, str):     # 异常说明
+            return False, rows
         target = None
         for r in rows:
             if r.get("__row_id__") == rid:
@@ -165,7 +164,40 @@ class DataService:
             return False, "字段不一致（%s）" % "; ".join(mismatch[:3])
         return True, "字段一致（%d 项）" % len(fields)
 
+    # ── 写入原语（供写链复用；不含策略/幂等/台账）──────
+    @staticmethod
+    def write_verified(adapter: Any, table: str, row: Mapping[str, Any],
+                       action: str = "append", row_id: str = "") -> tuple[str, bool, str]:
+        """append/update + 读回验证一步完成。返回 (row_id, verified, detail)。
+
+        语义约定：row_id 返回值有意义当且仅当写入请求本身被云端接受
+        （append 拿到 rid / update 的目标 rid）；verified=False 说明字段
+        静默丢失（HTTP 200 但列没进表），调用方按写入失败处理。
+        """
+        if action == "update":
+            if not row_id:
+                return "", False, "update 需要 row_id"
+            adapter.update_row(table, row_id, dict(row))
+            rid = row_id
+        else:
+            rid = adapter.append_row(table, dict(row))
+            if not rid:
+                return "", False, "写入返回空 row_id"
+        # 读回验证（就地构造轻量 req，复用比对逻辑）
+        ds = DataService.__new__(DataService)   # 不走 __init__（避免无谓 I/O）
+        verified, detail = ds.verify_readback(adapter, WriteRequest(
+            table=table, row=row, action=action, row_id=rid), rid)
+        return rid, verified, detail
+
     # ── 内部 ───────────────────────────────────────────
+    @staticmethod
+    def _safe_list_rows(adapter: Any, table: str):
+        """list_rows 异常统一收口为字符串说明，不向上炸。"""
+        try:
+            return adapter.list_rows(table)
+        except Exception as e:
+            return "读回 list_rows 异常：%s" % e
+
     def _get_adapter(self, route: str) -> Any:
         if self._factory is None:
             from adapters.factory import load_config, get_adapter
