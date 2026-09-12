@@ -44,6 +44,15 @@
 
 ## 4. 每日自动化 Prompt 模板
 
+> **v2.0（2026-09-12）起，数据链路（同步/取数/核对/预测/摘要/驾驶舱）由
+> `python workflow.py run daily --mode apply` 统一执行**，Prompt 只保留三件事：
+> ① 启动工作流；② AI 语义步骤（微信事件登记、CRM 识别写入、群聊 AI 总结）；
+> ③ 发布、通知与播报。完整模板见 `automations/daily-prompt-v2.md`。
+> 播报以 `data/runs/<run_id>/final.json` 为唯一数据源——某一步是否真的跑了，
+> 看 JSON，不看 AI 的记忆。失败可用 `--resume <run_id>` 断点续跑。
+
+> 下方为 v1.x 旧模板（已被 v2.0 取代，留作参考）：
+
 > 把下方的 `{{SEATABLE_PRODUCTION_DIR}}` 替换为你的实际技能目录绝对路径
 > （或留作说明，因为 cwds 已保证脚本可从项目目录调起）。模板只规定流程，
 > 不包含真实 token、UUID，也不等于授权自动写入或删除数据。
