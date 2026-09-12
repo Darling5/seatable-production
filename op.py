@@ -101,9 +101,27 @@ def _build_target_row(data):
     return "生产计划", create_production_plan_row(data)
 
 
+def _should_refresh_cockpit(args):
+    """驾驶舱自动刷新开关（v2.0 架构：写入归写入，渲染归 workflow/cockpit.py）。
+
+    默认**不**刷新：op.py 只负责数据写入，驾驶舱刷新统一由
+    `workflow.py run daily`（cockpit 步骤）或手动 `python cockpit.py` 负责。
+    需要旧的单命令「写完即刷新」行为时：
+      - 命令行加 --refresh（apply-wizard / apply-text / intake）
+      - 或设环境变量 SEATABLE_AUTO_REFRESH_COCKPIT=1
+    """
+    if getattr(args, "refresh", False):
+        return True
+    return str(os.environ.get("SEATABLE_AUTO_REFRESH_COCKPIT", "")).strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
 def _apply_and_refresh(adapter, args, table, row):
     rid = adapter.append_row(table, row)
     print(f"OK 已写入「{table}」 row_id={rid}")
+    if not _should_refresh_cockpit(args):
+        print("（驾驶舱未自动刷新：写入与渲染已解耦；需要时加 --refresh 或运行 python cockpit.py）")
+        return
     try:
         import subprocess
         cockpit = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cockpit.py")
@@ -317,6 +335,8 @@ def cmd_intake(adapter, args):
 
 
 def _refresh_cockpit(args):
+    if not _should_refresh_cockpit(args):
+        return
     try:
         import subprocess
         here = os.path.dirname(os.path.abspath(__file__))
@@ -453,6 +473,7 @@ def main():
     sp.add_argument("--only-confirmed", action="store_true",
                     help="有待确认项时，仍先执行低风险项")
     sp.add_argument("--out", default=None)
+    sp.add_argument("--refresh", action="store_true", help="执行完意图后刷新驾驶舱（默认不刷新）")
 
     sp = sub.add_parser("stage", help="查看/推进项目阶段")
     sp.add_argument("project", nargs="?", default="", help="项目名；省略则列出全部")

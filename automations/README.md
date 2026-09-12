@@ -116,7 +116,8 @@
 ## 6. 安全须知
 
 - **口令**：驾驶舱访问口令在仓库外的 `config.yaml`（已被 .gitignore 忽略），
-  不会进 git；但每日自动化的播报文本里会附带当前口令，请勿把播报推送到群聊。
+  不会进 git；v2.0 起口令已从每日自动播报中移除，只在用户手动运行
+  `passwords.py show` 时当面展示，自动化播报文本不再包含口令。
 - **`.workbuddy/` 目录**（含自动化 memory、项目 memory、业务指标）已被
   `.gitignore` 忽略，**切勿 `git add` 提交或 push**，以免泄露口令与业务数据。
 - 仓库已忽略：`config*.yaml`、`data/`、`*驾驶舱*.html`、`cockpit_passwords.json`。

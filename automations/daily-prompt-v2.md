@@ -51,12 +51,11 @@ python workflow.py run daily --mode apply
 8. **CRM 自动写入摘要（必须播报）**：新建线索 N 条（逐条点名客户名称）、跟进记录 N 条（客户+跟进状态）、复用 N 条、待人工确认 N 条（列原因）。台账：data/crm_dispatch_ledger.csv。
 9. 发布是否成功及固定链接；企微/邮件通知发送结果（注明各走了哪条通道）。
 
-## 第五步：口令播报（仅本地/私聊）
+## 第五步：口令说明（不播报明文）
 
-读取 config.yaml 的 cockpit 段，在播报末尾附「当前生效访问口令清单」：
-- 主口令(admin_password)：<值>
-- 各角色口令(role_passwords)：boss / warehouse / purchase / production / sales 各自的值
-- 注明「口令取自 config.yaml，重生成即生效；若你已轮换请以此为准」。提醒：口令仅本地/私聊查看，勿推送到群聊。
+播报末尾只需附一句：**「驾驶舱口令已按 v2.0 架构移出自动播报；需要时在本地运行 `python passwords.py show` 查看，或 `passwords.py rotate` 轮换。」**
+- **禁止**在自动化播报中读取、复述、附上 config.yaml 的任何口令明文。
+- 口令只在用户手动运行 passwords.py 时当面展示。
 
 ## 铁律
 
