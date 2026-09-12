@@ -28,8 +28,14 @@ seatable:
       api_token: ""
       base_uuid: ""
       server: "https://cloud.seatable.cn"
+    # crm Base（v1.9 起需要）：微信来单自动建线索/跟进记录走这里。
+    # ⚠️ 不配置 crm 时，CRM 自动录入会退回 local 模式，业务数据可能写进本地 CSV！
+    crm:
+      api_token: ""
+      base_uuid: ""
+      server: "https://cloud.seatable.cn"
   # 未配置命名 Base 时，仍可只填上面的 api_token/base_uuid；空配置自动退回 local 模式
-  # CLI 可用 --base production 或 --base tasks 选择目标 Base。
+  # CLI 可用 --base production / --base tasks / --base crm 选择目标 Base。
 
 # ── 采购流水线库存源 ───────────────────────────────────────
 # source: partdb | api | mcp | file

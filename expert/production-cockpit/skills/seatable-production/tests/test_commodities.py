@@ -111,4 +111,7 @@ print()
 print("=" * 78)
 print("失败 %d 项 %s" % (len(FAIL), ("—— " + "、".join(FAIL)) if FAIL else "✓ 全部通过"))
 print("=" * 78)
-sys.exit(1 if FAIL else 0)
+# 仅作为脚本直跑时退出；被 unittest discover 导入时不再 sys.exit（SystemExit 会被
+# loader 当成 ImportError，2026-09-12 实测导致全量 discover 报 errors=1）
+if __name__ == "__main__":
+    sys.exit(1 if FAIL else 0)
