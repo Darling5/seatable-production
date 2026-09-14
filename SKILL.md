@@ -21,6 +21,19 @@
 
 ## 版本历史
 
+### v1.8.1（2026-09-14）
+- 🆕 **项目矩阵板块**（见 §9.5）：项目全表 `sec-PT`（36 行全字段）+ 生产计划全表 `sec-PL`（34 行）+ 流程思维导图 `sec-MM`（7 张 XMind / 531 节点，可折叠 SVG 水平树）。注册到 `production`（项目经理）与 `boss` 角色，默认进首屏。新增 `extract_mindmaps.py`（XMind → `data/思维导图.json`）。
+- 🐛 **修直连路径两处静默错误**（见 §9.6，此前导致驾驶舱大面积数字失真）：
+  - `adapters/seatable.py` 新增 `_cell_meta()` / `_flat_cell()`：`GET /rows/` 返回的 **select 选项 id** 翻译为选项名（此前状态显示 `58668`、KPI 在产/计划/已交付恒为 0）、**ISO 日期**截为 `YYYY-MM-DD`。
+  - `cockpit.py::_date()` 支持 ISO 带时分秒/时区（此前 strptime 全部失败 → **甘特图为空**、剩余天数为 null、交期达成率 N/A、现金流全 0）。
+- 🐛 `receivable_list.sort(key=...)` 对空合同交期抛 `TypeError: '<' not supported between 'NoneType' and 'str'` → 排序键改 `str(x.get("due") or "")`；`proj_overview`/`wip` 的 `due` 改 `or ""`。
+- 🆕 **甘特图「待补交期」**：13/34 条计划无合同交期（且无其它可用日期字段）。业主口径＝「暂时还没，后期手补」→ **不推算、不猜日期**，沉到底部单列灰色虚线「待补交期」条（`pending=True`），图注写明条数；补录后自动落到时间轴。`model["gantt_pending"]` = 条数。甘特覆盖 0 → 34 条（21 条真实排期 + 13 条待补）。
+- 🧪 无头 Chrome 实测：7 图切换 / 折叠（root 85→1→85）/ 搜索命中 / 缩放 全部正常，**0 JS 报错**。
+- 🔢 **KPI 口径修正**：`p_planned` 现含 `"暂放"`（业主口径归入「计划中」），修掉 1+10+22=33 ≠ 36 的凭空消失。
+- 🆕 **应收口径对照** `model["recv_check"]`（见 §9.7）：把「表内待收」(SeaTable 公式列) 与「应收」(看板现算＝合同总价−实收) **两个数并列**摆出，并逐项列出差在哪、差多少、成因。实测差 ¥150,043，**全部来自 3 个项目**（2 个待收列为空实际仍有未收 + 1 个 ¥2 舍入）。
+- 🆕 **对内共享页** `build_share.py`（见 §9.8）：生成**只含项目进度 / 生产进度 / 甘特图**的独立单页 HTML（35 KB，无口令、无任何金额/成本/供应商/微信数据），用于发给公司内部同事。已发布为在线链接。
+- 🐛 `main()` 开头把 stdout 切 UTF-8 —— Windows 控制台默认 GBK，末行 `print` 里的 `¥` 抛 `UnicodeEncodeError` 会让生成器**退出码=1**（HTML 其实已写好），自动化会误判成失败。
+
 ### v1.7.0（2026-09-03）
 - 🆕 **风险预测引擎**：新增 `foresee.py`，从「事后告警」升级为「事前预测」——
   - **合同倒排**：以 24 个已交付计划的**真实工期**（立项→交货，中位 24 / p75 33 / p90 49 天）为基准，对每个在制计划算剩余天数 vs 历史分位，输出 已逾期/高风险/偏紧/正常 四档判定 + 各环节（BOM核对→IC/PCB采购→组装料采购→贴片组装→测试发货）最晚开始日，「必须立刻执行」清单。
@@ -519,6 +532,122 @@ python3 op.py stage 演示定位终端 --to 量产 --yes       # 跳步 → 必�
 
 ---
 
+## 9.5 项目矩阵板块（项目全表 / 生产计划全表 / 流程思维导图）
+
+驾驶舱里除四维分析外还有一组「项目矩阵」板块，面向**项目经理（生产经理）角色**，默认进首屏：
+
+| 板块 | id | 数据来源 | 说明 |
+|---|---|---|---|
+| 项目全表 | `sec-PT` | `model.projects_full`（项目表全字段） | 36 行 × 15 列，可搜索/按状态筛选/分页；末三列是关联的生产计划/发货/维修条数 |
+| 生产计划全表 | `sec-PL` | `model.plans_full`（生产计划表） | 34 行，含状态/阶段/花费天数/生产花销/单片成本 |
+| 流程思维导图 | `sec-MM` | `model.mindmaps` ← `data/思维导图.json` | 7 张 XMind 业务流程图，可折叠 SVG 水平树 |
+
+角色注册见 `cockpit.py` 的 `ROLES`：`production`（生产经理＝项目经理职责，`currentRole()` 默认值）
+与 `boss` 可见；`warehouse` / `purchase` 按其「非项目经理」定位**不开放**。
+
+### 思维导图怎么来的
+
+业务方在 XMind 里维护流程规范（`Claw/xmind-download/*.xmind`，XMind Zen 格式 = zip + `content.json`，
+注意 `content.json` 是一个 **list**（多 sheet）而不是 dict）。用 `extract_mindmaps.py` 拍平成层级 JSON：
+
+```bash
+python extract_mindmaps.py                       # 默认扫 Claw/xmind-download
+python extract_mindmaps.py <xmind目录> [输出json]  # 输出默认 data/思维导图.json
+```
+
+节点压缩成短键（`t` 标题 / `n` 备注 / `c` 子节点）以控制体积。**改了 XMind 要重跑此脚本 + 重跑 cockpit.py**
+（与 `data/微信事件.csv`、`data/核对结果.csv` 同一约定：`data/` 下的本地专用数据不走云端同步）。
+缺少该文件时思维导图板块显示引导文案，不会报错。
+
+前端 `mountMindmaps()`（`cockpit.py`）自算树布局：x 按深度、y 按叶子顺序后序回填、父取首末子中点；
+支持 7 图切换 / 节点点击折叠展开 / 搜索高亮 / 放大缩小。CSS 前缀 `mm-`。
+
+---
+
+## 9.6 ⚠️ 直连路径的两个静默错误（2026-09-14 修复，必读）
+
+`cockpit.py` 是**直连 SeaTable**读数据（`adapters/seatable.py` 的 `GET /rows/`），
+而 `seatable_sync.py` 是**走 CSV** 落盘。两者的单元格口径**不一致**，曾导致驾驶舱大面积静默出错：
+
+| 现象 | 根因 | 修复位置 |
+|---|---|---|
+| 状态列显示 `58668` 而不是「已交付」；KPI 在产/计划/已交付**恒为 0** | `/rows/` 对 `single-select` 返回**选项 id**，不是选项名 | `adapters/seatable.py::_cell_meta()` + `_flat_cell()`：拉 `/columns/?table_name=` 的 `data.options` 建 `{id: 名}` 映射后翻译 |
+| **甘特图为空**、`剩余（天）`为 null、交期达成率 N/A、现金流全 0 | 日期列是完整 ISO（`2026-05-07T00:00:00+08:00`），而 `_date()` 只 `strptime("%Y-%m-%d")` | `cockpit.py::_date()`：先按 `T`/空格截到日期部分；并在 `adapters::_flat_cell()` 对 date 类型直接截 `v[:10]` |
+
+排查口诀：**「驾驶舱数字明显不对」先比对 `data/*.csv`（同步路径，已是中文名/纯日期）与直连返回值。**
+两者不一致就是这里漏翻了。
+
+另注：
+- 生产计划 `阶段` 是 `single-select`（可翻译），项目 `阶段` 是 `link` 列，云端只给回 linked row 的
+  `display_value`（形如 `673602`），**不可读**，故项目全表刻意不展示该列。
+- 甘特图需要「立项日期 + 合同交期」。实测 13/34 条计划没填合同交期，且「交货时间(自动记录)」
+  「创建时间」也为空。**业主口径：这些交期是「暂时还没有，后期手补」→ 一律不推算、不猜日期**。
+  代码把它们沉到甘特图底部，单列为灰色虚线「待补交期」条（`pending=True`，不参与时间轴刻度），
+  并在图注写明条数与原因。补录交期后自动落到时间轴上——**绝不把推算值伪装成真实交期**。
+  `model["gantt_pending"]` 给出条数；甘特筛选条含「待补交期」按钮。
+- 生成器会读 `_sync_meta.json` 算「数据是否过期」。若只跑了 `cockpit.py` 没跑 `seatable_sync.py`，
+  徽标会显示过期（纯提示，不影响直连数据的实时性）。
+- `main()` 开头 `sys.stdout.reconfigure(encoding="utf-8")`：Windows 控制台默认 GBK，
+  末行 `print` 的 `¥` 会抛 `UnicodeEncodeError` → 生成器**退出码=1**（HTML 其实已写好），
+  自动化会误判成失败。报错修了，但**跑生成器时仍建议带 `PYTHONIOENCODING=utf-8`**。
+
+---
+
+## 9.7 应收口径对照（`model["recv_check"]`）— 两个数为什么不一样
+
+驾驶舱里同时存在两个「欠收」数字，来源不同，**必须并列展示 + 说明差异**，否则看的人只会犯迷糊：
+
+| 数字 | 来源 | 位置 |
+|---|---|---|
+| **待收**（表内） | SeaTable「项目」表的**公式列**，直接汇总 | 项目全表脚注 + 应收 KPI 副标题 |
+| **应收**（看板） | `sum(合同总价) − sum(实收)`，看板**现算** | KPI 主值 |
+
+两者本应逐项相等，实测差 **¥150,043**。`compute()` 里 `recv_check` 逐项比对（容差 ±1 元），
+只列**对不上**的行，并按差额绝对值降序：
+
+```python
+recv_check = {"kpi": 应收, "stored": 表内待收合计, "diff": stored - kpi, "rows": [...], "n": len(rows)}
+# rows[i] = {no, name, status, contract, received, stored, calc, diff, why}
+```
+
+`why` 自动生成两类成因文案：两边都 >0 判「元级舍入误差」；否则判「表内待收为空/0，实际仍有未收 ¥X」。
+前端 `sec-PT` 里用 `<details class="recv-diff">` 折叠展示（默认收起，不占版面）。
+
+**2026-09-15 实测 3 条对不上**：`20260914-003` 昊想科技 ¥146,000、`20260519-001` 动联防爆 ¥4,045
+（两条都是**待收列为空/0 但实际仍有未收**，属公式列未覆盖新行 / 未重算）、`20260413-001` 郑州云峰 ¥2 舍入。
+→ 建议到 SeaTable「项目」表核对「待收」公式列。
+
+> 口径选择：**不替业主决定**用哪个数。两个都摆出来 + 说清差额来源，让人自己核。
+
+---
+
+## 9.8 对内共享页（`build_share.py`）— 给同事看的精简版
+
+`cockpit.py` 的产物含财务金额、成本、供应商、微信情报与口令门禁，**不能直接发同事**。
+`build_share.py` 复用同一个 `cockpit.compute()`（保证两页不会各说各话），只抽出三类内容
+重排成一份**独立单文件 HTML**（约 35 KB，内联 CSS/JS，零外部依赖）：
+
+| 板块 | 内容 | 刻意排除 |
+|---|---|---|
+| KPI 条 | 项目总数（进行中/计划中/已交付）、生产计划（未交付/已交付）、交期达成率、待补交期 | 任何金额 |
+| 生产计划甘特图 | 立项→交期、月份刻度、今日红线、4 态筛选 + 搜索、待补交期虚线组 | — |
+| 项目进度 | 编号/项目/状态/合同交期/剩余逾期天数/关联单据数 | 合同总价、已收、待收、生产花销 |
+| 生产进度 | 计划编号/产品/数量/状态/阶段/关联项目/立项/交期/花费天数/批次号 | 生产总花销、单片成本 |
+
+```bash
+python build_share.py                    # 默认输出 <本目录>/项目进度共享页.html
+python build_share.py <输出路径>          # 或 SHARE_OUT=... python build_share.py
+```
+
+**安全护栏（改字段时务必守住）**：`build_model()` 是**白名单**式重建——只挑显式列出的键，
+不是「把 model 里敏感键删掉」。新加字段要主动决定是否暴露。验收脚本务必包含
+「金额数值泄漏检查」（拿完整驾驶舱的合计金额去共享页里搜，必须搜不到）。
+
+发布：把生成的 html 复制成某目录的 `index.html`，用发布技能 `workbuddy_sites_deploy` 部署，
+`appName="生产进度看板"`、`language="static"`。发布是一次对外释放，**每次都要用户当轮明确要求**。
+
+---
+
 ## 10. 采购库存核对
 
 采购流水线通过 `pipeline/run.py audit <run_id>` 使用 `inventory.source` 生成库存审核表：
@@ -860,6 +989,56 @@ python won_deal.py ledger                       # 写入台账核对
 付款支持百分比（合计必须等于总价）或绝对值三段；`--profile '{...}'` 补充开票/
 银行等档案字段。至此「来单→跟进→赢单→立项」前半链闭环，立项后走 pipeline 采购。
 
+### 11.6b 驾驶舱在线模式（cockpit_server.py，消灭复制粘贴割裂感）
+
+驾驶舱是静态快照 HTML，写操作原本要「复制→切 WorkBuddy→粘贴→等重刷」三段割裂。
+**伴生服务器**把这条路压成一次点击：
+
+```bash
+python cockpit_server.py        # 默认 127.0.0.1:8801，占用自动顺延到 8810；自动开浏览器
+```
+
+- 页面加载时探测 `http://127.0.0.1:{8801..8803,8790}/api/ping`，在线则进入
+  **在线直连模式**（顶栏徽标显示「⚡ 在线直连」）：
+  - 微信情报台「确认选中」→ `POST /api/wx/approve` → 服务端逐条跑
+    `wechat_intake.py approve`（确认/留痕逻辑与 CLI 完全同一份）→ 自动刷新快照
+  - 「忽略选中」→ `POST /api/wx/ignore` 同上
+  - 补录「一键复制」→ `POST /api/backfill` → 存 `data/补录回传.csv`，
+    之后对话说「处理补录回传」即可确认写库
+  - 「重新生成说明」→ `POST /api/refresh` → 重跑 cockpit.py 并 reload 页面
+- 探测失败静默回退纯静态模式，行为与从前 100% 一致（离线打开/没起服务器都不受影响）
+- 安全边界：只绑 127.0.0.1；事件编号白名单校验（`[A-Za-z0-9-]{3,40}`）防注入；
+  写操作全部 subprocess 调既有 CLI，不复制任何业务逻辑；refresh 只重渲染本地快照
+
+### 11.6c 驾驶舱表格工具 + 甘特交互 + 分析图表（cockpit.py 前端增强）
+
+**通用表格工具（`initTableTools()`，render() 末尾、initPagination() 之前调用）**：
+- `table[data-filter="1"]` → 自动在表格上方插入工具条：🔍 文本搜索（全行匹配）
+  + 状态下拉（自动聚合「状态」列或 pill 列的取值与计数）+ 计数显示（如「显示 3 / 31 条」）
+- `table[data-select="1"]` → 追加行勾选：表头全选（只全选**当前筛选可见**行）+ 行首复选框
+  + 勾选后浮出批量操作栏：「导出选中 CSV」（BOM 带 utf-8 头，Excel 直开）/
+  「复制名称列」（贴到 WorkBuddy 对话说「跟进这几个项目」）/「取消选择」
+- 与分页联动：`initPagination` 已升级为基于可见行重算页数（`tbl._pgRedraw` 钩子），
+  筛选后翻页正确；`_tfInit/_pgInit` 防重入（render() 重跑不重复插工具条）
+- 已覆盖 18 张表：PW 项目/在制、C 应收、Q 维修、Sup 采购逾期/供应商、Inv 缺料/安全库存/
+  库存核对、Rs 资源、Mkt 物料行情、Raw 原料、WXC 待确认/最近事件、WXM 核对、FC 倒排/缺料
+- WXC 待确认表保留原有 `.wx-sel` 勾选语义（写库动作），只加 data-filter 搜索，不加通用勾选
+
+**甘特图（`renderGantt` + `initGanttTools`）**：
+- 状态筛选药丸：全部/进行中/逾期/已交付（带实时计数），+ 产品名/状态搜索框
+- 悬停（含键盘 Tab 聚焦）条形 → 浮出详情卡：状态/立项/交期/计划工期/距交期/进度
+- 点击行 → 高亮该行并**联动高亮 PW 项目清单表**对应行（`.hl` 类，`var(--selbg)`）
+- 颜色改为 CSS 变量类（`.gantt-bar.run/.done/.overdue` → primary/green/red），深色模式自动适配
+
+**新增分析图表**（纯表格区域补可视化，用既有 `bars()` 助手 + CSS 变量配色）：
+- Sup：供应商准时率排行（最差优先，红<70/橙<90/绿≥90）
+- C：应收账龄分布（已逾期/30/60/90 天金额）
+- Inv：在产缺料缺口 Top（红=零确认库存，橙=部分缺口）
+- Rs：资源负载排行（超载优先，红>100/橙≥70/绿正常/灰闲置）
+
+前端约定：新增表格只要写 `data-filter="1"`（可选 `data-select="1"`）即可获得全套能力，
+无需写任何 JS；新增图表用 `bars([{name,value,color}],{fmt})`，color 传 `var(--xx)` 自动适配深色。
+
 ### 11.7 v2.0 P0 架构收口（已完成）
 
 - **写入与渲染解耦**：`op.py` 的 `apply-wizard / apply-text / intake` 默认**不再**自动
@@ -879,6 +1058,56 @@ python won_deal.py ledger                       # 写入台账核对
 - **运行验收（`workflow.py verify latest`）**：每日自动化跑完后的一键核对——
   步骤状态全绿 + 成功步骤必须有新鲜产物（mtime 防旧文件充数，专治「静默跳步」）+
   final.json 零口令。退出码 0=通过。周一实战验收流程见 `docs/avatar-loop-v2.md` §9。
+
+### 11.8 客户到售后业务闭环控制平面（v2.0 P3 前置，2026-09-13）
+
+**`domain/order_to_cash.py` + `business_loop.py`**：12 类业务对象（CUS/LED/OPP/REQ/SOL/QUO/CTR/PRJ/MO/PO/SHP/AS）的
+本地控制平面——对象台账、状态轨迹、证据链、审批记录四张 CSV（`data/business_loop/`），**不直接写 SeaTable**，
+先离线贯通「微信来单→商机→需求→方案→报价→合同→立项→采购→生产→出货→验收→售后」。
+
+```bash
+python business_loop.py doctor                                   # 12 类对象 + 数据目录体检
+python business_loop.py scenario --customer X --product Y        # 全链预览（纯只读）
+python business_loop.py start --customer X --product Y --source-event EV --json   # 先预览
+python business_loop.py start ... --yes                          # 确认后建客户/线索/商机（幂等）
+python business_loop.py advance --root-id OPP-xxx --to quotation_confirming --reason 客户要求报价 --yes
+python business_loop.py revise --root-id OPP-xxx --kind quote --summary V2 --reason 降价 --yes   # 版本递增旧版保留
+python business_loop.py status --root-id OPP-xxx                 # 案件全貌（对象/轨迹/证据/审批）
+python business_loop.py verify --root-id OPP-xxx                 # 闭环验收（ID/owner/next_action/轨迹/证据）
+python business_loop.py cases --json                             # 在途案件清单（状态+覆盖率）
+python business_loop.py report                                   # HTML 闭环看板
+```
+
+**边界铁律**：控制平面写本地 CSV；正式 production/tasks 写入仍走候选制（DataService
+`approval_required`），CRM 自动写入（`auto_with_ledger`）不变。`advance --yes` 只是
+登记审批轨迹，不代表已写业务表——立项真实写入走 `won_deal.py apply --yes`。
+
+**每日摘要联动**：`daily_brief.py` 已带「🔗 业务闭环」段（在途案件数、状态、下一步命令），
+读 `data/business_loop/objects.csv`，无数据自动跳过。
+
+**交接建议全覆盖**：`handoff_suggestions` 对 14 主链 + 2 旁路状态都给出具体下一步命令
+（如 `quotation_confirming → 方案版本 + pipeline BOM 成本 → 报价草稿`）。
+
+**控制平面 → SeaTable 云端同步（`loop_sync.py`，2026-09-13 实测打通）**：把本地四表
+幂等 upsert 到 CRM Base 的「业务对象台账/状态轨迹/证据链/审批记录」（表不存在时自动创建）。
+默认 dry-run，`--yes` 才写云端；按主键（object_id/transition_id/event_id/approval_id）比对，
+重复运行零重复。**云端只是台账镜像，业务动作仍在本地控制平面执行**——云端可直接用
+SeaTable 视图/自动化做看板与提醒。
+
+```bash
+python loop_sync.py          # dry-run：打印将建表/新增/更新的行数
+python loop_sync.py --yes    # 实际写入 CRM Base（幂等，可重复执行）
+python loop_sync.py --tables objects --yes   # 只同步业务对象台账
+```
+
+踩坑：SeaTable 删表端点是 `DELETE /api/v2/dtables/{uuid}/tables/` + body `{"table_name": ...}`
+（不是 `DELETE .../tables/{table_id}/`）；建表 body 列字段名是 `column_name/column_type`。
+
+**微信来单自动触发（`loop_trigger.py`）**：扫描 CRM 销售线索表，为无案件的线索自动创建
+控制平面案件（CUS/LED/OPP）。默认 preview，`--yes` 才建；按客户名+产品幂等，重复扫描
+零重复；跟进内容含「终止/无效/放弃/已流失」的死单自动过滤。链路：
+微信消息 → crm_dispatch lead（写销售线索表）→ loop_trigger（建控制平面案件）→
+business_loop advance（推进状态）→ loop_sync（镜像 CRM 云端台账）。
 
 ---
 
