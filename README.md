@@ -474,6 +474,11 @@ python wxmatch.py intent              # 导出高置信项的预填意图（确�
 
 ## 三种用法，按需选
 
+> **v1.8.3 起**：驾驶舱生成/部署/在线模式（cockpit / deploy / publish /
+> cockpit_server / build_share）的触发与命令卡已拆至独立子技能 **cockpit-studio**
+> （`C:/Users/11430/.workbuddy/skills/cockpit-studio/`）。脚本与数据仍在本目录
+> **单份维护**，子技能只是薄指针，不要复制脚本过去。
+
 **① 零配置（默认）** — 数据存 `data/` 下的 CSV，Excel 直接打开：
 
 ```bash
