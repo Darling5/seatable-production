@@ -85,8 +85,31 @@ def _write_csv(path, cols, rows):
 
 # ---------------------------------------------------------------- 配置与找库
 def _wechat_cfg():
+    """微信段配置。
+
+    ⚠️ **采集侧所有匹配都从这里取 watch_groups** —— `_wx4_pull`、引擎B `pull`、`summary`
+    三处用的是同一个谓词。因此把「自动词表」注入这一处 = 三处同时生效，
+    **不必也不应该**去改 config.yaml。
+
+    自动词表来自 `wx_watchlist.py`：把 SeaTable 里登记的供应商名归一化成
+    「群名里可能出现的词」（如 深圳市牧泰莱电路技术有限公司 → 牧泰莱）。
+    业主 2026-09-15 需求：SeaTable 新增供应商 + 群名写上公司名 → 自动纳入监控。
+    这是「子串匹配」的自然延伸，新群无需人工登记。
+    """
     cfg = load_config() or {}
-    return cfg.get("wechat") or {}
+    w = dict(cfg.get("wechat") or {})
+    try:
+        import wx_watchlist
+        extra = wx_watchlist.auto_keywords()
+    except Exception:
+        extra = []
+    if extra:
+        base = [str(x) for x in (w.get("watch_groups") or [])]
+        low = {x.lower() for x in base}
+        merged = list(base) + [x for x in extra if x.lower() not in low]
+        w["watch_groups"] = merged
+        w["_auto_watch_n"] = len(merged) - len(base)   # 便于 doctor/播报显示自动纳入了几条
+    return w
 
 
 def _candidate_dbs():

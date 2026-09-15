@@ -18,6 +18,7 @@ HTML 驾驶舱。
 import os
 import sys
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -46,6 +47,94 @@ SUPPLIER_COLS = ["供应商", "贴片厂", "组装厂"]
 # demo 用「进行中/计划中/已完成」；统一映射为 计划/进行中/已完成 三桶）
 STATUS_DONE = {"已完成", "已交付"}
 STATUS_ACTIVE = {"进行中", "可能延迟", "已超期", "待客户下单"}
+
+# ── 排序口径（业主 2026-09-15）：**「计划中」优先** ────────────────────
+# 原话：「所有的排序以及状态在计划中为优先排序」。项目表、生产计划表、甘特图**统一**用这套。
+# 「暂放」并入「计划中」档（与 KPI 口径一致，见 compute() 的 p_planned 注释）；
+# 「暂停」单独一档排第二 —— 它是「本来在排、被按住了」，比已交付更需被看到。
+STATUS_ORDER = {"计划中": 0, "暂放": 0, "暂停": 1, "进行中": 2,
+                "可能延迟": 3, "已超期": 3, "待客户下单": 3,
+                "已完成": 9, "已交付": 9, "已取消": 9}
+
+
+def status_rank(s):
+    """排序档位：计划中 0 · 暂停 1 · 进行中 2 · 其它 3 · 已交付/完成 9（未知 5）。"""
+    return STATUS_ORDER.get(str(s or "").strip(), 5)
+
+
+# ── 生产计划「阶段」列（表格实际值）→ 进度%（业主 2026-09-15 口径）──────
+# 业主原话：「当前进度根据表格实际的数据，也就是说每天晚上七点收集的各类数据为准」。
+# 于是**不再按日期推算进度**（那是「今天该干到哪」，不是「实际干到哪」），
+# 改为读生产计划表「阶段」列的实测值。已有实测值：
+#     库存核对 · 备料中 · 贴片 · 组装 · 测试 · 改造中 · 已交付
+# 工序命名规范（见「工序」列）：01 库存核对 · 03 外壳采购 · 04 贴片料采购 · 06 贴片 ·
+#     08 组装 · 08T 成品采购 · 09 测试 · 10 配置IP端口 · 11 出货。
+# ⚠️ 匹配用「**最长键优先**，同长取进度更大者」——否则「组装料采购」会被「组装」抢走
+#    （变成 80% 而不是 45%），「贴片料采购」会被「贴片」抢走。
+STAGE_PCT = {
+    "已交付": 100, "已完成": 100,
+    "出货": 98, "发货": 98,
+    "配置": 95, "烧录": 95, "固件": 95,
+    "测试": 92, "质检": 92,
+    "成品采购": 86, "成品": 86,
+    "组装": 80,
+    "贴片生产": 65, "贴片": 65, "SMT": 65,
+    "PCBA半成品": 58, "PCBA": 58,
+    "IC采购": 48, "IC": 48,
+    "组装料采购": 45, "组装料": 45,
+    "贴片料采购": 38, "贴片料": 38,
+    "外壳采购": 30, "外壳": 30, "备料": 30,
+    "钢网": 28,
+    "PCB下单": 25, "PCB": 25, "打板": 25,
+    "库存核对": 10, "核对": 10,
+    "改造": 70,
+    "方案": 8, "立项": 3,
+}
+
+
+def stage_progress(stage, done):
+    """生产计划表「阶段」实测值 → 进度%。已交付恒 100；认不出的阶段返回 0（宁可低报）。"""
+    if done:
+        return 100
+    s = re.sub(r"[\s\-_·、,，。；;()（）\[\]【】/\\|]+", "", str(stage or "")).lower()
+    if not s:
+        return 0
+    hits = [(len(k), v) for k, v in STAGE_PCT.items() if k.lower() in s]
+    return max(hits)[1] if hits else 0
+
+
+# ── 历史工期基线：无交期计划的**推算**依据（业主 2026-09-15 口径）────────
+# 样本 = 已交付计划（状态 ∈ STATUS_DONE）的「花费天数」实测值。
+# 2026-09-15 实测：n=27 · 中位 **28** · p75 37 · p90 49 · min 3 · max 94 天
+# （与 foresee.py 的「立项→交货时间（自动记录）」口径**逐值吻合** 28/37/49，互为印证）。
+# 为什么取**中位**而不是 p75：交期是「典型多久能做完」的期望值，中位最无偏；
+# p75/p90 作为「保守上界」放进 tooltip，用于自己判断风险，不冒充交期。
+HIST_FALLBACK_DAYS = 28   # 样本为空时的兜底工期
+
+
+def hist_cycle(plans):
+    """已交付计划的真实工期分位（天）→ 无交期计划用它推算交期。"""
+    vals = []
+    for p in plans:
+        if p.get("状态") not in STATUS_DONE:
+            continue
+        try:
+            v = float(str(p.get("花费天数")).strip())
+        except Exception:
+            continue
+        if v > 0:
+            vals.append(v)
+    if not vals:
+        return {"n": 0, "median": None, "p75": None, "p90": None}
+    vals.sort()
+
+    def q(x):
+        return vals[min(len(vals) - 1, max(0, int(round(x * (len(vals) - 1)))))]
+
+    return {"n": len(vals), "median": round(vals[len(vals) // 2]) if len(vals) % 2 else
+            round((vals[len(vals) // 2 - 1] + vals[len(vals) // 2]) / 2),
+            "p75": q(.75), "p90": q(.9), "min": vals[0], "max": vals[-1]}
+
 
 
 def _num(v):
@@ -555,6 +644,11 @@ def compute(adapter, today):
     inv = adapter.list_rows("库存核对记录")
     processes = adapter.list_rows("生产工序")
 
+    # 历史工期基线：无交期计划的**推算**依据（业主 2026-09-15 口径）。
+    # 全页共用这一个口径 —— 甘特图与「生产计划全表」都引用它，避免两处各算一遍算出两个数。
+    hist = hist_cycle(plans)
+    est_days = hist["median"] or HIST_FALLBACK_DAYS
+
     # ── 项目指标 ──
     p_total = len(projects)
     p_active = sum(1 for p in projects if p.get("状态") in STATUS_ACTIVE)
@@ -844,10 +938,40 @@ def compute(adapter, today):
     # 合同交期可能为空（None/""）——排序键统一转字符串，避免 None 与 str 比较抛 TypeError
     receivable_list.sort(key=lambda x: str(x.get("due") or ""))
 
-    # ── 甘特图数据（立项 → 合同交期；进度按日期推算）──
-    # 真实库有 13/34 条生产计划没填「合同交期」（且「交货时间(自动记录)」「创建时间」也空），
-    # 直接跳过会让甘特图只剩一半。这里用「立项日期 + 实际花费天数」推算一个结束日兜底，
-    # 并用 est=True 显式标注，前端以 * 号 + 虚线文案区分，绝不把推算值伪装成真实交期。
+    # ── 各计划在 9 张环节表里的**实际记录数**（业主口径：进度以「表格实际数据」为准）──
+    # 环节表用「生产计划」链接列指向计划；云端只回 [{row_id, display_value}]，
+    # 而 display_value 是**产品名**（会重名 —— 实测有 4 条计划都叫「蓝牙信标」）
+    # → 只能靠 row_id 归属，不能用名字。
+    # ⚠️ 这不参与进度百分比（阶段列的语义更直接），但作为「这条计划底下到底登记了什么」
+    #    放进甘特 tooltip —— 台账全空时一眼能看出「进度是虚的」。
+    STAGE_TABLES = [("库存核对记录", "库存核对"), ("PCB下单记录", "PCB下单"),
+                    ("外壳采购记录", "外壳采购"), ("IC采购记录", "IC采购"),
+                    ("贴片生产记录", "贴片生产"), ("PCBA半成品采购记录", "PCBA半成品"),
+                    ("组装料采购记录", "组装料采购"), ("组装记录", "组装"),
+                    ("成品采购记录", "成品采购")]
+    plan_stages = {}
+    for _t, _label in STAGE_TABLES:
+        try:
+            for _row in adapter.list_rows(_t):
+                _v = _row.get("生产计划")
+                if not isinstance(_v, list):
+                    continue
+                for _x in _v:
+                    if not (isinstance(_x, dict) and _x.get("row_id")):
+                        continue
+                    _d = plan_stages.setdefault(_x["row_id"], {})
+                    _d[_label] = _d.get(_label, 0) + 1
+        except Exception:
+            pass  # 某张环节表读不到不该让整个甘特图塌掉
+
+    # ── 甘特图数据（立项 → 交期；进度取表格实测阶段）──
+    # 业主 2026-09-15 三条口径：
+    #   ① 没填「合同交期」的 → **用历史数据推算**（原先沉底为「待补交期」的做法作废）
+    #   ② 当前进度 → **按表格实际数据**（生产计划表「阶段」列，即每晚 19:00 同步后的快照），
+    #      不再按日期推算 —— 日期推的是「今天该干到哪」，不是「实际干到哪」
+    #   ③ 排序 → **「计划中」优先**（见 STATUS_ORDER）
+    # ⚠️ 推算是**只读展示**：绝不写回 SeaTable（写回会把业主的「交期待收款后回填」规则搞脏）。
+    # （历史基线 hist / est_days 已在函数开头算好，全页共用）
     gantt = []
     pend_count = 0
     for p in plans:
@@ -855,32 +979,33 @@ def compute(adapter, today):
         cd = _date(p.get("合同交期"))
         if not sd:
             continue  # 连立项日期都没有 → 无法定位到时间轴，跳过
-        # 合同交期「暂时还没有，后期手补」→ 不推算、不猜日期，单列「待补交期」长条
-        pend = cd is None
-        if pend:
-            pend_count += 1
         status = p.get("状态", "")
         done = status in STATUS_DONE
-        if pend:
-            overdue, prog, span, end_iso = False, (100 if done else 0), 0, ""
-        else:
-            overdue = (not done) and cd < today
-            span = (cd - sd).days
-            if span <= 0 or done:
-                prog = 100
-            else:
-                elapsed = (today - sd).days
-                prog = max(0, min(100, int(elapsed / span * 100)))
-            end_iso = cd.isoformat()
+        est = cd is None
+        est_cd = sd + timedelta(days=int(est_days))   # ③ 历史推算交期（始终算，即便有合同交期也留作对标）
+        if est:
+            cd = est_cd
+            pend_count += 1
+        span = (cd - sd).days
         gantt.append({
             "name": p.get("生产产品", "") or p.get("生产计划编号", "") or "(未命名)",
             "status": status,
-            "start": sd.isoformat(), "end": end_iso,
-            "done": done, "overdue": bool(overdue), "progress": prog,
-            "pending": pend, "days": span, "row_id": _rid(p),
+            "start": sd.isoformat(), "end": cd.isoformat(),
+            # 业主 2026-09-15：「甘特图要显示三种状态」——
+            #   ① 实际状态 = 进度条本身（进度的实测填充 + done/overdue 配色）
+            #   ② 合同交期 = due（**承诺**，实心菱形；没填时为 null）
+            #   ③ 历史推算交期 = due_est（**我们对标用的**，空心菱形；恒有值）
+            # 三种同轴并列，谁早谁晚一眼可比 —— 这正是「合同日期是否比历史惯例更紧」的判据。
+            "due": None if est else cd.isoformat(),
+            "due_est": est_cd.isoformat(),
+            "done": done, "overdue": bool((not done) and cd < today),
+            "progress": stage_progress(p.get("阶段"), done),
+            "est": est, "pending": False, "days": span, "row_id": _rid(p),
+            "stage": _text(p.get("阶段")),
+            "stages": plan_stages.get(_rid(p), {}),
         })
-    # 已定交期的按立项日排前面；待补交期的统一沉到底部单独成组
-    gantt.sort(key=lambda x: (x["pending"], x["start"]))
+    # 排序：**计划中优先** → 暂停 → 进行中 → … → 已交付；同档按立项日（越早越靠前）
+    gantt.sort(key=lambda x: (status_rank(x["status"]), x["start"], x["name"]))
 
     # ── 下一步行动建议（按优先级推导）──
     pd = _load_partdb()
@@ -1056,7 +1181,18 @@ def compute(adapter, today):
         r["花费天数"] = _num(r["花费天数"])
         r["生产总花销"] = round(_num(r["生产总花销"]), 2)
         r["此次单片成本"] = round(_num(r["此次单片成本"]), 2)
+        # 交期是不是「推算」的（表里没填）——供全表把「合同交期」列显示成 ≈ 值，与甘特图口径一致
+        _sd, _cd = _date(p.get("立项日期")), _date(p.get("合同交期"))
+        r["_est"] = bool(_sd and _cd is None)
+        r["_due_est"] = (_sd + timedelta(days=int(est_days))).isoformat() if r["_est"] else ""
+        r["__row_id__"] = p.get("__row_id__")
         plans_full.append(r)
+    # 业主 2026-09-15：**「计划中」优先**（原为 SeaTable 行序 —— 已交付的老计划会把在产压在下面）
+    plans_full.sort(key=lambda r: (status_rank(r.get("状态")),
+                                   str(r.get("立项日期") or ""), str(r.get("生产计划编号") or "")))
+    # 项目表同一口径（「暂放」并入「计划中」档，与 KPI 一致）
+    projects_full.sort(key=lambda r: (status_rank(r.get("状态")),
+                                      str(r.get("合同交期") or ""), str(r.get("项目编号") or "")))
 
     return {
         "snapshot": today.isoformat(),
@@ -1105,6 +1241,9 @@ def compute(adapter, today):
         },
         "gantt": gantt,
         "gantt_pending": pend_count,
+        # 无交期计划的**推算依据**（前端用它解释「这条交期怎么来的」，而非让数字凭空出现）
+        "gantt_hist": hist,
+        "gantt_est_days": est_days,
         # 项目矩阵板块：项目表全字段 / 生产计划全字段 / 流程思维导图
         "projects_full": projects_full,
         "plans_full": plans_full,
@@ -1634,15 +1773,41 @@ td{color:var(--txt)}
 .gantt-row.hl{background:var(--selbg);opacity:1}
 .gantt-row.hide{display:none}
 .gantt-label{width:230px;flex:0 0 230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink);cursor:default}
-.gantt-track{position:relative;flex:1;height:22px;background:var(--subbg3);border-radius:5px}
-.gantt-bar{position:absolute;top:3px;height:16px;border-radius:4px;overflow:hidden;display:flex;align-items:center;
+.gantt-track{position:relative;flex:1;height:30px;background:var(--subbg3);border-radius:5px}
+/* 交期菱形标记的泳道在轨道上部，进度条压在下部 —— 两种交期与进度各占一行，互不遮挡 */
+.gantt-bar{position:absolute;top:11px;height:16px;border-radius:4px;overflow:hidden;display:flex;align-items:center;
   color:#fff;font-size:10.5px;font-weight:600;cursor:pointer;transition:filter .15s,transform .15s}
 .gantt-bar:hover{filter:brightness(1.12);transform:translateY(-1px);box-shadow:var(--shadow-md);z-index:5}
 .gantt-bar.done{background:var(--green)} .gantt-bar.overdue{background:var(--red)} .gantt-bar.run{background:var(--primary)}
-/* 未填「合同交期」：灰底虚线，明确区别于真实排期条，表示「待补交期」而非「暂无计划」 */
-.gantt-bar.pend{background:color-mix(in srgb,var(--sub) 22%,transparent);border:1px dashed color-mix(in srgb,var(--sub) 55%,transparent);
-  color:var(--sub)} .gantt-bar.pend .gantt-prog{background:color-mix(in srgb,var(--sub) 30%,transparent)}
-.gantt-row[data-state="pend"] .gantt-label{color:var(--sub)}
+/* 「交期为历史推算」（计划未填合同交期）：仍按真实时间轴画，用虚线边框 + 半透明底
+   与真实交期区分 —— 是「据此排期」，不是「客户承诺」，两者不能混为一谈 */
+.gantt-bar.est{background:color-mix(in srgb,var(--primary) 26%,transparent);
+  border:1px dashed color-mix(in srgb,var(--primary) 70%,transparent)}
+.gantt-bar.est.done{background:color-mix(in srgb,var(--green) 26%,transparent);
+  border-color:color-mix(in srgb,var(--green) 70%,transparent)}
+.gantt-bar.est.overdue{background:color-mix(in srgb,var(--red) 26%,transparent);
+  border-color:color-mix(in srgb,var(--red) 70%,transparent)}
+.gantt-bar.est .gantt-prog{background:color-mix(in srgb,var(--ink) 14%,transparent)}
+.gantt-row[data-est="1"] .gantt-label::after{content:"≈";margin-left:4px;color:var(--sub);font-weight:600}
+/* ── 交期菱形标记（业主 2026-09-15：甘特图要并列显示三种状态）──
+   .due = ② 合同交期（实心，客户的硬承诺）
+   .est = ③ 历史推算交期（空心虚线，我们自己算的对标线） */
+.gantt-ms{position:absolute;top:2px;width:10px;height:10px;transform:translateX(-50%) rotate(45deg);
+  border-radius:2px;z-index:3;transition:transform .15s;cursor:default}
+.gantt-ms.due{background:var(--ink);border:1px solid var(--card);box-shadow:0 0 0 1px var(--ink)}
+.gantt-ms.est{background:var(--card);border:1.5px dashed var(--primary)}
+.gantt-ms:hover{transform:translateX(-50%) rotate(45deg) scale(1.4)}
+/* 图例小样（section 图注里用） */
+.lg{display:inline-flex;align-items:center;gap:4px;margin:0 5px;white-space:nowrap}
+.lg-bar{display:inline-block;width:16px;height:9px;border-radius:2px;background:var(--subbg3);position:relative;vertical-align:middle;overflow:hidden}
+.lg-bar::after{content:"";position:absolute;left:0;top:0;bottom:0;width:55%;background:rgba(255,255,255,.32)}
+.lg-bar.run{background:var(--primary)}
+.lg-bar.done{background:var(--green)}
+.lg-bar.overdue{background:var(--red)}
+.lg-ms{display:inline-block;width:9px;height:9px;transform:rotate(45deg);border-radius:2px;vertical-align:middle;margin:0 1px}
+.lg-ms.due{background:var(--ink)}
+.lg-ms.est{background:var(--card);border:1.5px dashed var(--primary)}
+.gantt-fb.sep{margin-left:10px;border-left:1px solid var(--line);padding-left:12px;border-radius:0}
 .gantt-prog{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.32)}
 .gantt-cap{position:relative;padding:0 6px;white-space:nowrap}
 .gantt-today{position:absolute;top:0;bottom:0;width:2px;background:var(--red);z-index:2}
@@ -2229,15 +2394,23 @@ function mountMindmaps(host, model){
 function renderGantt(g, todayStr){
   if(!g.length) return '<div class="empty">甘特图需「生产计划.立项日期」有值；当前 0 条可用</div>';
   const toD=s=>{const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d);};
-  /* 没填「合同交期」的：不推算、不猜日期，单独沉到底部，以「待补交期」条呈现，不参与时间轴刻度 */
-  const isPend=x=>!!x.pending||!x.end;
-  const dated=g.filter(x=>!isPend(x)), undated=g.filter(isPend);
+  /* 业主 2026-09-15 新口径：没填「合同交期」的计划**不再沉到底部**，
+     改用**历史工期**推算一个交期后照常画在时间轴上（est=true）。
+     虚线边框 + 名称后的 ≈ 号与真实交期区分 —— 一个是「我们据此排期」，一个是「客户承诺」，
+     同轴可比，但绝不能让人误读成承诺交期。 */
+  const isEst=x=>!!x.est;
   const td=toD(todayStr);
-  const starts=dated.map(x=>toD(x.start)), ends=dated.map(x=>toD(x.end));
-  const min=starts.length?new Date(Math.min.apply(null,starts)):new Date(td.getFullYear(),td.getMonth(),1);
-  const max=ends.length?new Date(Math.max.apply(null,ends)):new Date(td.getFullYear(),td.getMonth()+1,0);
+  /* 刻度范围把「今日」一并框进来，否则末条计划已交付时今日线会被推到画布之外。
+     三状态改造后还要并入 due / due_est —— 合同交期可能**晚于**条尾、推算交期也可能**晚于**合同交期
+     （合同比历史惯例更紧时就会这样），漏了任一都会把菱形标记甩出画布。 */
+  const allD=g.map(x=>toD(x.start)).concat(g.map(x=>toD(x.end))).concat([td])
+    .concat(g.filter(x=>x.due).map(x=>toD(x.due)))
+    .concat(g.filter(x=>x.due_est).map(x=>toD(x.due_est)));
+  const min=new Date(Math.min.apply(null,allD)), max=new Date(Math.max.apply(null,allD));
   const span=Math.max(1,(max-min)/86400000);
   const pct=d=>((d-min)/86400000)/span*100;
+  /* 菱形标记定位用：夹到 0..100，防止极端日期把标记甩出轨道（视觉上宁可贴边也不要消失） */
+  const clampPct=v=>Math.max(0,Math.min(100,v)).toFixed(2);
   const ticks=[];
   let cur=new Date(min.getFullYear(),min.getMonth(),1);
   while(cur<=max){
@@ -2250,29 +2423,37 @@ function renderGantt(g, todayStr){
   }
   let tp=pct(td); tp=Math.max(0,Math.min(100,tp));
   const rows=g.map((x,i)=>{
-    if(isPend(x)){
-      return `<div class="gantt-row" data-gi="${i}" data-name="${esc(x.name)}" data-state="pend">
-      <div class="gantt-label" title="${esc(x.name)}">${esc(x.name)}</div>
-      <div class="gantt-track"><div class="gantt-bar pend" style="left:0;width:100%"
-        data-i="${i}" tabindex="0" role="button" aria-label="${esc(x.name)} 待补交期">
-        <div class="gantt-prog" style="width:${x.done?100:0}%"></div>
-        <span class="gantt-cap">${x.done?'已完成':'待补交期'}</span></div></div>
-      <span style="display:none" data-tip='{"name":"${esc(x.name)}","status":"${esc(x.status||"")}","start":"${x.start}","end":"待补（未填合同交期）","days":"—","left":"—","prog":"${x.progress}"}'></span>
-    </div>`;
-    }
     const s=toD(x.start), e=toD(x.end);
     const left=pct(s), width=Math.max(1.5,pct(e)-pct(s));
+    const est=isEst(x);
     const k=x.done?'done':(x.overdue?'overdue':'run');
-    const cap=x.done?'已完成':(x.overdue?'逾期':x.progress+'%');
+    /* 进度 = 生产计划表「阶段」列的**实测值**（每晚 19:00 同步后的快照），不再是日期推算；
+       已交付恒 100%；阶段认不出时按 0 低报，绝不虚构。 */
+    const prog=x.done?100:(x.progress||0);
+    const cap=x.done?'已完成':(x.overdue?'逾期':prog+'%');
     const st=Math.round((e-s)/86400000);
     const leftDays=Math.max(0,Math.round((e-td)/86400000));
-    return `<div class="gantt-row" data-gi="${i}" data-name="${esc(x.name)}" data-state="${k}">
+    const stg=x.stage||"";
+    const sn=x.stages?Object.keys(x.stages).length:0;
+    const stText=x.stages?Object.keys(x.stages).map(kk=>kk+'×'+x.stages[kk]).join(' · '):'';
+    /* ── 三种状态同轴并列（业主 2026-09-15 口径）──
+       ① 实际状态：进度条本体（prog 填充 + done/overdue/run 配色），不做额外标记
+       ② 合同交期：实心菱形（= 对客户的**承诺**）
+       ③ 历史推算交期：空心菱形（= 我们按自家历史工期算的**对标线**）
+       两个菱形均按日期定位；合同交期缺失时该菱形不画（不是画在今天，是不画）。 */
+    const dueD=x.due?pct(toD(x.due)):null;
+    const estD=x.due_est?pct(toD(x.due_est)):null;
+    const mkDue=dueD===null?'':`<i class="gantt-ms due" style="left:${clampPct(dueD)}%" title="合同交期 ${x.due}"></i>`;
+    const mkEst=estD===null?'':`<i class="gantt-ms est" style="left:${clampPct(estD)}%" title="历史推算交期 ${x.due_est}"></i>`;
+    // 合同 vs 推算 的松紧：负数=合同比历史惯例更紧（要盯），正数=更宽松
+    const slack=(x.due&&x.due_est)?Math.round((toD(x.due)-toD(x.due_est))/86400000):null;
+    return `<div class="gantt-row" data-gi="${i}" data-name="${esc(x.name)}" data-state="${k}" data-est="${est?1:0}">
       <div class="gantt-label" title="${esc(x.name)}">${esc(x.name)}</div>
-      <div class="gantt-track"><div class="gantt-bar ${k}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%"
+      <div class="gantt-track">${mkEst}${mkDue}<div class="gantt-bar ${k}${est?' est':''}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%"
         data-i="${i}" tabindex="0" role="button" aria-label="${esc(x.name)} 计划详情">
-        <div class="gantt-prog" style="width:${x.progress}%"></div>
+        <div class="gantt-prog" style="width:${prog}%"></div>
         <span class="gantt-cap">${cap}</span></div></div>
-      <span style="display:none" data-tip='{"name":"${esc(x.name)}","status":"${esc(x.status||"")}","start":"${x.start}","end":"${x.end}","days":"${st}","left":"${x.done?"—":leftDays}","prog":"${x.progress}"}'></span>
+      <span style="display:none" data-tip='{"name":"${esc(x.name)}","status":"${esc(x.status||"")}","start":"${x.start}","end":"${x.end}","est":${est?"true":"false"},"days":"${st}","left":"${x.done?"—":leftDays}","prog":"${prog}","stage":"${esc(stg)}","stages":"${esc(stText)}","sn":"${sn}","due":"${x.due||""}","dueEst":"${x.due_est||""}","slack":"${slack===null?"":slack}"}'></span>
     </div>`;
   }).join("");
   return `<div><div style="position:absolute;left:242px;right:0;top:22px;bottom:0;pointer-events:none">
@@ -2280,20 +2461,24 @@ function renderGantt(g, todayStr){
     ${rows}</div>`;
 }
 /* 甘特图交互：状态筛选 + 搜索 + 悬停详情卡 + 点击行高亮联动项目清单表 */
-function initGanttTools(g, todayStr, toolsEl, ganttEl){
+function initGanttTools(g, todayStr, toolsEl, ganttEl, estDays){
   if(!toolsEl || !ganttEl || !g.length) return;
+  /* 业主 2026-09-15：**「计划中」优先** —— 筛选档也照这个顺序排，最该看的一档放最前。
+     「推算交期」是**另一条轴**（交期来源），故用分隔线隔开放最后，计数会与状态档重叠，属预期。 */
+  const isEst=x=>!!x.est;
+  const stOf=x=>x.done?"done":(x.overdue?"overdue":(String(x.status||"")==="计划中"?"planned":"run"));
   const states=[
     {k:"all",    n:"全部"},
-    {k:"run",    n:"进行中"},
+    {k:"planned",n:"计划中"},
     {k:"overdue",n:"逾期"},
+    {k:"run",    n:"进行中"},
     {k:"done",   n:"已交付"},
-    {k:"pend",   n:"待补交期"},
+    {k:"est",    n:"推算交期", sep:true},
   ];
-  const isPend=x=>!!x.pending||!x.end;
-  const cnt=k=>k==="all"?g.length:g.filter(x=>k==="pend"?isPend(x):(isPend(x)?false:(k==="done"?x.done:(k==="overdue"?x.overdue:(!x.done&&!x.overdue))))).length;
+  const cnt=k=>k==="all"?g.length:(k==="est"?g.filter(isEst).length:g.filter(x=>stOf(x)===k).length);
   toolsEl.innerHTML=
-    `<input class="tf-input" type="text" placeholder="🔍 搜索产品/状态…">`+
-    states.map(s=>`<button class="gantt-fb${s.k==="all"?" on":""}" data-st="${s.k}">${s.n}<span class="ct">${cnt(s.k)}</span></button>`).join("")+
+    `<input class="tf-input" type="text" placeholder="🔍 搜索产品/状态/阶段…">`+
+    states.map(s=>`<button class="gantt-fb${s.k==="all"?" on":""}${s.sep?" sep":""}" data-st="${s.k}">${s.n}<span class="ct">${cnt(s.k)}</span></button>`).join("")+
     `<span class="rs-sub" style="margin-left:auto"></span>`;
   const inp=toolsEl.querySelector("input"), info=toolsEl.querySelector(".rs-sub");
   let st="all";
@@ -2301,12 +2486,13 @@ function initGanttTools(g, todayStr, toolsEl, ganttEl){
     const q=inp.value.trim().toLowerCase();
     let shown=0;
     ganttEl.querySelectorAll(".gantt-row").forEach(r=>{
-      const okS=st==="all"||r.dataset.state===st;
+      const okS=st==="all"||(st==="est"?r.dataset.est==="1":r.dataset.state===st);
       let okQ=!q||r.dataset.name.toLowerCase().includes(q);
       if(q&&!okQ){
         const raw=r.querySelector("[data-tip]");
         if(raw){ try{ const t=JSON.parse(raw.getAttribute("data-tip"));
-          okQ=(t.status||"").toLowerCase().includes(q); }catch(e){} }
+          okQ=((t.status||"")+" "+(t.stage||"")).toLowerCase().includes(q); }catch(e){}
+        }
       }
       const show=okS&&okQ; r.classList.toggle("hide",!show); if(show)shown++;
     });
@@ -2325,13 +2511,28 @@ function initGanttTools(g, todayStr, toolsEl, ganttEl){
     const raw=anchor.closest(".gantt-row").querySelector("[data-tip]");
     let t=null; try{ t=JSON.parse(raw.getAttribute("data-tip")); }catch(e){}
     if(!t) return;
+    /* JSON.parse 出来的 est 是**布尔值**（不是字符串），两边都得认，否则推算条会被当成真实交期 */
+    const isEst=(t.est===true||t.est==="true");
+    const sn=parseInt(t.sn||"0",10);
+    /* 三种状态并列呈现（业主 2026-09-15）：
+       ① 实际状态（进度条）② 合同交期（承诺）③ 历史推算交期（对标） */
+    const slack=(t.slack===""||t.slack===undefined||t.slack===null)?null:parseInt(t.slack,10);
+    let slackTxt="—";
+    if(slack!==null){
+      if(slack<0) slackTxt=`比历史惯例紧 ${-slack} 天`;
+      else if(slack>0) slackTxt=`比历史惯例松 ${slack} 天`;
+      else slackTxt="与历史惯例持平";
+    }
     tip.innerHTML=`<b>${t.name}</b>
-      <div class="tr"><span>状态</span><span>${t.status||"—"}</span></div>
+      <div class="tr"><span>实际状态</span><span>${t.status||"—"} · 进度 ${t.prog}%${t.stage?" · "+t.stage:""}</span></div>
       <div class="tr"><span>立项日期</span><span>${t.start}</span></div>
-      <div class="tr"><span>合同交期</span><span>${t.end}</span></div>
+      <div class="tr"><span>① 合同交期</span><span>${t.due||"未填（待收款后回填）"}</span></div>
+      <div class="tr"><span>② 历史推算交期</span><span>${t.dueEst||"—"}${isEst?"（本行条长按此画）":""}</span></div>
+      ${slack===null?"":`<div class="tr"><span>合同 vs 推算</span><span>${slackTxt}</span></div>`}
       <div class="tr"><span>计划工期</span><span>${t.days} 天</span></div>
       <div class="tr"><span>距交期</span><span>${t.left} 天</span></div>
-      <div class="tr"><span>当前进度</span><span>${t.prog}%</span></div>`;
+      <div class="tr"><span>已登记环节</span><span>${sn>0?t.stages:"0 项（台账为空）"}</span></div>
+      <div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--line);color:var(--sub);font-size:11.5px;max-width:240px;line-height:1.5">① 实际进度取生产计划表「阶段」实测值（每晚 19:00 同步）；② 合同交期为客户承诺，实心菱形；③ 推算交期 = 立项日 + 已交付计划中位工期（${estDays?estDays+" 天":"—"}），空心菱形，仅作对标、<b>不回写 SeaTable</b>。</div>`;
     tip.classList.add("show");
     const r=anchor.getBoundingClientRect();
     const tw=tip.offsetWidth||230, th=tip.offsetHeight||140;
@@ -2636,14 +2837,19 @@ function render(m){
 
   /* 甘特图 */
   const g=m.gantt||[];
-  const secG=el(`<section id="sec-G" class="sec"><div class="sec-title">__IC_GANT__ 生产计划甘特图（立项 → 合同交期）</div>
+  const secG=el(`<section id="sec-G" class="sec"><div class="sec-title">__IC_GANT__ 生产计划甘特图（三种状态：实际进度 · 合同交期 · 历史推算交期）</div>
     <div class="card"><div class="gantt-tools" id="ganttTools"></div>
     <div class="gantt-wrap"><div class="gantt" id="gantt"></div></div>
-    <div class="note">紫=进行中，绿=已交付，红=逾期，灰虚线=待补交期；条内浅色填充为当前进度（按日期推算）。竖红线为今日 ${m.snapshot}。悬停条形看详情；点行可高亮联动项目表。
-      ${m.gantt_pending?`<b>「待补交期」${m.gantt_pending} 条</b>：这些生产计划尚未填「合同交期」，按约定不推算、不猜日期，先沉到底部单列；在 SeaTable 补录交期后会自动落到时间轴上。`:""}</div></div></section>`);
+    <div class="note"><b>图中三种状态</b>：
+      <span class="lg"><i class="lg-bar run"></i>① 实际进度</span>＝条内浅色填充（读生产计划表「阶段」的<b>实测值</b>，每晚 19:00 同步后的快照，不按日期推算；紫=进行中／绿=已交付／红=逾期）；
+      <span class="lg"><i class="lg-ms due"></i>② 合同交期</span>＝<b>实心菱形</b>，对客户的承诺日期（计划表未填时不画该菱形）；
+      <span class="lg"><i class="lg-ms est"></i>③ 历史推算交期</span>＝<b>空心菱形</b>，按自家历史工期推算的对标线。
+      三者在同一时间轴上并列，可直观判断「合同日期比历史惯例更紧还是更松」。竖红线为今日 ${m.snapshot}。悬停条形看详情与两种交期的松紧；点行可高亮联动项目表。默认按<b>「计划中」优先</b>排序。
+      ${m.gantt_pending?`<br><b>其中 ${m.gantt_pending} 条未填合同交期</b>（多为合同写明「收款后 X 日内交货」、尚未收款故按规则留空）→ 条长与菱形均按推算值画，名称后带 ≈ 号。`:""}
+      ${m.gantt_hist&&m.gantt_hist.n?`<br>推算依据＝<b>已交付计划的实际工期</b>：样本 ${m.gantt_hist.n} 条，中位 <b>${m.gantt_hist.median} 天</b>（p75 ${m.gantt_hist.p75} / p90 ${m.gantt_hist.p90}，区间 ${m.gantt_hist.min}~${m.gantt_hist.max} 天）→ 取「立项日 + ${m.gantt_est_days} 天」。<b>推算仅供排期对标，不回写 SeaTable、不等于客户承诺交期</b>；计划表补录交期后空心菱形会与实心菱形分开显示，便于复盘当初排得准不准。`:"历史工期样本不足，暂用兜底工期推算。"}</div></div></section>`);
   const gEl=secG.querySelector("#gantt");
   gEl.innerHTML=renderGantt(g,m.snapshot);
-  initGanttTools(g, m.snapshot, secG.querySelector("#ganttTools"), gEl);
+  initGanttTools(g, m.snapshot, secG.querySelector("#ganttTools"), gEl, m.gantt_est_days);
   put("G", secG);
 
   /* ══ 项目矩阵：项目全表 / 生产计划全表 / 流程思维导图（项目经理视角完整台账）══ */
@@ -2720,7 +2926,9 @@ function render(m){
           <td>${pillOf(r["阶段"])}</td>
           <td>${esc(r["关联项目"])}</td>
           <td>${esc(clean(r["立项日期"]))}</td>
-          <td>${esc(clean(r["合同交期"]))}</td>
+          <td>${r["_est"]
+            ?`<span title="该计划未填「合同交期」（多为合同约定『收款后 X 日内交货』、尚未收款），此处按历史中位工期推算，非客户承诺">≈ ${esc(r["_due_est"])}</span>`
+            :esc(clean(r["合同交期"]))}</td>
           <td class="num">${esc(clean(r["花费天数"]))}</td>
           <td class="num">${yuan(r["生产总花销"])}</td>
           <td class="num">${numOr(r["此次单片成本"])>0?yuan(r["此次单片成本"]):"—"}</td>
