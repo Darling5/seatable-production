@@ -24,7 +24,7 @@
 | 版本 | 日期 | 一句话 |
 |---|---|---|
 | v1.8.2 | 09-15 | wxmatch v1.9：到货/发货核对 + apply 高置信自动写库；晚 19:00 自动化升级「当日复盘」 |
-| v1.8.3 | 09-15 | P0 瘦身收口：SKILL.md −58%，速查下沉 references/；查价三件套拆出薄指针子技能 price-sensor |
+| v1.8.3 | 09-15 | P0 瘦身（−58%）+ P1 price-sensor + P2 专家壳模式（内嵌 51 文件→1 转介）+ P3 cockpit-studio |
 | v1.8.1 | 09-14 | 项目矩阵板块（全表+思维导图）；修直连路径两处静默错误（select ID/ISO 日期）；甘特「待补交期」；应收口径对照；对内共享页 |
 | v1.7.x | 09-03 | 风险预测引擎 foresee.py（合同倒排/供应商画像/缺料预警）+ 预测台账自我学习 + ask 追问 |
 | v1.6.x | 09-03 | 消息↔SeaTable 核对引擎 wxmatch.py；原料行情 commodities.py；微信 4.x 文件名明文破案 |
@@ -579,7 +579,7 @@ python3 op.py partdb-shortage <项目ID> <生产数量>
 | 拉群消息 / 消息↔SeaTable 核对（wxmatch v1.9）/ 风险预测（foresee） | `references/wx-intake-and-check.md`（原 §11.1~11.5） |
 | 物料·原料查价（market/suppliers/commodities） | 独立子技能 **price-sensor**（命令卡+执行纪律；脚本与数据仍在本技能目录，勿复制） |
 | CRM 线索赢单转生产立项（won_deal.py） | `references/won-deal.md`（原 §11.6） |
-| 驾驶舱在线模式（cockpit_server）/ 表格工具·甘特交互·分析图表 / v2.0 架构收口 / 客户到售后业务闭环 | `references/cockpit-advanced.md`（原 §11.6b~11.8） |
+| 驾驶舱在线模式（cockpit_server）/ 表格工具·甘特交互·分析图表 / v2.0 架构收口 / 客户到售后业务闭环 | 独立子技能 **cockpit-studio**（命令卡+执行纪律；深读 `references/cockpit-advanced.md`） |
 | 查功能来历 / 历史设计决策 / 踩坑细节 | `references/changelog.md`（完整版本历史） |
 
 ## 12. 在自定义脚本里调 adapter（踩坑记录）

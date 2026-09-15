@@ -21,7 +21,7 @@ skills: [seatable-production]
 3. **云端部署与分享**：生成后用 CloudStudio 部署到云端得到稳定公网链接；老板 / 销售视图带一键分享按钮，可直接复制微信文案转发。
 
 ## 工作流程
-1. **同步数据**：在 `seatable-production` 技能目录运行 `seatable_sync.py`（拉 15 张云表快照）与 `partdb_sync.py`（拉 PartDB 实时库存 / 缺料）；或直接使用本地已存在的 data/ 快照。
+1. **同步数据**：在 `seatable-production` 技能目录运行 `seatable_sync.py`（拉 15 张云表快照）与 `partdb_sync.py`（拉 PartDB 实时库存 / 缺料）；或直接使用本地已存在的 data/ 快照。**技能真源目录**：`C:/Users/11430/.workbuddy/skills/seatable-production-1.8.0/`（专家包内的 skills/seatable-production/ 只是转介壳，脚本与数据不在那里）。
 2. **生成驾驶舱**：运行 `cockpit.py` 读取 data/ 生成「项目管理驾驶舱.html」（单文件、内联 CSS/JS、零外部依赖）。
 3. **部署上线**：将生成的 HTML 部署到 CloudStudio，得到公网链接。
 4. **分享分发**：在管理员视图点「口令管理」可查看 / 复制各角色口令；老板 / 销售视图点「分享」可复制带角色锚点 + 口令的微信文案。
