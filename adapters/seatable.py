@@ -119,7 +119,17 @@ class SeaTableAdapter(BaseAdapter):
                 rid = row.get("_id")
                 d = {}
                 for k, v in row.items():
-                    if k in ("_id", "_ctime", "_mtime"):
+                    if k == "_id":
+                        continue
+                    # ⚠️ SeaTable 的「创建时间 / 修改时间」类列（type = ctime / mtime）**不按列 key 回传**，
+                    #    而是作为**行级** `_ctime` / `_mtime` 给出（这类列的 key 恰好就是 `_ctime` / `_mtime`）。
+                    #    生产计划表的「交货时间（自动记录）」正是一条 **mtime 列** ——
+                    #    `foresee.py` 算历史工期分位（→ 风险雷达）就靠它。
+                    #    早先这里无条件 skip 掉 `_ctime`/`_mtime`，于是**直连路径永远读不到这两列**
+                    #    （CSV 路径有，因为导出接口会带上真实列名），foresee 的历史分位会**静默全空**。
+                    #    修法：只要该 key 在列表定义里对应一个业务列，就照常映射回列名；
+                    #    没定义才当纯内部时间戳丢弃。
+                    if k in ("_ctime", "_mtime") and k not in key2name:
                         continue
                     nm = key2name.get(k, k)
                     d[nm] = self._flat_cell(v, types.get(nm), sel.get(nm))

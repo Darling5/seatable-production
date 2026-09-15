@@ -11,7 +11,7 @@ production Base 的「客户档案表 + 合同信息表 + 项目」三表（自�
 ```bash
 python won_deal.py plan --customer "客户U" --product "天然气人员定位" \
     --amount 464250 --delivery-days 90 --payment "50%,30%,20%" \
-    --contact 张三 --phone 13800000000          # 只读方案（--offline 不连云端）
+    --contact 柴某 --phone 1XXXXXXXXXX          # 只读方案（--offline 不连云端）
 python won_deal.py apply --yes ...              # 同参数执行（必须显式 --yes）
 python won_deal.py ledger                       # 写入台账核对
 ```

@@ -13,6 +13,12 @@ cockpit_passwords.json
 cockpit_*.html
 !docs/usage-guide.html
 
+# 生成的内对共享页 / 编辑器备份（含真实项目与客户名，或纯冗余副本，勿提交）
+*共享页*.html
+*驾驶舱*.bak
+*.py.bak*
+*.py.bak-*
+
 # Python 缓存
 __pycache__/
 *.pyc
