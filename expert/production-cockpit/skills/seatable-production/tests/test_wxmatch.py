@@ -154,6 +154,86 @@ check("别名命中（迅→讯）", len(wm._match_supplier_contract("禾电迅-
 check("原名命中", len(wm._match_supplier_contract("禾电讯对账单.pdf", PUR)), 1)
 check("无关不命中", wm._match_supplier_contract("其他公司合同.pdf", PUR), [])
 
+# ---------------------------------------------------------------- 测试 7：到货/发货核对
+print()
+print("=" * 70)
+print("测试 7：scan_arrivals（供应商唯一命中 → 高置信到货意图）")
+print("=" * 70)
+tmp_arr_ev = os.path.join(TMP, "wxmatch_test_arrival_events.csv")
+tmp_arr_pur = os.path.join(TMP, "wxmatch_test_arrival_purchase.csv")
+with open(tmp_arr_ev, "w", encoding="utf-8-sig", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["事件编号", "日期", "时间", "来源群", "发送人", "分类", "原文", "意图", "状态", "确认时间", "写入结果"])
+    w.writerow(["A1", _d_recent, "12:00", "采购群", "供应商", "其他", "禾电讯的 LM620S 已到货，已签收", "", "待确认", "", ""])
+    w.writerow(["A2", _d_recent, "13:00", "采购群", "采购员", "其他", "预计到货提醒：禾电讯下周到货", "", "待确认", "", ""])
+with open(tmp_arr_pur, "w", encoding="utf-8-sig", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["__row_id__", "供应商", "状态", "交期", "采购花销", "下单时间", "物料清单"])
+    w.writerow(["pur-a", "禾电讯", "已下单", _d_recent, "24000", _d_recent, "LM620S"])
+old_ev, old_pur = wm.EVENTS_PATH, wm.DATA
+wm.EVENTS_PATH = tmp_arr_ev
+wm.DATA = TMP
+# 让 _load_purchase_rows 只读临时的 IC采购记录，其余采购表不存在时自然跳过
+old_purchase = wm.PURCHASE_TABLES
+wm.PURCHASE_TABLES = ["wxmatch_test_arrival_purchase"]
+try:
+    arrivals = wm.scan_arrivals(days=7)
+finally:
+    wm.EVENTS_PATH, wm.DATA, wm.PURCHASE_TABLES = old_ev, old_pur, old_purchase
+check("到货事实识别", len(arrivals), 1)
+check("供应商唯一命中高置信", arrivals and arrivals[0]["置信度"], "高")
+check("到货意图含目标表和 row_id", arrivals and "pur-a" in (arrivals[0]["预填意图"] or ""), True)
+check("到货意图更新状态", arrivals and "已到货" in (arrivals[0]["预填意图"] or ""), True)
+check("预计到货问句排除", any("预计到货提醒" in r["信号内容"] for r in arrivals), False)
+
+# ---------------------------------------------------------------- 测试 8：apply 自动写入边界与幂等
+print()
+print("=" * 70)
+print("测试 8：cmd_apply（仅高置信待确认项；成功标记已自动写入）")
+print("=" * 70)
+tmp_match = os.path.join(TMP, "wxmatch_test_apply.csv")
+apply_rows = [
+    {"核对编号": "WX-A-001", "日期": _d_recent, "类型": "到货", "信号来源": "采购群|供应商",
+     "信号内容": "禾电讯已到货", "匹配结果": "在途唯一", "匹配项目": "", "建议动作": "确认到货",
+     "预填意图": '[{"op":"update","table":"IC采购记录","row_id":"pur-a","data":{"状态":"已到货"},"reason":"测试"}]',
+     "置信度": "高", "状态": "待确认"},
+    {"核对编号": "WX-A-002", "日期": _d_recent, "类型": "到货", "信号来源": "采购群|采购员",
+     "信号内容": "某物料到货", "匹配结果": "多条在途", "匹配项目": "", "建议动作": "人工确认",
+     "预填意图": "", "置信度": "中", "状态": "待确认"},
+    {"核对编号": "WX-A-003", "日期": _d_recent, "类型": "收款", "信号来源": "客户群|张三",
+     "信号内容": "已打款", "匹配结果": "已写入", "匹配项目": "项目A", "建议动作": "",
+     "预填意图": '[{"op":"update","table":"项目","row_id":"already","data":{"实收":"100"}}]',
+     "置信度": "高", "状态": "已自动写入"},
+]
+with open(tmp_match, "w", encoding="utf-8-sig", newline="") as f:
+    w = csv.DictWriter(f, fieldnames=wm.MATCH_COLS)
+    w.writeheader()
+    w.writerows(apply_rows)
+class _ApplyAdapter:
+    def __init__(self):
+        self.calls = []
+    def update_row(self, table, row_id, data):
+        self.calls.append((table, row_id, dict(data)))
+    def append_row(self, table, data):
+        self.calls.append((table, "append", dict(data)))
+        return "new-row"
+old_match = wm.MATCH_PATH
+old_get_adapter = wm._get_business_adapter
+stub = _ApplyAdapter()
+wm.MATCH_PATH = tmp_match
+wm._get_business_adapter = lambda: (stub, "stub")
+try:
+    applied = wm.cmd_apply()
+    after_apply = wm._read_csv(tmp_match)
+finally:
+    wm.MATCH_PATH, wm._get_business_adapter = old_match, old_get_adapter
+by_no = {r["核对编号"]: r for r in after_apply}
+check("只写 1 条高置信待确认", len(stub.calls), 1)
+check("写入目标正确", stub.calls and stub.calls[0][0:2], ("IC采购记录", "pur-a"))
+check("成功回填已自动写入", by_no["WX-A-001"]["状态"], "已自动写入")
+check("中置信不被写入", by_no["WX-A-002"]["状态"], "待确认")
+check("已处理高置信不重复写", by_no["WX-A-003"]["状态"], "已自动写入")
+
 # ---------------------------------------------------------------- 收尾
 print()
 print("=" * 70)

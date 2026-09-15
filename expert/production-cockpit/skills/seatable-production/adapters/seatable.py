@@ -62,9 +62,53 @@ class SeaTableAdapter(BaseAdapter):
             "columns": [{"name": c["name"], "type": c["type"], "key": c["key"]} for c in t["columns"]],
         }
 
+    def _cell_meta(self, table: str):
+        """返回 (单选/多选列的 {列名: {选项id: 选项名}}, {列名: 列类型})，按表缓存。
+
+        为什么必须有：SeaTable `GET /rows/` 对单选/多选列返回的是**选项 id**
+        （如状态 "58668"），日期列返回完整 ISO（"2026-05-07T00:00:00+08:00"）。
+        而下游 cockpit.py 是按「本地 CSV 习惯」写的——状态是中文名、日期是
+        YYYY-MM-DD。若不翻译就会出现两类静默错误：
+          · 状态列显示 "58668"、KPI 在产/计划/已交付计数恒为 0
+          · _date() 解析失败 → 甘特图为空、剩余天数为 null、交期达成率 N/A
+        seatable_sync.py 走 CSV 路径时已做同样翻译（见其 _flatten），此处补上直连路径。
+        """
+        if getattr(self, "_cellmeta", None) is None:
+            self._cellmeta = {}
+        if table not in self._cellmeta:
+            sel, types = {}, {}
+            try:
+                r = requests.get(self._base() + "/columns/", headers=self._h,
+                                 params={"table_name": table}, timeout=30)
+                r.raise_for_status()
+                for c in r.json().get("columns", []):
+                    nm = c.get("name")
+                    if not nm:
+                        continue
+                    types[nm] = c.get("type")
+                    if c.get("type") in ("single-select", "multiple-select"):
+                        opts = (c.get("data") or {}).get("options") or []
+                        sel[nm] = {o.get("id"): o.get("name") for o in opts if o.get("id")}
+            except Exception:
+                pass  # 拿不到列定义就退回原始值，绝不因此让整表读取失败
+            self._cellmeta[table] = (sel, types)
+        return self._cellmeta[table]
+
+    @staticmethod
+    def _flat_cell(v, ctype, selmap):
+        """按列类型扁平化单元格：选项 id→选项名、ISO 日期→YYYY-MM-DD。"""
+        if isinstance(v, list) and selmap:
+            return [selmap.get(x, x) if isinstance(x, str) else x for x in v]
+        if isinstance(v, str) and selmap and v in selmap:
+            return selmap[v]
+        if isinstance(v, str) and ctype in ("date", "ctime", "mtime", "datetime") and "T" in v:
+            return v[:10]
+        return v
+
     def list_rows(self, table: str):
         self._table(table)
         key2name = {c["key"]: c["name"] for c in self._table(table)["columns"]}
+        sel, types = self._cell_meta(table)
         rows, limit, offset = [], 1000, 0
         while True:
             r = requests.get(self._base() + "/rows/", headers=self._h,
@@ -73,7 +117,12 @@ class SeaTableAdapter(BaseAdapter):
             batch = r.json().get("rows", [])
             for row in batch:
                 rid = row.get("_id")
-                d = {key2name.get(k, k): v for k, v in row.items() if k not in ("_id", "_ctime", "_mtime")}
+                d = {}
+                for k, v in row.items():
+                    if k in ("_id", "_ctime", "_mtime"):
+                        continue
+                    nm = key2name.get(k, k)
+                    d[nm] = self._flat_cell(v, types.get(nm), sel.get(nm))
                 d["__row_id__"] = rid
                 rows.append(d)
             if len(batch) < limit:

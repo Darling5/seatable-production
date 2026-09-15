@@ -57,7 +57,7 @@ def main():
             plans = ad.list_rows("生产计划")
 
             print("\n[1] 表结构")
-            check(len(schema.TABLES) == 18, "TABLES 应为 18 张，实际 %d" % len(schema.TABLES))
+            check(len(schema.TABLES) == 22, "TABLES 应为 22 张，实际 %d" % len(schema.TABLES))
             check("工作日志" in schema.TABLES and "阶段轨迹" in schema.TABLES, "第二大脑表未注册")
             check("资源" in schema.TABLES and "资源分配" in schema.TABLES, "资源域表未注册")
             check(schema.link_id_for("资源", "资源分配") == "RsAl", "资源↔资源分配 link_id 解析失败")

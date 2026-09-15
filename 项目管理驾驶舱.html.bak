@@ -1,1240 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-cockpit.py — 生产·项目管理驾驶舱 生成器。
-
-读取 seatable-production 技能本地库（14 张表），计算「工时 / 成本 / 质量 / 供应链」
-四维指标 + 项目总览 + 在制品看板 + 物料库存预警，渲染为单文件、内联 SVG、响应式
-HTML 驾驶舱。
-
-用法：
-    python cockpit.py                      # 输出到默认工作区
-    python cockpit.py 路径/驾驶舱.html      # 自定义输出路径
-
-数据来源：与 op.py 同源的适配器，local / seatable 自动切换。
-生成的是「数据快照」：HTML 内嵌当前计算结果；也可用页面内「导入数据」按钮载入
-导出的 JSON 快照刷新，无需重跑本脚本。
-"""
-import os
-import sys
-import json
-from datetime import datetime, timedelta, timezone
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from adapters.factory import get_adapter, load_config  # noqa: E402
-
-_TZ = timezone(timedelta(hours=8))
-# 默认输出到「当前工作目录/项目管理驾驶舱.html」；可用参数或环境变量 COCKPIT_OUT 覆盖。
-# （不要硬编码某台机器的绝对路径——别人 clone 下来会写到不存在的目录。）
-DEFAULT_OUT = os.environ.get("COCKPIT_OUT") or os.path.join(os.getcwd(), "项目管理驾驶舱.html")
-
-# 采购 / 生产执行表中「花销」列与成本类目映射
-COST_MAP = [
-    ("PCB下单记录", "打板价格", "PCB"),
-    ("外壳采购记录", "价格", "外壳"),
-    ("IC采购记录", "采购花销", "IC"),
-    ("贴片生产记录", "贴片价格", "贴片"),
-    ("PCBA半成品采购记录", "采购花销", "PCBA"),
-    ("组装料采购记录", "采购花销", "组装料"),
-    ("组装记录", "组装价格", "组装"),
-    ("成品采购记录", "采购花销", "成品"),
-]
-# 供应商列回退（不同表叫法不同）
-SUPPLIER_COLS = ["供应商", "贴片厂", "组装厂"]
-
-# 项目/生产计划状态归一化（真实库用「已交付/可能延迟/已超期/待客户下单」等，
-# demo 用「进行中/计划中/已完成」；统一映射为 计划/进行中/已完成 三桶）
-STATUS_DONE = {"已完成", "已交付"}
-STATUS_ACTIVE = {"进行中", "可能延迟", "已超期", "待客户下单"}
-
-
-def _num(v):
-    if v is None:
-        return 0.0
-    if isinstance(v, (int, float)):
-        return float(v)
-    if isinstance(v, list):
-        # 多选/链接列：逐个尝试，取第一个能转成数字的值
-        for x in v:
-            n = _num(x)
-            if n:
-                return n
-        return 0.0
-    s = str(v).replace("¥", "").replace(",", "").replace(" ", "").strip()
-    if s == "":
-        return 0.0
-    try:
-        return float(s)
-    except ValueError:
-        return 0.0
-
-
-def _text(v):
-    """SeaTable 云端直连时，链接列/多选列返回 list（或 dict）；
-    本地 CSV 是字符串。统一压平成可显示、可做字典键的字符串。"""
-    if v is None:
-        return ""
-    if isinstance(v, list):
-        return "/".join(t for t in (_text(x) for x in v) if t)
-    if isinstance(v, dict):
-        return str(v.get("name") or v.get("text") or v.get("display_value") or "")
-    return str(v).strip()
-
-
-def _norm_rows(rows):
-    """把云端返回的 list/dict 单元格统一压平为标量，下游按本地 CSV 习惯处理。"""
-    out = []
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        out.append({k: (_text(v) if isinstance(v, (list, dict)) else v)
-                    for k, v in row.items()})
-    return out
-
-
-class _NormAdapter:
-    """归一化代理：list_rows 结果经过 _norm_rows；其余方法原样透传。"""
-
-    def __init__(self, inner):
-        self._inner = inner
-
-    def list_rows(self, name, *args, **kwargs):
-        return _norm_rows(self._inner.list_rows(name, *args, **kwargs))
-
-    def __getattr__(self, item):
-        return getattr(self._inner, item)
-
-
-def _date(v):
-    if not v:
-        return None
-    s = _text(v).strip()
-    if not s:
-        return None
-    # 云端直连的日期列是完整 ISO（2026-05-07T00:00:00+08:00）；本地 CSV 是 2026-05-07。
-    # 统一截到日期部分再解析，否则 strptime 全部失败 → 甘特图为空、剩余天数为 null。
-    if "T" in s:
-        s = s.split("T", 1)[0]
-    elif " " in s:
-        s = s.split(" ", 1)[0]
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(s, fmt).date()
-        except ValueError:
-            continue
-    return None
-
-
-def _supplier(row):
-    for c in SUPPLIER_COLS:
-        if row.get(c):
-            return _text(row[c]) or "未知"
-    return "未知"
-
-
-def _rid(row):
-    """提取 SeaTable 行 ID（首列 __row_id__ 可能带 BOM）。"""
-    for k, v in row.items():
-        if k.replace("﻿", "") == "__row_id__":
-            return v
-    return None
-
-
-def _load_partdb():
-    """读取 partdb_sync.py 生成的真实快照；不存在返回 None。"""
-    snap = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "partdb_snapshot.json")
-    if not os.path.exists(snap):
-        return None
-    try:
-        with open(snap, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _load_sync_meta():
-    """读取 seatable_sync.py 写入的同步标记；存在说明业务表已是云端真实数据。"""
-    meta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "_sync_meta.json")
-    if not os.path.exists(meta):
-        return None
-    try:
-        with open(meta, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _read_local_csv(name):
-    """读 data/ 下的本地专用 CSV（monitor/情报数据，不受云端同步影响）。"""
-    import csv as _csv
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", name)
-    if not os.path.exists(p):
-        return []
-    try:
-        with open(p, "r", encoding="utf-8-sig", newline="") as f:
-            return [dict(r) for r in _csv.DictReader(f)]
-    except Exception:
-        return []
-
-
-def _load_market():
-    """物料行情模型（market.py 维护：监控清单 + 行情快照）。无数据返回 None。"""
-    watch = _read_local_csv("物料监控清单.csv")
-    hist = _read_local_csv("物料行情记录.csv")
-    if not watch and not hist:
-        return None
-    try:
-        th = float((load_config().get("market") or {}).get("alert_threshold") or 10)
-    except Exception:
-        th = 10.0
-    bad_lc = {"NRND", "EOL停产", "停产", "EOL"}
-    by_model = {}
-    for s in hist:
-        by_model.setdefault(s.get("物料型号", ""), []).append(s)
-    rows, alerts = [], []
-    for w in watch:
-        if str(w.get("启用", "1")) in ("0", "否", "false"):
-            continue
-        m = w.get("物料型号", "")
-        snaps = by_model.get(m, [])
-        latest = snaps[-1] if snaps else None
-        priced = [s for s in snaps if _num(s.get("单价")) > 0]
-        buy = _num(w.get("上次采购价"))
-        cur = _num((latest or {}).get("单价"))
-        vs_buy = round((cur - buy) / buy * 100, 1) if (buy > 0 and cur > 0) else None
-        lc = (latest or {}).get("生命周期", "") or "未知"
-        chg = (latest or {}).get("涨跌幅", "")
-        if lc in bad_lc:
-            alerts.append({"type": "停产", "model": m,
-                           "text": "生命周期 %s —— 确认替代料 / 最后采购窗口" % lc})
-        if vs_buy is not None and abs(vs_buy) >= th:
-            alerts.append({"type": "涨跌", "model": m,
-                           "text": "现价较上次采购价 %+.1f%%（阈值 ±%.0f%%）" % (vs_buy, th)})
-        try:
-            if chg not in ("", None) and abs(float(chg)) >= th:
-                alerts.append({"type": "涨跌", "model": m,
-                               "text": "最新快照环比 %+.1f%%" % float(chg)})
-        except (TypeError, ValueError):
-            pass
-        rows.append({
-            "model": m, "category": w.get("类别", ""),
-            "buy": w.get("上次采购价", ""), "buy_date": w.get("上次采购日期", ""),
-            "price": (latest or {}).get("单价", ""), "channel": (latest or {}).get("渠道", ""),
-            "date": (latest or {}).get("日期", ""), "lifecycle": lc, "vs_buy": vs_buy,
-            "chg": chg, "hist": [_num(s.get("单价")) for s in priced][-12:],
-        })
-    return {"rows": rows, "alerts": alerts, "threshold": th,
-            "watch_count": len(watch), "hist_count": len(hist)}
-
-
-def _mille(v):
-    """数字加千分位，用于原料行情（元/吨这类数字动辄六位，不加分隔符读不清）。"""
-    try:
-        f = float(v)
-    except (TypeError, ValueError):
-        return str(v or "")
-    return ("{:,.0f}".format(f)) if abs(f) >= 1000 else ("{:g}".format(f))
-
-
-def _load_commodities(days=None):
-    """原料行情模型（commodities.py 维护：data/原料行情记录.csv）。无数据返回 None。
-
-    与物料行情（_load_market）是两条线：那个看单个型号贵没贵/停没停产，
-    这个看上游原料（金/银/铜/锡/塑料）的成本走向，决定报价基调。
-
-    口径纪律：期货「连续」与「具体合约」是两个口径，只按 (原料, 口径) 分组，
-    绝不跨口径拼序列——否则会算出假涨跌（与元器件「串渠道假涨跌」同源）。
-
-    阈值/天数从 config.yaml 的 commodities 段读，与 commodities.py 的 CLI 同一真源。
-    """
-    rows_all = _read_local_csv("原料行情记录.csv")
-    if not rows_all:
-        return None
-    try:
-        th = float((load_config().get("market") or {}).get("alert_threshold") or 10)
-    except Exception:
-        th = 10.0
-    # 阈值与回看天数统一取自 commodities 段（与 commodities.py CLI 同一真源，
-    # 免得命令行显示 ±3% 而驾驶舱按 ±5% 算，两边数字对不上）
-    raw_cfg = (load_config() or {}).get("commodities") or {}
-    try:
-        raw_th = float(raw_cfg.get("alert_threshold") or 3)
-    except (TypeError, ValueError):
-        raw_th = 3.0
-    if days is None:
-        try:
-            days = int(raw_cfg.get("trend_days") or 30)
-        except (TypeError, ValueError):
-            days = 30
-    days = max(2, int(days))
-
-    cutoff = (datetime.now().date() - timedelta(days=days)).isoformat()
-    groups = {}
-    for r in rows_all:
-        key = (r.get("原料", "") or "", r.get("口径", "") or "连续")
-        groups.setdefault(key, []).append(r)
-
-    rows, alerts = [], []
-    for (name, basis), items in groups.items():
-        items = sorted(items, key=lambda x: str(x.get("日期", "")))
-        win = [x for x in items if str(x.get("日期", "")) >= cutoff]
-        priced = [x for x in items if _num(x.get("单价")) > 0]
-        if not priced:
-            continue
-        latest = priced[-1]
-        series = [_num(x.get("单价")) for x in win if _num(x.get("单价")) > 0]
-        first = series[0] if len(series) > 1 else None
-        cur = _num(latest.get("单价"))
-        pct = round((cur - first) / first * 100, 1) if (first and first > 0 and cur > 0) else None
-        rows.append({
-            "name": name, "category": latest.get("类别", ""), "basis": basis,
-            "price": latest.get("单价", ""), "unit": latest.get("单位", ""),
-            "date": latest.get("日期", ""), "source": latest.get("来源", ""),
-            "note": latest.get("备注", ""), "pct": pct,
-            "hist": series[-30:],
-        })
-        if pct is not None and abs(pct) >= raw_th:
-            alerts.append({
-                "type": "涨" if pct > 0 else "跌", "name": name, "pct": pct,
-                "text": "%s 口径近 %d 天 %+.1f%%（%s → %s %s，阈值 ±%.0f%%）"
-                        % (basis, days, pct, _mille(first), _mille(cur),
-                           latest.get("单位", ""), raw_th),
-            })
-    # 按波动幅度降序：驾驶舱「下一步行动」只带前 2 条，必须是动静最大的两个
-    rows.sort(key=lambda r: (abs(r["pct"]) if r["pct"] is not None else -1), reverse=True)
-    alerts.sort(key=lambda a: abs(a.get("pct") or 0), reverse=True)
-    return {"rows": rows, "alerts": alerts, "threshold": raw_th,
-            "days": days, "series_count": len(rows)}
-
-
-def _load_foresee():
-    """风险预测模型（foresee.py 维护：data/foresee.json）。无数据返回 None。
-
-    三路预测：合同倒排（历史周期分位→环节最晚开始日）、供应商交期画像（承诺vs实际偏差→buffer）、
-    缺料预警（BOM缺口×在途→必须立刻下单）。只读消费，缺失时驾驶舱不渲染该 section。
-    """
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "foresee.json")
-    if not os.path.exists(p):
-        return None
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _load_wxmatch():
-    """消息↔SeaTable 核对模型（wxmatch.py 维护：data/核对结果.csv）。无数据返回 None。
-
-    四类核对：收款 / 下单 / 客户合同PDF / 供应商合同。
-    铁律：核对引擎只读不写库——高置信项仅生成「预填意图」，人确认后才落 SeaTable。
-    驾驶舱只做展示与指引，不提供任何直接写库按钮。
-    """
-    rows = _read_local_csv("核对结果.csv")
-    if not rows:
-        return None
-    pending = [r for r in rows if r.get("状态") in ("", "待核对", "待确认")]
-    done = [r for r in rows if r.get("状态") not in ("", "待核对", "待确认")]
-    by_type, by_conf = {}, {}
-    for r in pending:
-        by_type[r.get("类型", "其他")] = by_type.get(r.get("类型", "其他"), 0) + 1
-        c = r.get("置信度", "低") or "低"
-        by_conf[c] = by_conf.get(c, 0) + 1
-    # 展示顺序：高置信（可确认意图）在前，其次中（有匹配项目待人工看），最后低
-    conf_rank = {"高": 0, "中": 1, "低": 2}
-    pending.sort(key=lambda r: (conf_rank.get(r.get("置信度", "低") or "低", 3),
-                                str(r.get("日期", ""))), reverse=False)
-    # 「下一步行动」素材：高置信收款项红字提示；中置信合同项给登记建议
-    hi_pay = [r for r in pending
-              if r.get("置信度") == "高" and "收款" in (r.get("类型") or "")]
-    # 优先级 = 高置信收款 > 中置信有匹配项目（漏登记类）> 低置信
-    act_ready = [r for r in pending
-                 if r.get("置信度") == "高" or (r.get("置信度") == "中" and r.get("匹配项目"))]
-    return {
-        "pending": pending, "pending_count": len(pending),
-        "done_count": len(done), "total": len(rows),
-        "by_type": by_type, "by_conf": by_conf,
-        "hi_pay_count": len(hi_pay), "act_ready": act_ready[:12],
-        "scan_date": str(rows[-1].get("日期", ""))[:10] if rows else "",
-    }
-
-
-def _load_wechat(today):
-    """微信情报模型（wechat_intake.py 维护：data/微信事件.csv）。无数据返回 None。"""
-    events = _read_local_csv("微信事件.csv")
-    if not events:
-        return None
-    pending = [e for e in events if e.get("状态") == "待确认"]
-    week_ago = (today - timedelta(days=7)).isoformat()
-    by_cat = {}
-    for e in events:
-        d = str(e.get("日期", ""))[:10]
-        if d >= week_ago and e.get("分类"):
-            by_cat[e["分类"]] = by_cat.get(e["分类"], 0) + 1
-    recent = events[-40:][::-1]
-    return {
-        "pending": pending, "pending_count": len(pending),
-        "today_count": sum(1 for e in events if str(e.get("日期", ""))[:10] == today.isoformat()),
-        "by_cat": by_cat, "recent": recent,
-    }
-
-
-def _load_mindmaps():
-    """流程思维导图模型（extract_mindmaps.py 维护：data/思维导图.json）。无数据返回 None。
-
-    来源：业务方在 XMind 里维护的 7 张流程导图（生产/采购/研发/建模/库存/返修/品宣）。
-    导图是「流程应该怎么走」的规范描述，用于和驾驶舱里的「实际在跑什么」对照。
-    """
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "思维导图.json")
-    if not os.path.exists(p):
-        return None
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            d = json.load(f)
-    except Exception:
-        return None
-    if not d.get("maps"):
-        return None
-    return d
-
-
-def _overlap_days(a_start, a_end, b_start, b_end):
-    """两个闭区间的重叠天数（含首尾）；任一端缺失按 0 处理。"""
-    if not (a_start and a_end and b_start and b_end):
-        return 0
-    lo = max(a_start, b_start)
-    hi = min(a_end, b_end)
-    return (hi - lo).days + 1 if hi >= lo else 0
-
-
-def compute_resources(adapter, today, plans):
-    """资源域计算：负载率 / 冲突检测 / 成本归集。
-
-    对标 MS Project 的「资源工作表 + 资源使用状况」：
-      - 负载率 = 本周已分配投入量 / (日产能 × 本周工作日)
-      - 超载   = 负载率 > 100%，即同一时间被安排了超过其产能的活
-      - 冲突   = 同一资源在重叠日期区间内被分配到多个进行中的任务
-      - 成本   = Σ(投入量 × 日费率)，按资源与按生产计划两个口径归集
-    """
-    try:
-        resources = adapter.list_rows("资源")
-        allocs = adapter.list_rows("资源分配")
-    except Exception:
-        resources, allocs = [], []
-    if not resources and not allocs:
-        return None  # 未启用资源管理 → 驾驶舱隐藏该模块
-
-    # 本周窗口（周一~周日），用于算「当前负载」
-    wk_start = today - timedelta(days=today.weekday())
-    wk_end = wk_start + timedelta(days=6)
-    workdays = sum(1 for i in range(7) if (wk_start + timedelta(days=i)).weekday() < 5)
-
-    plan_name = {}
-    for p in plans:
-        rid = _rid(p)
-        nm = p.get("生产产品") or p.get("生产计划编号") or ""
-        if rid:
-            plan_name[str(rid)] = nm
-        if p.get("生产计划编号"):
-            plan_name[str(p["生产计划编号"])] = nm
-
-    ACTIVE_ALLOC = {"计划中", "进行中"}
-    by_res = {}
-    for r in resources:
-        nm = (r.get("姓名") or "").strip()
-        if not nm:
-            continue
-        by_res[nm] = {
-            "name": nm,
-            "type": (r.get("类型") or "人员").strip(),
-            "stage": (r.get("所属工序") or "").strip(),
-            "cap": _num(r.get("日产能")) or 1.0,
-            "unit": (r.get("单位") or "人日").strip(),
-            "rate": _num(r.get("日费率")),
-            "status": (r.get("在岗状态") or "在岗").strip(),
-            "alloc": 0.0, "week_alloc": 0.0, "cost": 0.0,
-            "tasks": [], "conflicts": [],
-        }
-
-    alloc_rows = []
-    for a in allocs:
-        res = (a.get("资源") or "").strip()
-        if not res:
-            continue
-        st, en = _date(a.get("开始日期")), _date(a.get("结束日期"))
-        qty = _num(a.get("投入量"))
-        status = (a.get("状态") or "计划中").strip()
-        plan_ref = str(a.get("生产计划") or "").strip()
-        alloc_rows.append({
-            "res": res, "plan": plan_name.get(plan_ref, plan_ref), "plan_ref": plan_ref,
-            "stage": (a.get("工序") or "").strip(), "qty": qty, "status": status,
-            "start": st, "end": en,
-            "start_s": st.isoformat() if st else "", "end_s": en.isoformat() if en else "",
-        })
-
-    # 资源不存在于「资源」表但出现在分配里 → 补一条影子资源，避免漏算
-    for a in alloc_rows:
-        if a["res"] not in by_res:
-            by_res[a["res"]] = {
-                "name": a["res"], "type": "人员", "stage": a["stage"], "cap": 1.0,
-                "unit": "人日", "rate": 0.0, "status": "未登记",
-                "alloc": 0.0, "week_alloc": 0.0, "cost": 0.0, "tasks": [], "conflicts": [],
-            }
-
-    for a in alloc_rows:
-        R = by_res[a["res"]]
-        if a["status"] in ACTIVE_ALLOC:
-            R["alloc"] += a["qty"]
-            R["week_alloc"] += _overlap_days(a["start"], a["end"], wk_start, wk_end) \
-                * (a["qty"] / max((a["end"] - a["start"]).days + 1, 1) if a["start"] and a["end"] else 0)
-        R["cost"] += a["qty"] * R["rate"]
-        R["tasks"].append({"plan": a["plan"], "stage": a["stage"], "qty": a["qty"],
-                           "status": a["status"], "start": a["start_s"], "end": a["end_s"]})
-
-    # 冲突：同一资源、两条进行中分配的日期区间重叠
-    for nm, R in by_res.items():
-        act = [a for a in alloc_rows if a["res"] == nm and a["status"] in ACTIVE_ALLOC]
-        for i in range(len(act)):
-            for j in range(i + 1, len(act)):
-                d = _overlap_days(act[i]["start"], act[i]["end"], act[j]["start"], act[j]["end"])
-                if d > 0:
-                    R["conflicts"].append({
-                        "a": act[i]["plan"] or "（未关联计划）", "b": act[j]["plan"] or "（未关联计划）",
-                        "days": d,
-                    })
-
-    rows = []
-    for R in by_res.values():
-        capacity = R["cap"] * workdays
-        load = round(R["week_alloc"] / capacity * 100, 1) if capacity else 0.0
-        rows.append({
-            "name": R["name"], "type": R["type"], "stage": R["stage"],
-            "cap": R["cap"], "unit": R["unit"], "rate": R["rate"], "status": R["status"],
-            "alloc": round(R["alloc"], 2), "week_alloc": round(R["week_alloc"], 2),
-            "capacity": round(capacity, 2), "load": load,
-            "cost": round(R["cost"], 2),
-            "over": load > 100, "idle": load == 0 and R["status"] == "在岗",
-            "tasks": sorted(R["tasks"], key=lambda t: t["start"] or "9999"),
-            "conflicts": R["conflicts"],
-        })
-    rows.sort(key=lambda x: -x["load"])
-
-    # 按生产计划归集人工成本
-    by_plan = {}
-    for a in alloc_rows:
-        key = a["plan"] or "（未关联计划）"
-        rate = by_res[a["res"]]["rate"]
-        b = by_plan.setdefault(key, {"plan": key, "qty": 0.0, "cost": 0.0, "people": set()})
-        b["qty"] += a["qty"]
-        b["cost"] += a["qty"] * rate
-        b["people"].add(a["res"])
-    plan_cost = sorted(
-        [{"plan": v["plan"], "qty": round(v["qty"], 2), "cost": round(v["cost"], 2),
-          "people": len(v["people"])} for v in by_plan.values()],
-        key=lambda x: -x["cost"])
-
-    over = [r for r in rows if r["over"]]
-    idle = [r for r in rows if r["idle"]]
-    conflicts = [{"name": r["name"], **c} for r in rows for c in r["conflicts"]]
-    loads = [r["load"] for r in rows if r["status"] == "在岗"]
-    return {
-        "week": {"start": wk_start.isoformat(), "end": wk_end.isoformat(), "workdays": workdays},
-        "rows": rows, "plan_cost": plan_cost,
-        "total": len(rows), "on_duty": sum(1 for r in rows if r["status"] == "在岗"),
-        "over": over, "idle": idle, "conflicts": conflicts,
-        "labor_cost": round(sum(r["cost"] for r in rows), 2),
-        "avg_load": round(sum(loads) / len(loads), 1) if loads else 0.0,
-    }
-
-
-def compute(adapter, today):
-    projects = adapter.list_rows("项目")
-    plans = adapter.list_rows("生产计划")
-    repairs = adapter.list_rows("维修记录")
-    shipments = adapter.list_rows("发货清单")
-    inv = adapter.list_rows("库存核对记录")
-    processes = adapter.list_rows("生产工序")
-
-    # ── 项目指标 ──
-    p_total = len(projects)
-    p_active = sum(1 for p in projects if p.get("状态") in STATUS_ACTIVE)
-    # 「暂放」按业主口径归入「计划中」桶（否则 1+10+22=33 ≠ 36，有 3 个项目会凭空消失）
-    p_planned = sum(1 for p in projects if p.get("状态") in ("计划中", "暂放"))
-    p_done = sum(1 for p in projects if p.get("状态") in STATUS_DONE)
-    contract = sum(_num(p.get("合同总价")) for p in projects)
-    received = sum(_num(p.get("实收")) for p in projects)
-    receivable = contract - received
-
-    proj_overview = []
-    for p in projects:
-        c = _num(p.get("合同总价"))
-        r = _num(p.get("实收"))
-        proj_overview.append({
-            "name": p.get("项目", ""),
-            "status": p.get("状态", ""),
-            "contract": c,
-            "received": r,
-            "receivable": c - r,
-            "due": p.get("合同交期") or "",
-        })
-
-    # ── 应收口径对照：「表内待收」(SeaTable 公式列) vs 「应收」(看板现算 = 合同总价 − 实收) ──
-    # 两者本应逐项相等，实测有 3 个项目对不上（合计差 ¥150,043）。逐项列出并给出成因，
-    # 避免看板上「待收 96 万 / 应收 111 万」两个数并存却没人知道差在哪。
-    recv_stored = sum(_num(p.get("待收")) for p in projects)
-    recv_diff_rows = []
-    for p in projects:
-        _c = _num(p.get("合同总价"))
-        _r = _num(p.get("实收"))
-        _d = _num(p.get("待收"))
-        _calc = _c - _r
-        if abs(_d - _calc) <= 1:
-            continue
-        if _d > 0 and _calc > 0:
-            _why = "元级舍入误差（公式列 vs 现算）"
-        else:
-            _why = "表内「待收」为空/0，实际仍有未收 ¥%s —— 建议补录或核对付款" % format(_calc, ",.0f")
-        recv_diff_rows.append({
-            "no": _text(p.get("项目编号")), "name": _text(p.get("项目")),
-            "status": _text(p.get("状态")),
-            "contract": round(_c, 2), "received": round(_r, 2),
-            "stored": round(_d, 2), "calc": round(_calc, 2),
-            "diff": round(_d - _calc, 2), "why": _why,
-        })
-    recv_diff_rows.sort(key=lambda x: -abs(x["diff"]))
-    recv_check = {
-        "kpi": round(receivable, 2), "stored": round(recv_stored, 2),
-        "diff": round(recv_stored - receivable, 2),
-        "rows": recv_diff_rows, "n": len(recv_diff_rows),
-    }
-
-    # ── 成本归集 ──
-    category_cost = {c[2]: 0.0 for c in COST_MAP}
-    plan_cost = {}
-    supplier_stat = {}   # name -> {orders, ontime, late, pending, cost}
-    purchase_rows = []   # 用于逾期/准时率
-    for table, col, cat in COST_MAP:
-        for row in adapter.list_rows(table):
-            amt = _num(row.get(col))
-            if amt <= 0:
-                continue
-            category_cost[cat] += amt
-            pn = _text(row.get("生产计划", "")) or "(未关联)"
-            plan_cost[pn] = plan_cost.get(pn, 0.0) + amt
-            sup = "PCB打板" if table == "PCB下单记录" else _supplier(row)
-            # 准时率（仅对有交期与到货/逾期信息的单计入）
-            eta_s = row.get("下单时间")
-            lead = _num(row.get("交期"))
-            arr = _date(row.get("到货时间")) if table != "PCB下单记录" else _date(row.get("最终完成时间"))
-            eta = _date(eta_s)
-            if eta and lead:
-                st = supplier_stat.setdefault(sup, {"orders": 0, "ontime": 0, "late": 0, "pending": 0, "cost": 0.0})
-                st["orders"] += 1
-                st["cost"] += amt
-                eta_date = eta + timedelta(days=int(lead))
-                if arr:
-                    if arr <= eta_date:
-                        st["ontime"] += 1
-                    else:
-                        st["late"] += 1
-                elif eta_date < today:
-                    st["late"] += 1  # 已逾期未到货
-                else:
-                    st["pending"] += 1
-            purchase_rows.append({"table": table, "cat": cat, "row": row, "amt": amt,
-                                  "supplier": sup, "arr": arr, "eta": eta, "lead": lead})
-
-    total_cost = sum(category_cost.values())
-
-    # 台账口径：生产计划「生产总花销」汇总（含人工/辅料，比采购明细更全）
-    ledger_cost = sum(_num(p.get("生产总花销")) for p in plans)
-    # 单片成本：生产计划「此次单片成本」均值（真实业务填写的单价基准）
-    unit_costs = [_num(p.get("此次单片成本")) for p in plans if _num(p.get("此次单片成本")) > 0]
-    unit_cost = round(sum(unit_costs) / len(unit_costs), 2) if unit_costs else 0.0
-
-    # 项目级成本（通过生产计划关联）
-    plan_to_proj = {p.get("生产产品", ""): p.get("关联项目", "") for p in plans}
-    proj_cost = {}
-    for pn, amt in plan_cost.items():
-        pj = plan_to_proj.get(pn, "")
-        proj_cost[pj] = proj_cost.get(pj, 0.0) + amt
-    total_profit = contract - total_cost
-    margin = (total_profit / contract * 100) if contract else 0.0
-    budget_margin = 30.0  # 目标毛利率
-
-    # 成本结构（降序，仅保留 >0）
-    category = [{"name": k, "value": round(v, 2)}
-                for k, v in category_cost.items() if v > 0]
-    category.sort(key=lambda x: x["value"], reverse=True)
-
-    # ── 在制品看板 ──
-    wip = []
-    stage_dist = {}
-    for p in plans:
-        stage = p.get("阶段", "未定义")
-        stage_dist[stage] = stage_dist.get(stage, 0) + 1
-        if p.get("状态") in STATUS_DONE:
-            continue
-        due = _date(p.get("合同交期"))
-        remain = (due - today).days if due else None
-        wip.append({
-            "product": p.get("生产产品", ""),
-            "qty": _num(p.get("数量")),
-            "stage": stage,
-            "status": p.get("状态", ""),
-            "start": p.get("立项日期") or "",
-            "due": p.get("合同交期") or "",
-            "remain": remain,
-            "overdue": (remain is not None and remain < 0),
-        })
-    wip.sort(key=lambda x: (x["remain"] is None, x["remain"] if x["remain"] is not None else 0))
-
-    # ── 工时 ──
-    # 真实库未填「完货日期」，改用生产计划表「花费天数」(业务实际填写的工序耗时)
-    # 作为实际生产周期；「合同交期 − 立项日期」为允许周期，实际 ≤ 允许 即视为交期达成。
-    total_plans = len(plans)
-    ontime = 0
-    dated = 0
-    cycles = []
-    for p in plans:
-        sd = _date(p.get("立项日期"))
-        cd = _date(p.get("合同交期"))
-        spend = _num(p.get("花费天数"))   # 实际花费天数
-        if spend > 0:
-            cycles.append({"product": p.get("生产产品", ""), "days": int(spend)})
-            if sd and cd:
-                allow = (cd - sd).days
-                dated += 1
-                if spend <= allow:
-                    ontime += 1
-    # 无「花费天数」则无法判定周期达成率，显示 N/A 而非 0%
-    ontime_rate = (ontime / dated * 100) if dated else None
-    avg_cycle = round(sum(c["days"] for c in cycles) / len(cycles), 1) if cycles else 0
-
-    # 产线实时流转：在产计划（状态≠已交付）当前所处工序（生产计划.阶段）的分布
-    # 注意：绝不能用「生产工序」主表的「当前流程」计数——该表是工序目录（每工序仅一行），
-    # 计数恒为 1，无法表达“卡在哪个工序”。正确口径是按在产计划的实际阶段聚合。
-    flow_dist = {}
-    for r in plans:
-        if (r.get("状态") or "").strip() == "已交付":
-            continue
-        st = (r.get("阶段") or "未定义").strip() or "未定义"
-        flow_dist[st] = flow_dist.get(st, 0) + 1
-
-    # ── 质量 ──
-    shipped = sum(_num(s.get("发货数量")) for s in shipments) or len(shipments)
-    repair_total = len(repairs)
-    repair_rate = (repair_total / shipped * 100) if shipped else 0.0
-    smt_rows = adapter.list_rows("贴片生产记录")
-    smt_yield = 0.0
-    if smt_rows:
-        tot = sum(_num(r.get("贴片数量")) for r in smt_rows)
-        good = sum(_num(r.get("良品数量")) for r in smt_rows)
-        smt_yield = (good / tot * 100) if tot else 0.0
-    asm_rows = adapter.list_rows("组装记录")
-    asm_yields = [_num(r.get("组装良品率")) for r in asm_rows if _num(r.get("组装良品率")) > 0]
-    # 真实库 2 条组装记录的良品率列均为空(#DIV/0) → 无数据，标注「未录入」而非 0%
-    asm_yield = round(sum(asm_yields) / len(asm_yields), 1) if asm_yields else None
-    repair_overdue = 0
-    repair_days = []
-    repair_list = []
-    for r in repairs:
-        rt = _date(r.get("返修时间"))
-        ft = _date(r.get("完成时间"))
-        req = _num(r.get("要求交期"))
-        if rt and ft:
-            d = (ft - rt).days
-            repair_days.append(d)
-        done = ft is not None
-        overdue = (not done) and rt and req and (rt + timedelta(days=int(req)) < today)
-        if overdue:
-            repair_overdue += 1
-        repair_list.append({
-            "proj": r.get("相关项目", ""),
-            "item": r.get("维修清单", ""),
-            "back": r.get("返修时间", ""),
-            "req": int(req),
-            "done": done,
-            "overdue": bool(overdue),
-        })
-    repair_avg = round(sum(repair_days) / len(repair_days), 1) if repair_days else 0
-
-    # ── 供应链：采购逾期 + 供应商准时率 ──
-    overdue_list = []
-    for pr in purchase_rows:
-        eta = pr["eta"]
-        lead = pr["lead"]
-        arr = pr["arr"]
-        if eta and lead:
-            eta_date = eta + timedelta(days=int(lead))
-            if arr is None and eta_date < today:
-                overdue_list.append({
-                    "supplier": pr["supplier"],
-                    "material": pr["row"].get("物料名称") or pr["row"].get("外壳名称") or pr["row"].get("PCB型号版本") or "",
-                    "plan": pr["row"].get("生产计划", ""),
-                    "eta": eta_date.isoformat(),
-                    "days": (today - eta_date).days,
-                })
-    overdue_list.sort(key=lambda x: x["days"], reverse=True)
-
-    supplier = []
-    for name, st in supplier_stat.items():
-        rated = st["ontime"] + st["late"]
-        rate = (st["ontime"] / rated * 100) if rated else None
-        supplier.append({
-            "name": name,
-            "orders": st["orders"],
-            "ontime": st["ontime"],
-            "late": st["late"],
-            "pending": st["pending"],
-            "cost": round(st["cost"], 2),
-            "rate": round(rate, 1) if rate is not None else None,
-        })
-    supplier.sort(key=lambda x: (x["rate"] is None, x["rate"] if x["rate"] is not None else 0))
-
-    # ── 物料库存预警（来自库存核对记录；PartDB 缺料检查未配置则跳过）──
-    inventory_warn = []
-    for r in inv:
-        fin = r.get("最终完成时间")
-        if not fin or str(r.get("核对结果", "")).strip() in ("", "待核对", "异常"):
-            inventory_warn.append({
-                "plan": r.get("链接其他记录", ""),
-                "result": r.get("核对结果", "") or "待核对",
-                "time": fin or "",
-            })
-
-    # ── 现金流预测（30/60/90 天）──
-    def bucket_of(d):
-        if d is None:
-            return None
-        delta = (d - today).days
-        if delta < 0:
-            return "逾期"
-        if delta <= 30:
-            return "30"
-        if delta <= 60:
-            return "60"
-        if delta <= 90:
-            return "90"
-        return ">90"
-
-    cash = {"逾期": {"in": 0.0, "out": 0.0}, "30": {"in": 0.0, "out": 0.0},
-            "60": {"in": 0.0, "out": 0.0}, "90": {"in": 0.0, "out": 0.0}}
-    for p in projects:
-        amt = _num(p.get("合同总价")) - _num(p.get("实收"))
-        if amt <= 0:
-            continue
-        b = bucket_of(_date(p.get("合同交期")))
-        if b and b in cash:
-            cash[b]["in"] += amt
-    for pr in purchase_rows:
-        if pr["arr"] is None and pr["eta"] and pr["lead"]:
-            eta_date = pr["eta"] + timedelta(days=int(pr["lead"]))
-            b = bucket_of(eta_date)
-            if b and b in cash:
-                cash[b]["out"] += pr["amt"]
-    cashflow = []
-    for k in ["逾期", "30", "60", "90"]:
-        cashflow.append({"bucket": k, "in": round(cash[k]["in"], 2),
-                         "out": round(cash[k]["out"], 2),
-                         "net": round(cash[k]["in"] - cash[k]["out"], 2)})
-
-    # 应收款明细
-    receivable_list = [p for p in proj_overview if p["receivable"] > 0]
-    # 合同交期可能为空（None/""）——排序键统一转字符串，避免 None 与 str 比较抛 TypeError
-    receivable_list.sort(key=lambda x: str(x.get("due") or ""))
-
-    # ── 甘特图数据（立项 → 合同交期；进度按日期推算）──
-    # 真实库有 13/34 条生产计划没填「合同交期」（且「交货时间(自动记录)」「创建时间」也空），
-    # 直接跳过会让甘特图只剩一半。这里用「立项日期 + 实际花费天数」推算一个结束日兜底，
-    # 并用 est=True 显式标注，前端以 * 号 + 虚线文案区分，绝不把推算值伪装成真实交期。
-    gantt = []
-    pend_count = 0
-    for p in plans:
-        sd = _date(p.get("立项日期"))
-        cd = _date(p.get("合同交期"))
-        if not sd:
-            continue  # 连立项日期都没有 → 无法定位到时间轴，跳过
-        # 合同交期「暂时还没有，后期手补」→ 不推算、不猜日期，单列「待补交期」长条
-        pend = cd is None
-        if pend:
-            pend_count += 1
-        status = p.get("状态", "")
-        done = status in STATUS_DONE
-        if pend:
-            overdue, prog, span, end_iso = False, (100 if done else 0), 0, ""
-        else:
-            overdue = (not done) and cd < today
-            span = (cd - sd).days
-            if span <= 0 or done:
-                prog = 100
-            else:
-                elapsed = (today - sd).days
-                prog = max(0, min(100, int(elapsed / span * 100)))
-            end_iso = cd.isoformat()
-        gantt.append({
-            "name": p.get("生产产品", "") or p.get("生产计划编号", "") or "(未命名)",
-            "status": status,
-            "start": sd.isoformat(), "end": end_iso,
-            "done": done, "overdue": bool(overdue), "progress": prog,
-            "pending": pend, "days": span, "row_id": _rid(p),
-        })
-    # 已定交期的按立项日排前面；待补交期的统一沉到底部单独成组
-    gantt.sort(key=lambda x: (x["pending"], x["start"]))
-
-    # ── 下一步行动建议（按优先级推导）──
-    pd = _load_partdb()
-    actions = []
-    if overdue_list:
-        top = overdue_list[0]
-        actions.append({"pri": "高", "cat": "purchase", "text": f"跟进 {len(overdue_list)} 笔逾期采购，最紧急：{top['supplier']} 的 {top['material'] or '物料'} 已逾期 {top['days']} 天，尽快催收/换源"})
-    if pd:
-        b = pd.get("bom") or {}
-        sh = b.get("shortage") or []
-        if sh:
-            zero = sum(1 for x in sh if x.get("confirmed") == 0)
-            actions.append({"pri": "高", "cat": "warehouse", "text": f"补料：{b.get('project_name', '在产项目')} 有 {len(sh)} 种物料缺口（{zero} 种零确认库存），尽快下达采购单"})
-    od_wip = [w for w in wip if w["overdue"]]
-    if od_wip:
-        w = od_wip[0]
-        actions.append({"pri": "高", "cat": "delivery", "text": f"推进逾期未交付：{w['product']} 已逾期 {-w['remain']} 天，优先排产/协调产能"})
-    nd = [w for w in wip if w["remain"] is not None and 0 < w["remain"] <= 7]
-    if nd:
-        w = nd[0]
-        actions.append({"pri": "中", "cat": "delivery", "text": f"临近交期：{w['product']} 仅剩 {w['remain']} 天，确保本周内完工"})
-    if repair_overdue:
-        actions.append({"pri": "中", "cat": "production", "text": f"处理 {repair_overdue} 笔超期维修单，避免客户投诉升级"})
-    if receivable_list:
-        r = receivable_list[0]
-        actions.append({"pri": "中", "cat": "sales", "text": f"催收应收：最早到期「{r['name']}」应收 ¥{r['receivable']:,.0f}（交期 {r['due']}）"})
-    if flow_dist:
-        bn = max(flow_dist.items(), key=lambda x: x[1])
-        actions.append({"pri": "提示", "cat": "production", "text": f"产能瓶颈：{bn[0]} 环节积压 {bn[1]} 个在产计划，建议增配资源或并行处理"})
-    if asm_yield is None:
-        actions.append({"pri": "提示", "cat": "production", "text": "补录组装良品率：当前组装记录均未填，质量维度暂不完整"})
-
-    # ── 资源域（人/设备负载、冲突、人工成本）──
-    res_model = compute_resources(adapter, today, plans)
-    if res_model:
-        if res_model["over"]:
-            t = res_model["over"][0]
-            actions.insert(0, {"pri": "高", "cat": "resource",
-                               "text": f"资源超载：{t['name']} 本周负载 {t['load']:.0f}%（已排 {t['week_alloc']}{t['unit']} / 产能 {t['capacity']}{t['unit']}），需改期或加人"})
-        if res_model["conflicts"]:
-            c = res_model["conflicts"][0]
-            actions.insert(0, {"pri": "高", "cat": "resource",
-                               "text": f"排程冲突：{c['name']} 在「{c['a']}」与「{c['b']}」上有 {c['days']} 天重叠，需错开档期"})
-        if res_model["idle"]:
-            nm = "、".join(r["name"] for r in res_model["idle"][:3])
-            actions.append({"pri": "中", "cat": "resource",
-                            "text": f"资源闲置：{nm} 本周暂无任务分配，可承接新单或支援瓶颈工序"})
-
-    # ── 微信情报 & 物料行情（本地专用数据，wechat_intake.py / market.py 维护）──
-    wechat_model = _load_wechat(today)
-    market_model = _load_market()
-    # 原料行情（commodities.py 维护 data/原料行情记录.csv；缺失则 None）
-    commodities_model = _load_commodities()
-    # 消息↔SeaTable 核对（wxmatch.py 维护 data/核对结果.csv；缺失则 None）
-    wxmatch_model = _load_wxmatch()
-    # 风险预测（foresee.py 维护 data/foresee.json；缺失则 None）
-    foresee_model = _load_foresee()
-    # 风险预测 → 行动建议：已逾期/高风险置顶为高优，缺料必须立刻下单次之
-    if foresee_model:
-        fb = foresee_model.get("backward") or {}
-        for a in (fb.get("act_now") or [])[:5]:
-            txt = "风险雷达：%s %s 剩%d天，环节已过最晚开始日（%s）" % (
-                a["plan"], a["product"][:14], a["days_left"], "、".join(a["do_now"][:2]))
-            actions.insert(0, {"pri": "高" if a["days_left"] < 0 else "中", "cat": "risk",
-                               "text": txt})
-        for e in (foresee_model.get("shortage", {}).get("must_order") or [])[:3]:
-            actions.append({"pri": "高" if e["verdict"] == "必须立刻下单" else "中", "cat": "risk",
-                            "text": "风险雷达：%s 缺料 %d 项（共%d件，零库存 %d 项）%s" % (
-                                e["product"][:16], e["gap_items"], e["total_gap"],
-                                e["zero_stock_items"], e["verdict"])})
-    if wechat_model and wechat_model["pending_count"]:
-        cats = "/".join(sorted({e.get("分类", "") for e in wechat_model["pending"] if e.get("分类")}))
-        actions.insert(0, {"pri": "高", "cat": "wechat",
-                           "text": "微信情报待确认 %d 条（%s）：在「微信情报台」核对后写入业务表"
-                                   % (wechat_model["pending_count"], cats or "未分类")})
-    if market_model:
-        for a in market_model["alerts"]:
-            actions.insert(0 if a["type"] == "停产" else len(actions),
-                           {"pri": "高" if a["type"] == "停产" else "中", "cat": "market",
-                            "text": "物料行情：%s %s" % (a["model"], a["text"])})
-    # 核对引擎：高置信收款=钱的事必须红字置顶；中置信有匹配项目=漏登记，中优
-    if wxmatch_model:
-        if wxmatch_model["hi_pay_count"]:
-            actions.insert(0, {"pri": "高", "cat": "wechat",
-                               "text": "收款核对：%d 条高置信收款信号待确认（匹配到项目待收金额，"
-                                       "确认后写入实收）" % wxmatch_model["hi_pay_count"]})
-        ready = [r for r in wxmatch_model["act_ready"]
-                 if "收款" not in (r.get("类型") or "")][:3]
-        for r in ready:
-            tgt = r.get("匹配项目") or r.get("信号内容", "")
-            actions.append({"pri": "中", "cat": "wechat",
-                            "text": "核对：%s %s" % ((tgt or "")[:34], (r.get("建议动作") or "")[:40])})
-    # 原料行情波动 = 成本走向信号，不是停线事件，一律中优、且最多带 2 条免得刷屏
-    if commodities_model:
-        for a in commodities_model["alerts"][:2]:
-            actions.append({"pri": "中", "cat": "market",
-                            "text": "原料行情：%s %s" % (a["name"], a["text"])})
-
-    if not actions:
-        actions.append({"pri": "提示", "cat": "boss", "text": "暂无紧急事项，保持当前节奏即可 ✔"})
-
-    # ── 补录缺失字段（供 HTML 内直接行内填写，存本地后复制发回推送云端）──
-    # 真实库这些列为空：生产计划「计划开始/完成/实际完成/放行状态」、组装记录「组装良品率」。
-    # 确定性可推的日期先预填（计划开始≈立项、计划完成≈合同交期、已交付计划实际完成=立项+花费天数），
-    # 需用户拍板的「实际完成/放行状态/组装良品率」留空。
-    backfill = {"生产计划": [], "组装记录": []}
-    for p in plans:
-        sd = p.get("立项日期", "")
-        cd = p.get("合同交期", "")
-        spend = _num(p.get("花费天数"))
-        act = ""
-        if p.get("状态") in STATUS_DONE and sd and spend > 0:
-            d = _date(sd)
-            if d:
-                act = (d + timedelta(days=int(spend))).isoformat()
-        backfill["生产计划"].append({
-            "row_id": _rid(p),
-            "name": p.get("生产产品", ""),
-            "计划开始日期": sd if str(sd).strip() not in ("", "None") else "",
-            "计划完成日期": cd if str(cd).strip() not in ("", "None") else "",
-            "实际完成日期": act,
-            "放行状态": "",
-        })
-    for r in asm_rows:
-        backfill["组装记录"].append({
-            "row_id": _rid(r),
-            "name": r.get("组装编号", ""),
-            "组装良品率": "",
-        })
-
-    # ── 项目全表 / 生产计划全表（「项目矩阵」板块用）──
-    # 逐列落值供 HTML 端排序/搜索；超长 markdown 字段（产品需求/合同/生产详情）刻意不进 HTML。
-    def _cells(row, cols):
-        o = {}
-        for c in cols:
-            v = row.get(c)
-            if isinstance(v, (list, tuple)):
-                v = "、".join(str(x) for x in v if x not in (None, ""))
-            if v is None:
-                v = ""
-            v = str(v).strip()
-            if len(v) > 60:
-                v = v[:60] + "…"
-            o[c] = v
-        return o
-
-    def _links(v):
-        if isinstance(v, (list, tuple)):
-            return len([x for x in v if str(x).strip()])
-        return 1 if str(v or "").strip() else 0
-
-    # 「阶段」是 link 列，云端只给回 linked row 的 display_value（形如 673602），对人不具可读性，故不进表
-    PROJ_COLS = ["项目编号", "项目", "状态", "合同总价", "签订日期",
-                 "下单付", "收货付", "验收付", "实收", "待收", "合同交期",
-                 "剩余（天）", "花费天数", "完货日期", "生产花销"]
-    projects_full = []
-    for p in projects:
-        r = _cells(p, PROJ_COLS)
-        for c in ("合同总价", "实收", "待收", "生产花销"):
-            r[c] = round(_num(r[c]), 2)
-        r["_计划"] = _links(p.get("生产计划"))
-        r["_发货"] = _links(p.get("发货清单"))
-        r["_维修"] = _links(p.get("维修记录"))
-        projects_full.append(r)
-
-    PLAN_COLS = ["生产计划编号", "生产产品", "数量", "状态", "阶段", "关联项目",
-                 "立项日期", "合同交期", "花费天数", "生产总花销", "此次单片成本",
-                 "批次号", "版本号"]
-    plans_full = []
-    for p in plans:
-        r = _cells(p, PLAN_COLS)
-        r["数量"] = _num(r["数量"])
-        r["花费天数"] = _num(r["花费天数"])
-        r["生产总花销"] = round(_num(r["生产总花销"]), 2)
-        r["此次单片成本"] = round(_num(r["此次单片成本"]), 2)
-        plans_full.append(r)
-
-    return {
-        "snapshot": today.isoformat(),
-        "isDemo": not bool(_load_sync_meta()),
-        "synced_at": (_load_sync_meta() or {}).get("synced_at"),
-        "base_name": (_load_sync_meta() or {}).get("base_name"),
-        "partdb_at": (lambda p: p.get("generated_at") if p else None)(_load_partdb()),
-        "kpi": {
-            "projects": p_total, "active": p_active, "planned": p_planned, "done": p_done,
-            "contract": round(contract, 2), "received": round(received, 2),
-            "receivable": round(receivable, 2), "cost": round(total_cost, 2),
-            "ledger_cost": round(ledger_cost, 2), "unit_cost": unit_cost,
-            "exec_rate": round(received / contract * 100, 1) if contract else 0.0,
-            "profit": round(total_profit, 2), "margin": round(margin, 1),
-            "ontime_rate": round(ontime_rate, 1) if ontime_rate is not None else None, "purchase_overdue": len(overdue_list),
-            "wip": len(wip),
-            "res_load": (res_model or {}).get("avg_load"),
-            "res_over": len((res_model or {}).get("over", [])),
-            "res_conflict": len((res_model or {}).get("conflicts", [])),
-            "labor_cost": (res_model or {}).get("labor_cost"),
-            "partdb": bool(_load_partdb()),
-            "bom_shortage": (lambda p: (p.get("bom") or {}).get("shortage", []) and len((p.get("bom") or {}).get("shortage", [])) or 0)(_load_partdb()) if _load_partdb() else 0,
-        },
-        "projects": proj_overview,
-        "recv_check": recv_check,
-        "wip": wip,
-        "time": {
-            "ontime_rate": round(ontime_rate, 1) if ontime_rate is not None else None, "ontime": ontime, "dated": dated, "total": total_plans,
-            "avg_cycle": avg_cycle, "cycle_list": cycles, "stage_dist": stage_dist, "flow_dist": flow_dist,
-        },
-        "cost": {
-            "contract": round(contract, 2), "cost": round(total_cost, 2),
-            "ledger_cost": round(ledger_cost, 2), "unit_cost": unit_cost,
-            "profit": round(total_profit, 2), "margin": round(margin, 1),
-            "budget_margin": budget_margin,
-            "category": category, "receivable_list": receivable_list, "cashflow": cashflow,
-        },
-        "quality": {
-            "repair_rate": round(repair_rate, 2), "shipped": shipped, "repair_total": repair_total,
-            "smt_yield": round(smt_yield, 1), "asm_yield": asm_yield,
-            "repair_overdue": repair_overdue, "repair_avg": repair_avg, "repair_list": repair_list,
-        },
-        "supply": {
-            "overdue_list": overdue_list, "supplier": supplier,
-            "inventory_warn": inventory_warn, "process_count": len(processes),
-        },
-        "gantt": gantt,
-        "gantt_pending": pend_count,
-        # 项目矩阵板块：项目表全字段 / 生产计划全字段 / 流程思维导图
-        "projects_full": projects_full,
-        "plans_full": plans_full,
-        "mindmaps": _load_mindmaps(),
-        "next_actions": actions,
-        "backfill": backfill,
-        # 资源域（人/设备负载、冲突、人工成本）；未启用资源管理时为 None
-        "resource": res_model,
-        # PartDB 实时（partdb_sync.py 生成；缺失则 None，渲染时回退）
-        "partdb": _load_partdb(),
-        # 微信情报（wechat_intake.py 维护 data/微信事件.csv；缺失则 None）
-        "wechat": wechat_model,
-        # 物料行情（market.py 维护 监控清单+行情快照；缺失则 None）
-        "market": market_model,
-        # 原料行情（commodities.py 维护 上游原料 金/银/铜/锡/塑料；缺失则 None）
-        "commodities": commodities_model,
-        # 消息↔SeaTable 核对（wxmatch.py 维护 data/核对结果.csv；缺失则 None）
-        "wxmatch": wxmatch_model,
-        # 风险预测（foresee.py 维护 data/foresee.json；缺失则 None）
-        "foresee": foresee_model,
-    }
-
-
-# 内联 SVG 图标（构建时替换占位符，避免运行时修改 DOM 破坏工具栏）
-ICONS = {
-    "TITLE_ICON": '<svg class="svg-ic" width="24" height="24" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>',
-    "IC_GRID": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
-    "IC_PROJ": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4"/><path d="M3 17l9 4 9-4"/></svg>',
-    "IC_TIME": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>',
-    "IC_COST": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M16.5 7.5c0-1.7-2-3-4.5-3s-4.5 1.3-4.5 3 2 2.7 4.5 3 4.5 1.3 4.5 3-2 3-4.5 3-4.5-1.3-4.5-3"/></svg>',
-    "IC_QUAL": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5L12 21l-4.9 2.2.9-5.5-4-3.9 5.5-.8z"/></svg>',
-    "IC_SUP": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 8l9-4 9 4-9 4-9-4z"/><path d="M3 8v8l9 4 9-4V8"/><path d="M12 12v8"/></svg>',
-    "IC_DOWNLOAD": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M4 20h16"/></svg>',
-    "IC_UPLOAD": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M7 13l5-5 5 5"/><path d="M4 4h16"/></svg>',
-    "IC_REFRESH": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>',
-    "IC_NEXT": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M5 7l2 2 4-4"/><path d="M5 13l2 2 4-4"/><path d="M14 9h5"/><path d="M14 15h5"/></svg>',
-    "IC_EDIT": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg>',
-    "IC_COPY": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
-    "IC_GANT": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 6h10"/><path d="M4 12h14"/><path d="M4 18h7"/></svg>',
-    "IC_MIND": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="19" cy="12" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path d="M7.2 12h3.3c1.5 0 2.5-1 2.5-2.5S14 7 15.5 7h1.3"/><path d="M7.2 12h5"/><path d="M10.5 12c1.5 0 2.5 1 2.5 2.5S13 17 14.5 17h2.3"/></svg>',
-    "IC_ANALYZE": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>',
-    "IC_SYNC": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-8-5"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 8 5"/><path d="M21 4v5h-5"/><path d="M3 20v-5h5"/></svg>',
-    "IC_MKT": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 6-8"/><path d="M14 6h4v4"/><path d="M3 21h18"/></svg>',
-    "IC_CHAT": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-5 4V6a1 1 0 0 1 1-1z"/><path d="M8 10h8"/><path d="M8 13h5"/></svg>',
-    "IC_BOX": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/><path d="M12 11v10"/></svg>',
-    "IC_SHARE": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l7.8 4"/><path d="M15.4 6.5l-7.8 4"/></svg>',
-    "IC_KEY": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M14 7a4 4 0 1 0-3.6 5.9L7 17v3H4v-3l5.4-5.4A4 4 0 0 0 14 7zm-1.6 2.4a2 2 0 1 1-2.8 2.8 2 2 0 0 1 2.8-2.8z"/></svg>',
-    "IC_ADD": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
-    "IC_CHECK": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 12l3 3 5-6"/></svg>',
-    "IC_RADAR": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/><path d="M12 12L20 7"/></svg>',
-    "IC_THEME": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
-    "IC_USER": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3 20v-1.5C3 16 5.7 14.5 9 14.5s6 1.5 6 4V20"/><path d="M17 8.5h4"/><path d="M17 12h4"/><path d="M17 15.5h4"/></svg>',
-}
-
-# ===== 访问口令（客户端校验，写进 HTML 源码；已 base64 混淆，开发者选项里不再一眼看到明文）=====
-# 定位：防「文件误发到外部时被随手打开」的一道门，不是加密。
-#      口令必然要写进 HTML 才能离线校验，所以拿到文件+懂开发者工具的人总能绕过。
-#
-# 🔑 口令从 config.yaml 读取（该文件已 gitignore，不会进版本库）：
-#      cockpit:
-#        admin_password: "xxxx"
-#        role_passwords: {boss: "...", warehouse: "...", ...}
-#   首次运行若 config.yaml 里没有口令，会自动生成一套随机口令并写回 config.yaml，
-#   同时在终端打印出来——请自行分发给对应同事。
-#
-# ⚠️ 绝不要把口令写死在本文件里：本仓库是公开的，写死等于公开发布口令。
-def _load_pw():
-    """从 config.yaml 读口令；没有则随机生成并写回。返回 (admin, {role: pw})。"""
-    import random as _rnd
-    import string as _str
-    from adapters.factory import load_config, _SKILL_DIR
-
-    _ROLES = ("boss", "warehouse", "purchase", "production", "sales")
-    cfg = load_config() or {}
-    cp = cfg.get("cockpit") or {}
-    admin = (cp.get("admin_password") or "").strip()
-    roles = dict(cp.get("role_passwords") or {})
-
-    # 强口令：大小写字母+数字，10 位，避免 "CK8888" 这种可猜格式
-    alphabet = _str.ascii_letters + _str.digits
-    def _gen():
-        return "".join(_rnd.SystemRandom().choice(alphabet) for _ in range(10))
-
-    missing = (not admin) or any(not (roles.get(r) or "").strip() for r in _ROLES)
-    if not missing:
-        return admin, {r: roles[r] for r in _ROLES}
-
-    admin = admin or _gen()
-    for r in _ROLES:
-        if not (roles.get(r) or "").strip():
-            roles[r] = _gen()
-
-    # 写回 config.yaml（不存在则以 example 为基础创建）
-    cfg_path = os.path.join(_SKILL_DIR, "config.yaml")
-    try:
-        block = ["", "# 驾驶舱访问口令（自动生成，可自行修改；本文件已 gitignore）",
-                 "cockpit:", '  admin_password: "%s"' % admin, "  role_passwords:"]
-        block += ['    %s: "%s"' % (r, roles[r]) for r in _ROLES]
-        text = ""
-        if os.path.exists(cfg_path):
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                text = f.read()
-        if "cockpit:" in text:
-            # 已有 cockpit 段但字段不全 —— 不自动改写，避免破坏用户手写内容
-            print("[warn] config.yaml 的 cockpit 段口令不完整，本次使用临时随机口令；"
-                  "请手动补全后重跑。", file=sys.stderr)
-            return admin, {r: roles[r] for r in _ROLES}
-        with open(cfg_path, "a" if text else "w", encoding="utf-8") as f:
-            if not text:
-                f.write("backend: local\n")
-            f.write("\n".join(block) + "\n")
-        print("[口令] 已生成新的驾驶舱口令并写入 config.yaml：", file=sys.stderr)
-        print("       管理员 %s" % admin, file=sys.stderr)
-        for r in _ROLES:
-            print("       %-10s %s" % (r, roles[r]), file=sys.stderr)
-        print("       请分发给对应同事；改口令请编辑 config.yaml 后重跑本脚本。", file=sys.stderr)
-    except Exception as e:
-        print("[warn] 口令写回 config.yaml 失败（%s），本次使用临时随机口令。" % e, file=sys.stderr)
-    return admin, {r: roles[r] for r in _ROLES}
-
-
-ADMIN_PASSWORD, ROLE_PASSWORDS = _load_pw()
-
-# 构建期：把口令表编码为 base64 再写入源码（开发者选项里不再是一眼明文）
-import base64 as _b64
-_PW_MAP = {"admin": ADMIN_PASSWORD, **ROLE_PASSWORDS}
-PW_BLOB = _b64.b64encode(json.dumps(_PW_MAP, ensure_ascii=False).encode("utf-8")).decode("ascii")
-
-
-HTML = r"""<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -1555,68 +319,6 @@ td{color:var(--txt)}
 .act .pri{flex:0 0 auto;font-size:11px;font-weight:600;padding:2.5px 10px;border-radius:6px;margin-top:1px;white-space:nowrap}
 .act .tx{flex:1;font-size:13.5px;line-height:1.55}
 
-/* ══ 项目矩阵：思维导图 ══ */
-.mm-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
-.mm-tab{border:1px solid var(--btn-line);background:var(--btn-bg);color:var(--btn-ink);border-radius:8px;
-  padding:5px 12px;font-size:13px;cursor:pointer;transition:background .15s,border-color .15s}
-.mm-tab:hover{background:var(--btn-bg-hover)}
-.mm-tab.on{background:var(--selbg);border-color:color-mix(in srgb,var(--primary) 40%,var(--btn-line));
-  color:var(--primary);font-weight:600}
-.mm-tab .ct{opacity:.6;font-size:11px;margin-left:3px;font-weight:400}
-.mm-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
-.mm-bar .tf-input{max-width:210px;min-width:130px}
-.mm-fb{border:1px solid var(--btn-line);background:var(--btn-bg);color:var(--btn-ink);border-radius:7px;
-  padding:4px 10px;font-size:12px;cursor:pointer}
-.mm-fb:hover{background:var(--btn-bg-hover)}
-.mm-fb:focus-visible{outline:none;box-shadow:var(--focus-ring)}
-.mm-stage{overflow:auto;max-height:600px;border:1px solid var(--line);border-radius:10px;background:var(--subbg)}
-.mm-stage svg{display:block}
-.mm-link{fill:none;stroke:var(--bd);stroke-width:1.4}
-.mm-node{cursor:pointer}
-.mm-node rect{transition:filter .15s}
-.mm-node:hover rect{filter:brightness(1.07)}
-.mm-node text{font-size:12px;pointer-events:none;dominant-baseline:middle}
-.mm-node.mm-hit rect{stroke:var(--amber);stroke-width:2.2}
-.mm-node.mm-hit text{font-weight:700}
-.mm-tg{fill:var(--card);stroke:var(--bd);stroke-width:1}
-.mm-tg-t{font-size:11px;fill:var(--sub);pointer-events:none;dominant-baseline:middle}
-
-/* ══ 项目矩阵：应收口径差异说明（表内「待收」vs 看板「应收」）══ */
-.recv-diff{margin:10px 0 2px;border:1px solid color-mix(in srgb,var(--amber) 30%,var(--line));
-  border-radius:10px;background:color-mix(in srgb,var(--amber) 7%,transparent);overflow:hidden}
-.recv-diff>summary{cursor:pointer;padding:9px 13px;font-size:12.5px;line-height:1.65;color:var(--ink);
-  list-style:none;display:block}
-.recv-diff>summary::-webkit-details-marker{display:none}
-.recv-diff>summary::after{content:" ▾";color:var(--sub);font-size:11px}
-.recv-diff[open]>summary::after{content:" ▴"}
-.recv-diff>summary b{color:var(--amber);font-variant-numeric:tabular-nums}
-.rd-body{padding:0 13px 11px}
-.rd-p{margin:6px 0;font-size:12.5px;line-height:1.7;color:var(--sub)}
-.rd-p b{color:var(--ink)}
-.rd-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
-.rd-tbl th,.rd-tbl td{padding:6px 9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
-.rd-tbl th{font-size:11.5px;color:var(--sub);font-weight:600;background:var(--subbg2)}
-.rd-tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
-.rd-tbl .rd-why{white-space:normal;color:var(--sub);min-width:220px}
-
-/* ══ 项目矩阵：状态标签（项目/生产计划的真实取值）══ */
-.pl{display:inline-block;padding:2.5px 10px;border-radius:6px;font-size:11.5px;font-weight:600;
-  white-space:nowrap;border:1px solid var(--line);background:var(--subbg2);color:var(--sub);line-height:1.5}
-.pl-已交付{background:color-mix(in srgb,var(--green) 12%,transparent);color:var(--green);
-  border-color:color-mix(in srgb,var(--green) 25%,transparent)}
-.pl-计划中{background:color-mix(in srgb,var(--amber) 12%,transparent);color:var(--amber);
-  border-color:color-mix(in srgb,var(--amber) 25%,transparent)}
-.pl-暂放,.pl-暂停{background:color-mix(in srgb,var(--red) 12%,transparent);color:var(--red);
-  border-color:color-mix(in srgb,var(--red) 25%,transparent)}
-.pl-备料中,.pl-改造中{background:color-mix(in srgb,var(--amber) 12%,transparent);color:var(--amber);
-  border-color:color-mix(in srgb,var(--amber) 25%,transparent)}
-.pl-组装{background:color-mix(in srgb,var(--blue) 12%,transparent);color:var(--blue);
-  border-color:color-mix(in srgb,var(--blue) 25%,transparent)}
-.pl-库存核对{background:color-mix(in srgb,var(--purple) 12%,transparent);color:var(--purple);
-  border-color:color-mix(in srgb,var(--purple) 25%,transparent)}
-.pl-进行中{background:color-mix(in srgb,var(--blue) 12%,transparent);color:var(--blue);
-  border-color:color-mix(in srgb,var(--blue) 25%,transparent)}
-
 /* ══ 甘特图 ══ */
 .gantt-wrap{overflow-x:auto}
 .gantt{position:relative;min-width:820px;padding-top:22px}
@@ -1639,10 +341,6 @@ td{color:var(--txt)}
   color:#fff;font-size:10.5px;font-weight:600;cursor:pointer;transition:filter .15s,transform .15s}
 .gantt-bar:hover{filter:brightness(1.12);transform:translateY(-1px);box-shadow:var(--shadow-md);z-index:5}
 .gantt-bar.done{background:var(--green)} .gantt-bar.overdue{background:var(--red)} .gantt-bar.run{background:var(--primary)}
-/* 未填「合同交期」：灰底虚线，明确区别于真实排期条，表示「待补交期」而非「暂无计划」 */
-.gantt-bar.pend{background:color-mix(in srgb,var(--sub) 22%,transparent);border:1px dashed color-mix(in srgb,var(--sub) 55%,transparent);
-  color:var(--sub)} .gantt-bar.pend .gantt-prog{background:color-mix(in srgb,var(--sub) 30%,transparent)}
-.gantt-row[data-state="pend"] .gantt-label{color:var(--sub)}
 .gantt-prog{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.32)}
 .gantt-cap{position:relative;padding:0 6px;white-space:nowrap}
 .gantt-today{position:absolute;top:0;bottom:0;width:2px;background:var(--red);z-index:2}
@@ -1866,15 +564,15 @@ table tr.hl td{background:var(--selbg)}
 <div class="wrap">
   <header class="top">
     <span class="demo-flag" id="demoFlag"></span>
-    <h1>__TITLE_ICON__ 生产 · 项目管理驾驶舱</h1>
+    <h1><svg class="svg-ic" width="24" height="24" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg> 生产 · 项目管理驾驶舱</h1>
     <div class="meta" id="metaLine"></div>
     <div class="toolbar">
-      <button class="btn" id="btnTheme" title="切换主题：自动 / 暗色 / 亮色">__IC_THEME__ 主题：自动</button>
-      <button class="btn" id="btnExport">__IC_DOWNLOAD__ 导出分析JSON</button>
-      <button class="btn" id="btnImport">__IC_UPLOAD__ 导入数据快照</button>
-      <button class="btn btn-sync" id="btnAnalyze">__IC_ANALYZE__ 分析数据（复制发我）</button>
-      <button class="btn" id="btnRefresh">__IC_REFRESH__ 重新生成说明</button>
-      <button class="btn btn-sync" id="btnSync">__IC_SYNC__ 同步状况</button>
+      <button class="btn" id="btnTheme" title="切换主题：自动 / 暗色 / 亮色"><svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg> 主题：自动</button>
+      <button class="btn" id="btnExport"><svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M4 20h16"/></svg> 导出分析JSON</button>
+      <button class="btn" id="btnImport"><svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M7 13l5-5 5 5"/><path d="M4 4h16"/></svg> 导入数据快照</button>
+      <button class="btn btn-sync" id="btnAnalyze"><svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg> 分析数据（复制发我）</button>
+      <button class="btn" id="btnRefresh"><svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg> 重新生成说明</button>
+      <button class="btn btn-sync" id="btnSync"><svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-8-5"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 8 5"/><path d="M21 4v5h-5"/><path d="M3 20v-5h5"/></svg> 同步状况</button>
       <input type="file" id="fileInput" accept="application/json" style="display:none">
       <span class="sync-badge" id="syncBadge"></span>
     </div>
@@ -1887,7 +585,7 @@ table tr.hl td{background:var(--selbg)}
 </div>
 
 <script>
-let MODEL = __MODEL__;
+let MODEL = {"snapshot": "2026-09-14", "isDemo": false, "synced_at": "2026-09-13 18:55:28", "base_name": "生产", "partdb_at": "2026-09-13 18:55", "kpi": {"projects": 31, "active": 0, "planned": 0, "done": 0, "contract": 2527487.0, "received": 1796742.0, "receivable": 730745.0, "cost": 719989.81, "ledger_cost": 545188.89, "unit_cost": 1418.52, "exec_rate": 71.1, "profit": 1807497.19, "margin": 71.5, "ontime_rate": null, "purchase_overdue": 0, "wip": 34, "res_load": null, "res_over": 0, "res_conflict": 0, "labor_cost": null, "partdb": true, "bom_shortage": 5}, "projects": [{"name": "云南天奥（智环）", "status": "58668", "contract": 193000.0, "received": 183350.0, "receivable": 9650.0, "due": "2026-05-07T00:00:00+08:00"}, {"name": "郑州云峰（振道）", "status": "58668", "contract": 116450.0, "received": 58225.0, "receivable": 58225.0, "due": "2026-04-21T00:00:00+08:00"}, {"name": "天工微能（振道）", "status": "58668", "contract": 2760.0, "received": 0.0, "receivable": 2760.0, "due": "2026-05-12T00:00:00+08:00"}, {"name": "天工微能（振道）", "status": "58668", "contract": 3500.0, "received": 0.0, "receivable": 3500.0, "due": "2026-05-13T00:00:00+08:00"}, {"name": "动联防爆+3C认证（振道）", "status": "58668", "contract": 4045.0, "received": 0.0, "receivable": 4045.0, "due": "2026-05-29T00:00:00+08:00"}, {"name": "合为智能（智环）", "status": "58668", "contract": 141500.0, "received": 141500.0, "receivable": 0.0, "due": null}, {"name": "北天通讯（振道）", "status": "58668", "contract": 2706.0, "received": 2706.0, "receivable": 0.0, "due": "2026-05-08T00:00:00+08:00"}, {"name": "美迪  周申杰", "status": "58668", "contract": 0.0, "received": 0.0, "receivable": 0.0, "due": null}, {"name": "柳工 露天矿山 借测", "status": "58668", "contract": 0.0, "received": 0.0, "receivable": 0.0, "due": null}, {"name": "慧寻", "status": "58668", "contract": 2300.0, "received": 2300.0, "receivable": 0.0, "due": "2026-06-12T00:00:00+08:00"}, {"name": "昊想科技UWB工卡及定位系统采购", "status": "58668", "contract": 40000.0, "received": 40000.0, "receivable": 0.0, "due": "2026-06-19T00:00:00+08:00"}, {"name": "大学（禾木）", "status": "58668", "contract": 123000.0, "received": 80000.0, "receivable": 43000.0, "due": "2026-07-20T00:00:00+08:00"}, {"name": "郑州云峰", "status": "996177", "contract": 334800.0, "received": 301320.0, "receivable": 33480.0, "due": "2026-08-21T00:00:00+08:00"}, {"name": "先锋露天煤矿", "status": "58668", "contract": 0.0, "received": 0.0, "receivable": 0.0, "due": "2026-07-31T00:00:00+08:00"}, {"name": "枢极", "status": "58668", "contract": 0.0, "received": 0.0, "receivable": 0.0, "due": null}, {"name": "汇撰", "status": "996177", "contract": 165000.0, "received": 132000.0, "receivable": 33000.0, "due": "2026-08-24T00:00:00+08:00"}, {"name": "动联（暂放，无UWB芯片）9月中旬继续", "status": "996177", "contract": 65600.0, "received": 65600.0, "receivable": 0.0, "due": "2026-07-20T00:00:00+08:00"}, {"name": "北京优波", "status": "58668", "contract": 183300.0, "received": 128310.0, "receivable": 54990.0, "due": "2026-08-27T00:00:00+08:00"}, {"name": "动联-信标+网关", "status": "58668", "contract": 62600.0, "received": 62600.0, "receivable": 0.0, "due": "2026-08-09T00:00:00+08:00"}, {"name": "动联=新疆人员定位项目", "status": "844154", "contract": 302000.0, "received": 211400.0, "receivable": 90600.0, "due": "2026-08-17T00:00:00+08:00"}, {"name": "动联-UWB信标（HI-HT-CG-2026081901）", "status": "58668", "contract": 40500.0, "received": 28350.0, "receivable": 12150.0, "due": "2026-08-26T00:00:00+08:00"}, {"name": "动联-人员定位系统（DW260715007）", "status": "58668", "contract": 3186.0, "received": 3186.0, "receivable": 0.0, "due": null}, {"name": "上海汇撰-智能发卡充电柜及定位卡", "status": "996177", "contract": 165000.0, "received": 132000.0, "receivable": 33000.0, "due": "2026-09-24T00:00:00+08:00"}, {"name": "上海汇撰-蓝牙信标", "status": "58668", "contract": 17750.0, "received": 14200.0, "receivable": 3550.0, "due": "2026-08-31T00:00:00+08:00"}, {"name": "动联（山东）-4G小卡全功能", "status": "58668", "contract": 400.0, "received": 400.0, "receivable": 0.0, "due": "2026-09-01T00:00:00+08:00"}, {"name": "重庆智石小卡50张（4g+rtk+蓝牙）", "status": "996177", "contract": 7500.0, "received": 0.0, "receivable": 7500.0, "due": "2026-10-13T00:00:00+08:00"}, {"name": "重庆智石-4G+RTK小卡（400张）", "status": "996177", "contract": 73600.0, "received": 0.0, "receivable": 73600.0, "due": "2026-10-14T00:00:00+08:00"}, {"name": "微能8张VDU1530工卡", "status": "58668", "contract": 1040.0, "received": 0.0, "receivable": 1040.0, "due": "2026-09-09T00:00:00+08:00"}, {"name": "天工测控400张VDU1530工卡", "status": "996177", "contract": 108000.0, "received": 0.0, "receivable": 108000.0, "due": "2026-09-25T00:00:00+08:00"}, {"name": "上海枢极-人员定位系统", "status": "996177", "contract": 241350.0, "received": 120675.0, "receivable": 120675.0, "due": "2026-10-02T00:00:00+08:00"}, {"name": "动联（山东）-UWB定位工卡及信标", "status": "996177", "contract": 126600.0, "received": 88620.0, "receivable": 37980.0, "due": "2026-09-30T00:00:00+08:00"}], "wip": [{"product": "4G小卡无UWB-v3.1版本", "qty": 1110.0, "stage": "673602", "status": "444064", "start": "2026-04-03T00:00:00+08:00", "due": "2026-05-07T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "U1P PCBA", "qty": 300.0, "stage": "673602", "status": "444064", "start": "2026-04-09T00:00:00+08:00", "due": "2026-04-13T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "UWB信标", "qty": 195.0, "stage": "673602", "status": "444064", "start": "2026-03-17T00:00:00+08:00", "due": "2026-04-21T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "2张全功能大卡+PA", "qty": 2.0, "stage": "673602", "status": "444064", "start": "2026-04-29T00:00:00+08:00", "due": "2026-05-12T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "20片4G小卡4.0版本", "qty": 20.0, "stage": "673602", "status": "444064", "start": "2026-05-13T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "30套小卡加PA+P1", "qty": 30.0, "stage": "673602", "status": "444064", "start": "2026-05-19T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "3个UWB信标+10组电池", "qty": 3.0, "stage": "673602", "status": "444064", "start": "2026-05-29T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "物联网卡升级", "qty": 33.0, "stage": "673602", "status": "444064", "start": "2026-05-07T00:00:00+08:00", "due": "2026-05-08T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "4G大卡蓝牙双频RTK版本", "qty": 10.0, "stage": "673602", "status": "444064", "start": "2026-06-07T00:00:00+08:00", "due": "2026-06-26T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "UWB工卡\n", "qty": 25.0, "stage": "994889", "status": "444064", "start": "2026-06-12T00:00:00+08:00", "due": "2026-06-19T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "UWB基站\n", "qty": 16.0, "stage": "673602", "status": "444064", "start": "2026-06-12T00:00:00+08:00", "due": "2026-06-19T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "UWB信标", "qty": 24.0, "stage": "994889", "status": "744328", "start": "2026-07-13T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "蓝牙定位信标", "qty": 10.0, "stage": "673602", "status": "444064", "start": "2026-07-13T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "窄带大卡蓝牙/UWB/北斗", "qty": 4.0, "stage": "673602", "status": "444064", "start": "2026-07-13T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "防爆窄带通信基站", "qty": 1.0, "stage": "673602", "status": "444064", "start": "2026-07-13T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "27寸壁挂ARM一体机", "qty": 1.0, "stage": "673602", "status": "444064", "start": "2026-07-13T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "4G大卡无UWB-煤矿", "qty": 348.0, "stage": "673602", "status": "444064", "start": "2026-07-13T00:00:00+08:00", "due": "2026-07-31T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "100口发卡机", "qty": 2.0, "stage": "673602", "status": "444064", "start": "2026-07-13T00:00:00+08:00", "due": "2026-07-31T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "500对讲机", "qty": 500.0, "stage": "673602", "status": "444064", "start": "2026-07-13T00:00:00+08:00", "due": "2026-07-31T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "动联-48pcs-4G小卡UWB", "qty": 48.0, "stage": "673602", "status": "444064", "start": "2026-07-13T00:00:00+08:00", "due": "2026-07-20T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "UWB信标定制", "qty": 112.0, "stage": "673602", "status": "444064", "start": "2026-07-13T00:00:00+08:00", "due": "2026-07-20T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "郑州云峰-4GUWB小卡", "qty": 1000.0, "stage": "604173", "status": "744328", "start": "2026-08-16T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "优波小卡60张4G小卡全功能", "qty": 60.0, "stage": "673602", "status": "444064", "start": "2026-07-25T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "蓝牙信标", "qty": 1500.0, "stage": "673602", "status": "444064", "start": "2026-07-29T00:00:00+08:00", "due": "2026-09-01T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "AOA基站", "qty": 1.0, "stage": "77766", "status": "565182", "start": "2026-07-13T00:00:00+08:00", "due": "2026-07-20T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "UWB信标 ZD-ZT2 ×136；UWB网关 ×2", "qty": 138.0, "stage": "673602", "status": "444064", "start": "2026-07-29T00:00:00+08:00", "due": "2026-08-09T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "100口发卡机5", "qty": 5.0, "stage": "994889", "status": "744328", "start": "2026-08-17T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "人员定位大卡（窄带双频RTK版本）ZD-XD1", "qty": 300.0, "stage": "994889", "status": "744328", "start": "2026-08-20T00:00:00+08:00", "due": "2026-08-24T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "人员定位卡（小卡，北斗RTX蓝牙版本）", "qty": 500.0, "stage": "106835", "status": "744328", "start": "2026-08-31T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "智能人脸识别发卡充电柜（100口，带身份证模块）", "qty": 5.0, "stage": "106835", "status": "744328", "start": "2026-08-31T00:00:00+08:00", "due": null, "remain": null, "overdue": false}, {"product": "蓝牙定位信标 ZD-ZT1", "qty": 355.0, "stage": "673602", "status": "444064", "start": "2026-08-31T00:00:00+08:00", "due": "2026-09-01T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "星道3号定位卡（4G+RTK+蓝牙）", "qty": 50.0, "stage": "994889", "status": "744328", "start": "2026-09-02T00:00:00+08:00", "due": "2026-10-13T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "4G+RTK小卡（ZD-XD3）", "qty": 400.0, "stage": "106835", "status": "744328", "start": "2026-09-02T00:00:00+08:00", "due": "2026-10-14T00:00:00+08:00", "remain": null, "overdue": false}, {"product": "融合定位工卡 VDU1530（UWB+蓝牙+窄带，汉高固件）", "qty": 400.0, "stage": "106835", "status": "744328", "start": "2026-09-10T00:00:00+08:00", "due": "2026-09-25T00:00:00+08:00", "remain": null, "overdue": false}], "time": {"ontime_rate": null, "ontime": 0, "dated": 0, "total": 34, "avg_cycle": 28.3, "cycle_list": [{"product": "4G小卡无UWB-v3.1版本", "days": 66}, {"product": "U1P PCBA", "days": 16}, {"product": "UWB信标", "days": 39}, {"product": "2张全功能大卡+PA", "days": 29}, {"product": "20片4G小卡4.0版本", "days": 23}, {"product": "30套小卡加PA+P1", "days": 28}, {"product": "3个UWB信标+10组电池", "days": 94}, {"product": "物联网卡升级", "days": 6}, {"product": "4G大卡蓝牙双频RTK版本", "days": 9}, {"product": "UWB工卡\n", "days": 24}, {"product": "UWB基站\n", "days": 24}, {"product": "UWB信标", "days": 49}, {"product": "蓝牙定位信标", "days": 16}, {"product": "窄带大卡蓝牙/UWB/北斗", "days": 16}, {"product": "防爆窄带通信基站", "days": 16}, {"product": "27寸壁挂ARM一体机", "days": 16}, {"product": "4G大卡无UWB-煤矿", "days": 28}, {"product": "100口发卡机", "days": 49}, {"product": "500对讲机", "days": 49}, {"product": "动联-48pcs-4G小卡UWB", "days": 24}, {"product": "UWB信标定制", "days": 24}, {"product": "郑州云峰-4GUWB小卡", "days": 16}, {"product": "优波小卡60张4G小卡全功能", "days": 37}, {"product": "蓝牙信标", "days": 36}, {"product": "AOA基站", "days": 51}, {"product": "UWB信标 ZD-ZT2 ×136；UWB网关 ×2", "days": 33}, {"product": "100口发卡机5", "days": 16}, {"product": "人员定位大卡（窄带双频RTK版本）ZD-XD1", "days": 11}, {"product": "蓝牙定位信标 ZD-ZT1", "days": 3}, {"product": "4G+RTK小卡（ZD-XD3）", "days": 1}], "stage_dist": {"673602": 23, "994889": 5, "604173": 1, "77766": 1, "106835": 4}, "flow_dist": {"673602": 23, "994889": 5, "604173": 1, "77766": 1, "106835": 4}}, "cost": {"contract": 2527487.0, "cost": 719989.81, "ledger_cost": 545188.89, "unit_cost": 1418.52, "profit": 1807497.19, "margin": 71.5, "budget_margin": 30.0, "category": [{"name": "成品", "value": 277699.91}, {"name": "IC", "value": 204887.27}, {"name": "组装料", "value": 115696.67}, {"name": "PCBA", "value": 68936.0}, {"name": "PCB", "value": 26286.56}, {"name": "贴片", "value": 21378.4}, {"name": "外壳", "value": 5050.0}, {"name": "组装", "value": 55.0}], "receivable_list": [{"name": "郑州云峰（振道）", "status": "58668", "contract": 116450.0, "received": 58225.0, "receivable": 58225.0, "due": "2026-04-21T00:00:00+08:00"}, {"name": "云南天奥（智环）", "status": "58668", "contract": 193000.0, "received": 183350.0, "receivable": 9650.0, "due": "2026-05-07T00:00:00+08:00"}, {"name": "天工微能（振道）", "status": "58668", "contract": 2760.0, "received": 0.0, "receivable": 2760.0, "due": "2026-05-12T00:00:00+08:00"}, {"name": "天工微能（振道）", "status": "58668", "contract": 3500.0, "received": 0.0, "receivable": 3500.0, "due": "2026-05-13T00:00:00+08:00"}, {"name": "动联防爆+3C认证（振道）", "status": "58668", "contract": 4045.0, "received": 0.0, "receivable": 4045.0, "due": "2026-05-29T00:00:00+08:00"}, {"name": "大学（禾木）", "status": "58668", "contract": 123000.0, "received": 80000.0, "receivable": 43000.0, "due": "2026-07-20T00:00:00+08:00"}, {"name": "动联=新疆人员定位项目", "status": "844154", "contract": 302000.0, "received": 211400.0, "receivable": 90600.0, "due": "2026-08-17T00:00:00+08:00"}, {"name": "郑州云峰", "status": "996177", "contract": 334800.0, "received": 301320.0, "receivable": 33480.0, "due": "2026-08-21T00:00:00+08:00"}, {"name": "汇撰", "status": "996177", "contract": 165000.0, "received": 132000.0, "receivable": 33000.0, "due": "2026-08-24T00:00:00+08:00"}, {"name": "动联-UWB信标（HI-HT-CG-2026081901）", "status": "58668", "contract": 40500.0, "received": 28350.0, "receivable": 12150.0, "due": "2026-08-26T00:00:00+08:00"}, {"name": "北京优波", "status": "58668", "contract": 183300.0, "received": 128310.0, "receivable": 54990.0, "due": "2026-08-27T00:00:00+08:00"}, {"name": "上海汇撰-蓝牙信标", "status": "58668", "contract": 17750.0, "received": 14200.0, "receivable": 3550.0, "due": "2026-08-31T00:00:00+08:00"}, {"name": "微能8张VDU1530工卡", "status": "58668", "contract": 1040.0, "received": 0.0, "receivable": 1040.0, "due": "2026-09-09T00:00:00+08:00"}, {"name": "上海汇撰-智能发卡充电柜及定位卡", "status": "996177", "contract": 165000.0, "received": 132000.0, "receivable": 33000.0, "due": "2026-09-24T00:00:00+08:00"}, {"name": "天工测控400张VDU1530工卡", "status": "996177", "contract": 108000.0, "received": 0.0, "receivable": 108000.0, "due": "2026-09-25T00:00:00+08:00"}, {"name": "动联（山东）-UWB定位工卡及信标", "status": "996177", "contract": 126600.0, "received": 88620.0, "receivable": 37980.0, "due": "2026-09-30T00:00:00+08:00"}, {"name": "上海枢极-人员定位系统", "status": "996177", "contract": 241350.0, "received": 120675.0, "receivable": 120675.0, "due": "2026-10-02T00:00:00+08:00"}, {"name": "重庆智石小卡50张（4g+rtk+蓝牙）", "status": "996177", "contract": 7500.0, "received": 0.0, "receivable": 7500.0, "due": "2026-10-13T00:00:00+08:00"}, {"name": "重庆智石-4G+RTK小卡（400张）", "status": "996177", "contract": 73600.0, "received": 0.0, "receivable": 73600.0, "due": "2026-10-14T00:00:00+08:00"}], "cashflow": [{"bucket": "逾期", "in": 0.0, "out": 0.0, "net": 0.0}, {"bucket": "30", "in": 0.0, "out": 0.0, "net": 0.0}, {"bucket": "60", "in": 0.0, "out": 0.0, "net": 0.0}, {"bucket": "90", "in": 0.0, "out": 0.0, "net": 0.0}]}, "quality": {"repair_rate": 8.65, "shipped": 104, "repair_total": 9, "smt_yield": 36.6, "asm_yield": null, "repair_overdue": 0, "repair_avg": 0, "repair_list": [{"proj": "北天通讯（振道）", "item": "​\n\n| 产品名称   | 数量 | 编号                   |\n| ------ | -- | -------------------- |\n| 移动物联网卡 | 7  | 898604691025C0144949 |\n|        |    | 898604691025C0144948 |\n|        |    | 898604691025C0144947 |\n|        |    | 898604691025C0144946 |\n|        |    | 898604691025C0144945 |\n|        |    | 898604691025C0144944 |\n|        |    | 898604691025C0144943 |\n|        |    |                      |\n\n​\n", "back": "2026-05-06T00:00:00+08:00", "req": 0, "done": false, "overdue": false}, {"proj": "", "item": "​\n\n| 产品名称 | 数量 | 固件版本 |\n| ---- | -- | ---- |\n| 小卡   | 87 |      |\n|      |    |      |\n\n​\n", "back": null, "req": 0, "done": false, "overdue": false}, {"proj": "美迪  周申杰", "item": "数量未知，已无从考证\n\nSF0217666384206 已返21张\n\n| 产品名称 | 数量 | 固件版本 |\n| ---- | -- | ---- |\n| 大卡   | ？  |      |\n|      |    |      |\n\n​\n", "back": "2026-08-03T00:00:00+08:00", "req": 0, "done": false, "overdue": false}, {"proj": "", "item": "上海汇撰\n\n| 产品名称 | 数量 | 固件版本 |\n| ---- | -- | ---- |\n| 小卡   | 64 |      |\n|      | 4  |      |\n\n![](https://cloud.seatable.cn/workspace/582786/asset/973530ad-ab16-42f5-ae33-b6ce477d7c87/images/2026-08/image-1786699704915.png)\n\n外加64张‘\n\n<img src=\"https://cloud.seatable.cn/workspace/582786/asset/973530ad-ab16-42f5-ae33-b6ce477d7c87/images/2026-08/image-1786699863429.jpg\" alt=\"undefined\" title=\"undefined\" width=\"383\" height=\"681\" />\n", "back": null, "req": 0, "done": false, "overdue": false}, {"proj": "", "item": "莱讯 54张\n\n已反33张JDVC36706515986\n\n| 产品名称 | 数量 | 固件版本 |\n| ---- | -- | ---- |\n| 大卡   | 21 |      |\n|      |    |      |\n\n![](https://cloud.seatable.cn/workspace/582786/asset/973530ad-ab16-42f5-ae33-b6ce477d7c87/images/2026-08/image-1787116667196.png)![](https://cloud.seatable.cn/workspace/582786/asset/973530ad-ab16-42f5-ae33-b6ce477d7c87/images/2026-08/image-1787116680647.png)\n", "back": null, "req": 0, "done": false, "overdue": false}, {"proj": "", "item": "枢极 2张\n\n已反1张 SF0211576786863\n\n| 产品名称      | 数量 | 固件版本 |\n| --------- | -- | ---- |\n| 全功能大卡带气压计 | 1  |      |\n|           |    |      |\n\n​\n", "back": null, "req": 0, "done": false, "overdue": false}, {"proj": "", "item": "| 产品名称 | 数量 | 固件版本 |\n| --- | --- | --- |\n| 大卡 | 3 | 📥待补 |", "back": "2026-09-03T00:00:00+08:00", "req": 0, "done": false, "overdue": false}, {"proj": "", "item": "| 产品名称 | 数量 | 固件版本 |\n| ---- | -- | ---- |\n| 莱卡 | 1 | 📥待补 |", "back": "2026-09-05T00:00:00+08:00", "req": 0, "done": false, "overdue": false}, {"proj": "", "item": "​\n\n| 产品名称 | 数量 | 固件版本 |\n| ---- | -- | ---- |\n|      |    |      |\n|      |    |      |\n\n2026-09-07：\n\n已发8张+一包SIM卡（2张未找到）\n\n2026-09-09：\n\n再发8张\n", "back": null, "req": 0, "done": false, "overdue": false}]}, "supply": {"overdue_list": [], "supplier": [], "inventory_warn": [{"plan": "", "result": "待核对", "time": "2026-04-02T21:00:00+08:00"}, {"plan": "", "result": "待核对", "time": "2026-05-20T16:49:00+08:00"}, {"plan": "", "result": "待核对", "time": "2026-07-16T14:45:00+08:00"}, {"plan": "", "result": "待核对", "time": "2026-09-04T00:00:00+08:00"}, {"plan": "", "result": "待核对", "time": "2026-09-04T00:00:00+08:00"}], "process_count": 15}, "gantt": [], "next_actions": [{"pri": "高", "cat": "wechat", "text": "微信情报待确认 2 条（进度）：在「微信情报台」核对后写入业务表"}, {"pri": "高", "cat": "risk", "text": "风险雷达：20260820-001 人员定位大卡（窄带双频RTK 剩-20天，环节已过最晚开始日（BOM 核对/缺料确认、IC/PCB 采购下单）"}, {"pri": "高", "cat": "risk", "text": "风险雷达：20260817-001 100口发卡机5 剩-20天，环节已过最晚开始日（BOM 核对/缺料确认、IC/PCB 采购下单）"}, {"pri": "高", "cat": "risk", "text": "风险雷达：20260716-001 郑州云峰-4GUWB小卡 剩-23天，环节已过最晚开始日（BOM 核对/缺料确认、IC/PCB 采购下单）"}, {"pri": "高", "cat": "risk", "text": "风险雷达：20260713-006 AOA基站 剩-55天，环节已过最晚开始日（BOM 核对/缺料确认、IC/PCB 采购下单）"}, {"pri": "高", "cat": "risk", "text": "风险雷达：20260706-001 UWB信标 剩-55天，环节已过最晚开始日（BOM 核对/缺料确认、IC/PCB 采购下单）"}, {"pri": "高", "cat": "warehouse", "text": "补料：4G小卡V4.0—全功能 有 5 种物料缺口（2 种零确认库存），尽快下达采购单"}, {"pri": "中", "cat": "sales", "text": "催收应收：最早到期「郑州云峰（振道）」应收 ¥58,225（交期 2026-04-21T00:00:00+08:00）"}, {"pri": "提示", "cat": "production", "text": "产能瓶颈：673602 环节积压 23 个在产计划，建议增配资源或并行处理"}, {"pri": "提示", "cat": "production", "text": "补录组装良品率：当前组装记录均未填，质量维度暂不完整"}, {"pri": "高", "cat": "risk", "text": "风险雷达：4G小卡V4.0—全功能 缺料 5 项（共34件，零库存 2 项）必须立刻下单"}, {"pri": "中", "cat": "wechat", "text": "核对：上海汇撰-蓝牙信标 确认是否该把此 PDF 登记到该项目的合同列"}, {"pri": "中", "cat": "wechat", "text": "核对：上海汇撰-蓝牙信标 确认是否该把此 PDF 登记到该项目的合同列"}], "backfill": {"生产计划": [{"row_id": "YRtPIsKwTEGCbjJqdcE27Q", "name": "4G小卡无UWB-v3.1版本", "计划开始日期": "2026-04-03T00:00:00+08:00", "计划完成日期": "2026-05-07T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "WUk9yW5hTL2youwRONnMgQ", "name": "U1P PCBA", "计划开始日期": "2026-04-09T00:00:00+08:00", "计划完成日期": "2026-04-13T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "RpGDNr_7RxqnlnVkf5IRrg", "name": "UWB信标", "计划开始日期": "2026-03-17T00:00:00+08:00", "计划完成日期": "2026-04-21T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "MqQ6oaLPSfqyBoYJPDonLA", "name": "2张全功能大卡+PA", "计划开始日期": "2026-04-29T00:00:00+08:00", "计划完成日期": "2026-05-12T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "SfYQDeK5QemOVd_fuViDRA", "name": "20片4G小卡4.0版本", "计划开始日期": "2026-05-13T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "FlU5Vy6GQOeArkFn2MmPrw", "name": "30套小卡加PA+P1", "计划开始日期": "2026-05-19T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "CySco7AUQTuVBpmjcOEGDQ", "name": "3个UWB信标+10组电池", "计划开始日期": "2026-05-29T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "UKhXp9rZRYemucxIf6pfLg", "name": "物联网卡升级", "计划开始日期": "2026-05-07T00:00:00+08:00", "计划完成日期": "2026-05-08T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "Aozq5jPNRPeeEmytkdiE8g", "name": "4G大卡蓝牙双频RTK版本", "计划开始日期": "2026-06-07T00:00:00+08:00", "计划完成日期": "2026-06-26T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "RGz7RfryR7-ZKyWR3GFcvA", "name": "UWB工卡\n", "计划开始日期": "2026-06-12T00:00:00+08:00", "计划完成日期": "2026-06-19T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "GP85vjmqRaW8UUnrc8hpQw", "name": "UWB基站\n", "计划开始日期": "2026-06-12T00:00:00+08:00", "计划完成日期": "2026-06-19T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "ZR2sF0qsRn6Hn8T60pPLnA", "name": "UWB信标", "计划开始日期": "2026-07-13T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "YY15JnplTf6gS_mg76e5Kw", "name": "蓝牙定位信标", "计划开始日期": "2026-07-13T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "NpUmSmVjSLCFjnn0zGZkJQ", "name": "窄带大卡蓝牙/UWB/北斗", "计划开始日期": "2026-07-13T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "SbMbCPtATxyPelK03TAeIg", "name": "防爆窄带通信基站", "计划开始日期": "2026-07-13T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "SieK1hg8Td2AHtRPBY4XKg", "name": "27寸壁挂ARM一体机", "计划开始日期": "2026-07-13T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "GQn05kgaToq7h745VGgo6g", "name": "4G大卡无UWB-煤矿", "计划开始日期": "2026-07-13T00:00:00+08:00", "计划完成日期": "2026-07-31T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "Fa6GgnLJQA27_DfmnuVFhQ", "name": "100口发卡机", "计划开始日期": "2026-07-13T00:00:00+08:00", "计划完成日期": "2026-07-31T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "ZOlhncuQQueFzUNr19qxpA", "name": "500对讲机", "计划开始日期": "2026-07-13T00:00:00+08:00", "计划完成日期": "2026-07-31T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "OPzeUptnR9qYNxFyorW_xA", "name": "动联-48pcs-4G小卡UWB", "计划开始日期": "2026-07-13T00:00:00+08:00", "计划完成日期": "2026-07-20T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "GOZm1jdJTV6RfCzUedoPFA", "name": "UWB信标定制", "计划开始日期": "2026-07-13T00:00:00+08:00", "计划完成日期": "2026-07-20T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "ZfBWydjLSzWOXMSgTwnu1w", "name": "郑州云峰-4GUWB小卡", "计划开始日期": "2026-08-16T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "N28HHo2kS7C2UDdGZL526w", "name": "优波小卡60张4G小卡全功能", "计划开始日期": "2026-07-25T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "LwSYysB0T4GG0pT7Y7C9RQ", "name": "蓝牙信标", "计划开始日期": "2026-07-29T00:00:00+08:00", "计划完成日期": "2026-09-01T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "FSdb0XFSQHqQm7XIw3LJzQ", "name": "AOA基站", "计划开始日期": "2026-07-13T00:00:00+08:00", "计划完成日期": "2026-07-20T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "bT71BIAMTZeus6K78PQ_Aw", "name": "UWB信标 ZD-ZT2 ×136；UWB网关 ×2", "计划开始日期": "2026-07-29T00:00:00+08:00", "计划完成日期": "2026-08-09T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "CSmxGY7-Sg-J_QT5nDsUhA", "name": "100口发卡机5", "计划开始日期": "2026-08-17T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "e3AHB5P6Ryig1LG7jujkTg", "name": "人员定位大卡（窄带双频RTK版本）ZD-XD1", "计划开始日期": "2026-08-20T00:00:00+08:00", "计划完成日期": "2026-08-24T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "YFsP0-AYRtKfUD2ko1uRrQ", "name": "人员定位卡（小卡，北斗RTX蓝牙版本）", "计划开始日期": "2026-08-31T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "ar1fCundRlG3lIIfxPNROQ", "name": "智能人脸识别发卡充电柜（100口，带身份证模块）", "计划开始日期": "2026-08-31T00:00:00+08:00", "计划完成日期": "", "实际完成日期": "", "放行状态": ""}, {"row_id": "AWRfQB96S9uo75r7RMgpmA", "name": "蓝牙定位信标 ZD-ZT1", "计划开始日期": "2026-08-31T00:00:00+08:00", "计划完成日期": "2026-09-01T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "Er3gNa90TpW_S7MzBuaANw", "name": "星道3号定位卡（4G+RTK+蓝牙）", "计划开始日期": "2026-09-02T00:00:00+08:00", "计划完成日期": "2026-10-13T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "PDqJQl3gTAC55OLwjbMZRw", "name": "4G+RTK小卡（ZD-XD3）", "计划开始日期": "2026-09-02T00:00:00+08:00", "计划完成日期": "2026-10-14T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}, {"row_id": "Z6eb72DVQPyNshhnYKYEGQ", "name": "融合定位工卡 VDU1530（UWB+蓝牙+窄带，汉高固件）", "计划开始日期": "2026-09-10T00:00:00+08:00", "计划完成日期": "2026-09-25T00:00:00+08:00", "实际完成日期": "", "放行状态": ""}], "组装记录": [{"row_id": "VHlt0c21QPu89FAALnKtZA", "name": "20260507-001", "组装良品率": ""}, {"row_id": "RuRdMnZHQ66kx_nY8p_dtA", "name": "20260805-001", "组装良品率": ""}, {"row_id": "SF_VmVFySwS80JaER5gyKg", "name": "20260826-001", "组装良品率": ""}, {"row_id": "bghGhMNnTJGwCSgJDlY5sQ", "name": "20260826-002", "组装良品率": ""}, {"row_id": "RDdDOAKjSOuGmEdGz6LWQQ", "name": "20260826-003", "组装良品率": ""}, {"row_id": "LZKTtFabQvO35oe6djxbUw", "name": "20260826-004", "组装良品率": ""}]}, "resource": null, "partdb": {"source": "PartDB", "generated_at": "2026-09-13 18:55", "part_count": 380, "zero_confirmed": 39, "inventory_warn": [], "bom": {"project_id": 22, "project_name": "4G小卡V4.0—全功能", "qty": 10, "bom_count": 77, "shortage": [{"name": "SAFFB1G56KB0F0A", "ipn": "P0154", "footprint": "", "qty_per": 1, "need": 10, "confirmed": 0, "gap": 10, "price": null, "amount": null, "risk": ["无价", "零库存"]}, {"name": "SW8112QF", "ipn": "P0327", "footprint": "QFN-16", "qty_per": 1, "need": 10, "confirmed": 0, "gap": 10, "price": 12.0, "amount": 12.0, "risk": ["零库存"]}, {"name": "ANT_UWB", "ipn": "P0027", "footprint": "", "qty_per": 1, "need": 10, "confirmed": 3, "gap": 7, "price": 1.75, "amount": 1.75, "risk": ["库存不足"]}, {"name": "GLF71311", "ipn": "P0336", "footprint": "", "qty_per": 1, "need": 10, "confirmed": 5, "gap": 5, "price": 1.7, "amount": 1.7, "risk": ["库存不足"]}, {"name": "UWB-P1", "ipn": "P0059", "footprint": "", "qty_per": 1, "need": 10, "confirmed": 8, "gap": 2, "price": 98.0, "amount": 98.0, "risk": ["库存不足"]}], "single_set_cost": 164.79, "priced_count": 73, "unpriced_count": 4}}, "wechat": {"pending": [{"事件编号": "WX20260911-001", "日期": "2026-09-10", "时间": "20:17", "来源群": "智环未来生产", "发送人": "Zion小助手", "分类": "进度", "原文": "除了18×18的GPS天线。其他尽量明天下午送到贴片厂。", "意图": "{\"op\":\"log\",\"note\":\"内部物流指令：除18×18 GPS天线外，其余物料明日下午前送达贴片厂\"}", "状态": "待确认", "确认时间": "", "写入结果": ""}, {"事件编号": "WX20260911-002", "日期": "2026-09-10", "时间": "20:35", "来源群": "智环未来生产", "发送人": "Zion小助手", "分类": "进度", "原文": "两台基站弄好了，测试了都能让工卡进入未知定位。两张工卡，都测了能上限并进入未知定位，现已封壳，今晚胶干后一起寄出。", "意图": "{\"op\":\"log\",\"note\":\"生产进度：2基站+2工卡完成测试并封壳，待胶干后寄出\"}", "状态": "待确认", "确认时间": "", "写入结果": ""}], "pending_count": 2, "today_count": 0, "by_cat": {"进度": 3}, "recent": [{"事件编号": "WX20260911-003", "日期": "2026-09-10", "时间": "21:24", "来源群": "智环未来生产", "发送人": "刘俊良", "分类": "进度", "原文": "SF0217497904366 孙娜，13583126885，山东省济南市高新区凤凰路2116号海信创智谷2号楼701 两个基站，两张工卡。iccid:898604031025C0287778 / 898604031025C0287889", "意图": "{\"op\":\"log\",\"note\":\"发货物流：顺丰SF0217497904366 寄济南孙娜，2基站+2工卡，含2个iccid\"}", "状态": "已确认", "确认时间": "2026-09-11 17:33", "写入结果": "已写入发货清单 row=T0fXH_XXQS61hJ5OTIUoBw（相关项目未关联/类型=销售/单号SF0217497904366）"}, {"事件编号": "WX20260911-002", "日期": "2026-09-10", "时间": "20:35", "来源群": "智环未来生产", "发送人": "Zion小助手", "分类": "进度", "原文": "两台基站弄好了，测试了都能让工卡进入未知定位。两张工卡，都测了能上限并进入未知定位，现已封壳，今晚胶干后一起寄出。", "意图": "{\"op\":\"log\",\"note\":\"生产进度：2基站+2工卡完成测试并封壳，待胶干后寄出\"}", "状态": "待确认", "确认时间": "", "写入结果": ""}, {"事件编号": "WX20260911-001", "日期": "2026-09-10", "时间": "20:17", "来源群": "智环未来生产", "发送人": "Zion小助手", "分类": "进度", "原文": "除了18×18的GPS天线。其他尽量明天下午送到贴片厂。", "意图": "{\"op\":\"log\",\"note\":\"内部物流指令：除18×18 GPS天线外，其余物料明日下午前送达贴片厂\"}", "状态": "待确认", "确认时间": "", "写入结果": ""}]}, "market": {"rows": [{"model": "GNSS 1.57G", "category": "GNSS模块", "buy": "1.85", "buy_date": "2026-04-03", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "2SK3541", "category": "IC", "buy": "15", "buy_date": "2026-05-13", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "BK1662QN324", "category": "IC", "buy": "8.85", "buy_date": "2026-04-07", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "CSM2221-3.3ST25RY", "category": "IC", "buy": "0.18", "buy_date": "2026-08-04", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "FR8018HD", "category": "IC", "buy": "3.1", "buy_date": "2026-04-03", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "GLF71311", "category": "IC", "buy": "51", "buy_date": "2026-05-13", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "LQBP001TA", "category": "IC", "buy": "2", "buy_date": "2026-04-07", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "ML307N-DC 4+4", "category": "IC", "buy": "10.5", "buy_date": "2026-05-30", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "ML307N-DL", "category": "IC", "buy": "10.5", "buy_date": "2026-05-13", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "MQ-MMK003-CH59IPX", "category": "IC", "buy": "80", "buy_date": "2026-07-16", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "MQ-MMK004-CH59CA", "category": "IC", "buy": "80", "buy_date": "2026-07-16", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "NV8645-21", "category": "IC", "buy": "2", "buy_date": "2026-01-18", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "OM6626B_X311", "category": "IC", "buy": "2.95", "buy_date": "2026-08-04", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "RL320001606_B", "category": "IC", "buy": "0.21", "buy_date": "2026-08-04", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "SW0800-8060", "category": "IC", "buy": "1.75", "buy_date": "2026-05-18", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "SW8112QF", "category": "IC", "buy": "12", "buy_date": "2026-05-18", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "0201 100K 1%", "category": "其他", "buy": "80", "buy_date": "2026-09-05", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "0201 100NF X5R 10V 10%", "category": "其他", "buy": "247.5", "buy_date": "2026-09-05", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "0201 1K 1%", "category": "其他", "buy": "80", "buy_date": "2026-09-05", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "0402ESDA-05N", "category": "其他", "buy": "10", "buy_date": "2026-05-13", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "0943G4G", "category": "其他", "buy": "0.39", "buy_date": "2026-04-21", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "26MHz/0.5ppm", "category": "其他", "buy": "47.5", "buy_date": "2026-05-13", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "458*3", "category": "其他", "buy": "2", "buy_date": "2026-08-11", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "B5819S", "category": "其他", "buy": "0.05", "buy_date": "2026-04-24", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "P1", "category": "其他", "buy": "98", "buy_date": "2026-05-18", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "Z3.5", "category": "其他", "buy": "0.2", "buy_date": "2026-04-03", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "Z6.0", "category": "其他", "buy": "0.3", "buy_date": "2026-04-03", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "SMD天线", "category": "天线/顶针", "buy": "35", "buy_date": "2026-09-05", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}, {"model": "Z3.5 PG2.0-3.5-2.5-1.54", "category": "天线/顶针", "buy": "0.2", "buy_date": "2026-04-20", "price": "", "channel": "", "date": "", "lifecycle": "未知", "vs_buy": null, "chg": "", "hist": []}], "alerts": [], "threshold": 10.0, "watch_count": 110, "hist_count": 0}, "commodities": {"rows": [{"name": "黄金", "category": "金属", "basis": "连续", "price": "944.34", "unit": "元/克", "date": "2026-09-14", "source": "新浪期货", "note": "键合金线 / PCB 沉金 / 连接器镀金", "pct": null, "hist": [944.34]}, {"name": "白银", "category": "金属", "basis": "连续", "price": "15675.0", "unit": "元/千克", "date": "2026-09-14", "source": "新浪期货", "note": "导电银浆 / 锡银焊料", "pct": null, "hist": [15675.0]}, {"name": "铜", "category": "金属", "basis": "连续", "price": "108090.0", "unit": "元/吨", "date": "2026-09-14", "source": "新浪期货", "note": "PCB 铜箔 / 线材 / 端子", "pct": null, "hist": [108090.0]}, {"name": "锡", "category": "金属", "basis": "连续", "price": "401580.0", "unit": "元/吨", "date": "2026-09-14", "source": "新浪期货", "note": "锡膏与焊料，SMT 成本敏感项", "pct": null, "hist": [401580.0]}, {"name": "铝", "category": "金属", "basis": "连续", "price": "24005.0", "unit": "元/吨", "date": "2026-09-14", "source": "新浪期货", "note": "外壳 / 散热件", "pct": null, "hist": [24005.0]}, {"name": "镍", "category": "金属", "basis": "连续", "price": "124760.0", "unit": "元/吨", "date": "2026-09-14", "source": "新浪期货", "note": "电池极片 / 不锈钢", "pct": null, "hist": [124760.0]}, {"name": "聚丙烯", "category": "塑料代理", "basis": "连续", "price": "8983.0", "unit": "元/吨", "date": "2026-09-14", "source": "新浪期货", "note": "ABS/PC/PS 上游石化链代理指标", "pct": null, "hist": [8983.0]}, {"name": "聚乙烯", "category": "塑料代理", "basis": "连续", "price": "8655.0", "unit": "元/吨", "date": "2026-09-14", "source": "新浪期货", "note": "LLDPE，上游石化链代理指标", "pct": null, "hist": [8655.0]}, {"name": "PVC", "category": "塑料代理", "basis": "连续", "price": "4949.0", "unit": "元/吨", "date": "2026-09-14", "source": "新浪期货", "note": "线缆护套，上游石化链代理指标", "pct": null, "hist": [4949.0]}], "alerts": [], "threshold": 3.0, "days": 30, "series_count": 9}, "wxmatch": {"pending": [{"核对编号": "WX-M-20260913-002", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "00 蓝牙信标采购合同（盖章版）.pdf", "匹配结果": "收到合同 PDF，项目「上海汇撰-蓝牙信标」合同列为空", "匹配项目": "上海汇撰-蓝牙信标", "建议动作": "确认是否该把此 PDF 登记到该项目的合同列", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-003", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "355个蓝牙信标合同双方盖章版(1).pdf", "匹配结果": "收到合同 PDF，项目「上海汇撰-蓝牙信标」合同列为空", "匹配项目": "上海汇撰-蓝牙信标", "建议动作": "确认是否该把此 PDF 登记到该项目的合同列", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-014", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-08", "信号内容": "采购合同20260825大熊财税企业管理(深圳)有限公司2966.67（差价合同）.pdf", "匹配结果": "供应商 大熊财税企业管理(深圳)有限公司 采购记录在「组装料采购记录」（已到货·下单 2026-08-28）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-015", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "采购订单20260813(7).pdf", "匹配结果": "收到合同 PDF 但匹配不到项目——可能漏立项或客户名不同", "匹配项目": "", "建议动作": "确认归属项目；若新客户需立项", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-016", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "采购订单20260814(1).pdf", "匹配结果": "收到合同 PDF 但匹配不到项目——可能漏立项或客户名不同", "匹配项目": "", "建议动作": "确认归属项目；若新客户需立项", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-017", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "采购订单20260826.pdf", "匹配结果": "收到合同 PDF 但匹配不到项目——可能漏立项或客户名不同", "匹配项目": "", "建议动作": "确认归属项目；若新客户需立项", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-019", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-09", "信号内容": "20260911小卡订单与产能匹配情况.pdf", "匹配结果": "收到合同 PDF 但匹配不到项目——可能漏立项或客户名不同", "匹配项目": "", "建议动作": "确认归属项目；若新客户需立项", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-020", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-09", "信号内容": "PO2026090002-智环_已签章.pdf", "匹配结果": "收到合同 PDF 但匹配不到项目——可能漏立项或客户名不同", "匹配项目": "", "建议动作": "确认归属项目；若新客户需立项", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-022", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-09", "信号内容": "PO2026090043-智环_已签章.pdf", "匹配结果": "收到合同 PDF 但匹配不到项目——可能漏立项或客户名不同", "匹配项目": "", "建议动作": "确认归属项目；若新客户需立项", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-024", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "乐畅-智环购销合同回签(4).pdf", "匹配结果": "供应商 乐畅 采购记录在「成品采购记录」（已下单·下单 2026-08-04）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-025", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "新智法-智环未来采购合同20260904(1).pdf", "匹配结果": "供应商 新智法 采购记录在「IC采购记录」（已到货·下单 2026-04-07）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-027", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "采购合同20260904华远电机3700.pdf", "匹配结果": "供应商 华远电机 采购记录在「IC采购记录」（已到货·下单 2026-04-07）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-028", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "采购合同20260904新智法2200.pdf", "匹配结果": "供应商 新智法 采购记录在「IC采购记录」（已到货·下单 2026-04-07）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-029", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "采购合同20260905-华之安18617.5.pdf", "匹配结果": "供应商 华之安 采购记录在「IC采购记录」（已到货·下单 2026-04-03）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-030", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "采购合同20260905乐畅50000.pdf", "匹配结果": "供应商 乐畅 采购记录在「成品采购记录」（已下单·下单 2026-08-04）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-031", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "采购合同20260905创科华1850.pdf", "匹配结果": "供应商 创科华 采购记录在「IC采购记录」（已到货·下单 2026-04-03）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-032", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "采购合同20260905华之安545.pdf", "匹配结果": "供应商 华之安 采购记录在「IC采购记录」（已到货·下单 2026-04-03）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-033", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "采购合同20260905广州寒武纪电子科技有限公司35.pdf", "匹配结果": "供应商 寒武纪 采购记录在「IC采购记录」（已到货·下单 2026-07-14）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-034", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "采购合同20260907世鼎5270.pdf", "匹配结果": "供应商 世鼎 采购记录在「IC采购记录」（已到货·下单 2026-04-03）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-035", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "采购合同20260907深圳市众智联合电子科技有限公司1350+200（双章版）.pdf", "匹配结果": "供应商 众智联合 采购记录在「IC采购记录」（已下单·下单 2026-09-07）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-036", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "采购合同20260909华之安-230（双章版）.pdf", "匹配结果": "供应商 华之安 采购记录在「IC采购记录」（已到货·下单 2026-04-03）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-037", "日期": "2026-09-13", "类型": "供应商合同", "信号来源": "微信文件/2026-09", "信号内容": "采购合同20260910华之安500.pdf", "匹配结果": "供应商 华之安 采购记录在「IC采购记录」（已到货·下单 2026-04-03）", "匹配项目": "", "建议动作": "对上了；确认状态列是否最新", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-040", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-09", "信号内容": "销售合同20260910深圳市天工测控技术有限公司108000.pdf", "匹配结果": "收到合同 PDF 但匹配不到项目——可能漏立项或客户名不同", "匹配项目": "", "建议动作": "确认归属项目；若新客户需立项", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-041", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-09", "信号内容": "销售合同20260910深圳市微能信息科技有限公司1040.pdf", "匹配结果": "收到合同 PDF 但匹配不到项目——可能漏立项或客户名不同", "匹配项目": "", "建议动作": "确认归属项目；若新客户需立项", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-042", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-09", "信号内容": "销售合同全功能小卡.pdf", "匹配结果": "收到合同 PDF 但匹配不到项目——可能漏立项或客户名不同", "匹配项目": "", "建议动作": "确认归属项目；若新客户需立项", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-043", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-09", "信号内容": "销售合同全功能小卡.pdf.sign.pdf", "匹配结果": "收到合同 PDF 但匹配不到项目——可能漏立项或客户名不同", "匹配项目": "", "建议动作": "确认归属项目；若新客户需立项", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-001", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "00 智能人脸识别发卡充电柜及定位卡采购合同（盖章版）.pdf", "匹配结果": "收到合同 PDF，项目「上海汇撰-智能发卡充电柜及定位卡」合同列已登记其他文件", "匹配项目": "上海汇撰-智能发卡充电柜及定位卡", "建议动作": "确认是否该把此 PDF 登记到该项目的合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-004", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "PO260820-1振道技术LORA采购合同2026-8-20(1).pdf", "匹配结果": "我方名义销售合同（客户名在 PDF 内文，文件名识别不出）", "匹配项目": "", "建议动作": "人工确认客户归属项目后登记合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-005", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "PO260820-1智环未来LORA采购合同2026-8-20(1).pdf", "匹配结果": "我方名义销售合同（客户名在 PDF 内文，文件名识别不出）", "匹配项目": "", "建议动作": "人工确认客户归属项目后登记合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-006", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "上海汇撰-智环未来采购合同-已签章(3).pdf", "匹配结果": "收到合同 PDF，项目「汇撰」合同列已登记其他文件", "匹配项目": "汇撰", "建议动作": "确认是否该把此 PDF 登记到该项目的合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-007", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "产品购销合同-智环未来(深圳)科技有限公司-260820(1)(1)(1).pdf", "匹配结果": "我方名义销售合同（客户名在 PDF 内文，文件名识别不出）", "匹配项目": "", "建议动作": "人工确认客户归属项目后登记合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-008", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "产品购销合同-智环未来(深圳)科技有限公司-260821.pdf", "匹配结果": "我方名义销售合同（客户名在 PDF 内文，文件名识别不出）", "匹配项目": "", "建议动作": "人工确认客户归属项目后登记合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-009", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "智环未来(深圳)科技有限公司订单--点晨 - DC20260817001(1).pdf", "匹配结果": "我方名义销售合同（客户名在 PDF 内文，文件名识别不出）", "匹配项目": "", "建议动作": "人工确认客户归属项目后登记合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-010", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "智环未来(深圳)科技有限公司，合同，20260820.pdf", "匹配结果": "我方名义销售合同（客户名在 PDF 内文，文件名识别不出）", "匹配项目": "", "建议动作": "人工确认客户归属项目后登记合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-011", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "智环未来发卡机5台+500张卡合同双方盖章版(1).pdf", "匹配结果": "我方名义销售合同（客户名在 PDF 内文，文件名识别不出）", "匹配项目": "", "建议动作": "人工确认客户归属项目后登记合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-012", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "智环未来记账合同.pdf", "匹配结果": "我方名义销售合同（客户名在 PDF 内文，文件名识别不出）", "匹配项目": "", "建议动作": "人工确认客户归属项目后登记合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-013", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "购销合同-智环未来(深圳)科技有限公司  -260821.pdf", "匹配结果": "我方名义销售合同（客户名在 PDF 内文，文件名识别不出）", "匹配项目": "", "建议动作": "人工确认客户归属项目后登记合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-018", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "销售合同20260827上海汇撰17750(1).pdf", "匹配结果": "收到合同 PDF，项目「汇撰」合同列已登记其他文件", "匹配项目": "汇撰", "建议动作": "确认是否该把此 PDF 登记到该项目的合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-021", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-09", "信号内容": "PO2026090031-振道技术_已签章.pdf", "匹配结果": "我方名义销售合同（客户名在 PDF 内文，文件名识别不出）", "匹配项目": "", "建议动作": "人工确认客户归属项目后登记合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-023", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-09", "信号内容": "uwb信标+工卡合同（盖章版）(1).pdf", "匹配结果": "收到合同 PDF，项目「动联（山东）-UWB定位工卡及信标」合同列已登记其他文件", "匹配项目": "动联（山东）-UWB定位工卡及信标", "建议动作": "确认是否该把此 PDF 登记到该项目的合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-026", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-09", "信号内容": "智环未来(深圳)科技有限公司_销售合同_2026-09-11_MS-260911-127.pdf", "匹配结果": "我方名义销售合同（客户名在 PDF 内文，文件名识别不出）", "匹配项目": "", "建议动作": "人工确认客户归属项目后登记合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-038", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-09", "信号内容": "销售合同20260910动联（山东）电子科技有限公司126600.pdf", "匹配结果": "收到合同 PDF，项目「动联（山东）-UWB定位工卡及信标」合同列已登记其他文件", "匹配项目": "动联（山东）-UWB定位工卡及信标", "建议动作": "确认是否该把此 PDF 登记到该项目的合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}, {"核对编号": "WX-M-20260913-039", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-09", "信号内容": "销售合同20260910动联（山东）电子科技有限公司126600.pdf.sign.pdf", "匹配结果": "收到合同 PDF，项目「动联（山东）-UWB定位工卡及信标」合同列已登记其他文件", "匹配项目": "动联（山东）-UWB定位工卡及信标", "建议动作": "确认是否该把此 PDF 登记到该项目的合同列", "预填意图": "", "置信度": "低", "状态": "待核对"}], "pending_count": 43, "done_count": 0, "total": 43, "by_type": {"合同PDF": 29, "供应商合同": 14}, "by_conf": {"低": 17, "中": 26}, "hi_pay_count": 0, "act_ready": [{"核对编号": "WX-M-20260913-002", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "00 蓝牙信标采购合同（盖章版）.pdf", "匹配结果": "收到合同 PDF，项目「上海汇撰-蓝牙信标」合同列为空", "匹配项目": "上海汇撰-蓝牙信标", "建议动作": "确认是否该把此 PDF 登记到该项目的合同列", "预填意图": "", "置信度": "中", "状态": "待核对"}, {"核对编号": "WX-M-20260913-003", "日期": "2026-09-13", "类型": "合同PDF", "信号来源": "微信文件/2026-08", "信号内容": "355个蓝牙信标合同双方盖章版(1).pdf", "匹配结果": "收到合同 PDF，项目「上海汇撰-蓝牙信标」合同列为空", "匹配项目": "上海汇撰-蓝牙信标", "建议动作": "确认是否该把此 PDF 登记到该项目的合同列", "预填意图": "", "置信度": "中", "状态": "待核对"}], "scan_date": "2026-09-13"}, "foresee": {"generated_at": "2026-09-13 18:57", "generated_date": "2026-09-13", "backward": {"hist_n": 24, "hist_median": 24.0, "hist_p75": 36, "hist_p90": 49, "plans": [{"plan": "20260706-001", "product": "UWB信标", "due": "2026-07-20", "basis": "计划合同交期", "days_left": -55, "est_cycle": 36, "verdict": "已逾期", "note": "交期已过 55 天，需与客户重新确认", "stages": [{"stage": "BOM 核对/缺料确认", "lead": 30, "latest": "2026-06-20", "days": -85, "urgent": true, "desc": "盘点 BOM 缺口、确认替代料"}, {"stage": "IC/PCB 采购下单", "lead": 25, "latest": "2026-06-25", "days": -80, "urgent": true, "desc": "交期最长的 IC 先下单（历史中位 8-13 天，留 buffer）"}, {"stage": "组装料/外壳采购", "lead": 20, "latest": "2026-06-30", "days": -75, "urgent": true, "desc": "历史平均晚 29 天，最不稳定，务必盯"}, {"stage": "贴片/组装排产", "lead": 10, "latest": "2026-07-10", "days": -65, "urgent": true, "desc": "齐套后贴片+组装"}, {"stage": "测试/质检/发货", "lead": 4, "latest": "2026-07-16", "days": -59, "urgent": true, "desc": "成品测试、打包、物流"}]}, {"plan": "20260713-006", "product": "AOA基站", "due": "2026-07-20", "basis": "计划合同交期", "days_left": -55, "est_cycle": 36, "verdict": "已逾期", "note": "交期已过 55 天，需与客户重新确认", "stages": [{"stage": "BOM 核对/缺料确认", "lead": 30, "latest": "2026-06-20", "days": -85, "urgent": true, "desc": "盘点 BOM 缺口、确认替代料"}, {"stage": "IC/PCB 采购下单", "lead": 25, "latest": "2026-06-25", "days": -80, "urgent": true, "desc": "交期最长的 IC 先下单（历史中位 8-13 天，留 buffer）"}, {"stage": "组装料/外壳采购", "lead": 20, "latest": "2026-06-30", "days": -75, "urgent": true, "desc": "历史平均晚 29 天，最不稳定，务必盯"}, {"stage": "贴片/组装排产", "lead": 10, "latest": "2026-07-10", "days": -65, "urgent": true, "desc": "齐套后贴片+组装"}, {"stage": "测试/质检/发货", "lead": 4, "latest": "2026-07-16", "days": -59, "urgent": true, "desc": "成品测试、打包、物流"}]}, {"plan": "20260716-001", "product": "郑州云峰-4GUWB小卡", "due": "2026-08-21", "basis": "计划合同交期", "days_left": -23, "est_cycle": 36, "verdict": "已逾期", "note": "交期已过 23 天，需与客户重新确认", "stages": [{"stage": "BOM 核对/缺料确认", "lead": 30, "latest": "2026-07-22", "days": -53, "urgent": true, "desc": "盘点 BOM 缺口、确认替代料"}, {"stage": "IC/PCB 采购下单", "lead": 25, "latest": "2026-07-27", "days": -48, "urgent": true, "desc": "交期最长的 IC 先下单（历史中位 8-13 天，留 buffer）"}, {"stage": "组装料/外壳采购", "lead": 20, "latest": "2026-08-01", "days": -43, "urgent": true, "desc": "历史平均晚 29 天，最不稳定，务必盯"}, {"stage": "贴片/组装排产", "lead": 10, "latest": "2026-08-11", "days": -33, "urgent": true, "desc": "齐套后贴片+组装"}, {"stage": "测试/质检/发货", "lead": 4, "latest": "2026-08-17", "days": -27, "urgent": true, "desc": "成品测试、打包、物流"}]}, {"plan": "20260817-001", "product": "100口发卡机5", "due": "2026-08-24", "basis": "计划合同交期", "days_left": -20, "est_cycle": 36, "verdict": "已逾期", "note": "交期已过 20 天，需与客户重新确认", "stages": [{"stage": "BOM 核对/缺料确认", "lead": 30, "latest": "2026-07-25", "days": -50, "urgent": true, "desc": "盘点 BOM 缺口、确认替代料"}, {"stage": "IC/PCB 采购下单", "lead": 25, "latest": "2026-07-30", "days": -45, "urgent": true, "desc": "交期最长的 IC 先下单（历史中位 8-13 天，留 buffer）"}, {"stage": "组装料/外壳采购", "lead": 20, "latest": "2026-08-04", "days": -40, "urgent": true, "desc": "历史平均晚 29 天，最不稳定，务必盯"}, {"stage": "贴片/组装排产", "lead": 10, "latest": "2026-08-14", "days": -30, "urgent": true, "desc": "齐套后贴片+组装"}, {"stage": "测试/质检/发货", "lead": 4, "latest": "2026-08-20", "days": -24, "urgent": true, "desc": "成品测试、打包、物流"}]}, {"plan": "20260820-001", "product": "人员定位大卡（窄带双频RTK版本", "due": "2026-08-24", "basis": "计划合同交期", "days_left": -20, "est_cycle": 36, "verdict": "已逾期", "note": "交期已过 20 天，需与客户重新确认", "stages": [{"stage": "BOM 核对/缺料确认", "lead": 30, "latest": "2026-07-25", "days": -50, "urgent": true, "desc": "盘点 BOM 缺口、确认替代料"}, {"stage": "IC/PCB 采购下单", "lead": 25, "latest": "2026-07-30", "days": -45, "urgent": true, "desc": "交期最长的 IC 先下单（历史中位 8-13 天，留 buffer）"}, {"stage": "组装料/外壳采购", "lead": 20, "latest": "2026-08-04", "days": -40, "urgent": true, "desc": "历史平均晚 29 天，最不稳定，务必盯"}, {"stage": "贴片/组装排产", "lead": 10, "latest": "2026-08-14", "days": -30, "urgent": true, "desc": "齐套后贴片+组装"}, {"stage": "测试/质检/发货", "lead": 4, "latest": "2026-08-20", "days": -24, "urgent": true, "desc": "成品测试、打包、物流"}]}, {"plan": "20260831-001", "product": "人员定位卡（小卡，北斗RTX蓝牙", "due": "2026-09-24", "basis": "计划合同交期", "days_left": 11, "est_cycle": 36, "verdict": "高风险", "note": "剩余 11 天 < 历史周期 p75（36 天），大概率赶不上", "stages": [{"stage": "BOM 核对/缺料确认", "lead": 30, "latest": "2026-08-25", "days": -19, "urgent": true, "desc": "盘点 BOM 缺口、确认替代料"}, {"stage": "IC/PCB 采购下单", "lead": 25, "latest": "2026-08-30", "days": -14, "urgent": true, "desc": "交期最长的 IC 先下单（历史中位 8-13 天，留 buffer）"}, {"stage": "组装料/外壳采购", "lead": 20, "latest": "2026-09-04", "days": -9, "urgent": true, "desc": "历史平均晚 29 天，最不稳定，务必盯"}, {"stage": "贴片/组装排产", "lead": 10, "latest": "2026-09-14", "days": 1, "urgent": false, "desc": "齐套后贴片+组装"}, {"stage": "测试/质检/发货", "lead": 4, "latest": "2026-09-20", "days": 7, "urgent": false, "desc": "成品测试、打包、物流"}]}, {"plan": "20260831-002", "product": "智能人脸识别发卡充电柜（100口", "due": "2026-09-24", "basis": "计划合同交期", "days_left": 11, "est_cycle": 36, "verdict": "高风险", "note": "剩余 11 天 < 历史周期 p75（36 天），大概率赶不上", "stages": [{"stage": "BOM 核对/缺料确认", "lead": 30, "latest": "2026-08-25", "days": -19, "urgent": true, "desc": "盘点 BOM 缺口、确认替代料"}, {"stage": "IC/PCB 采购下单", "lead": 25, "latest": "2026-08-30", "days": -14, "urgent": true, "desc": "交期最长的 IC 先下单（历史中位 8-13 天，留 buffer）"}, {"stage": "组装料/外壳采购", "lead": 20, "latest": "2026-09-04", "days": -9, "urgent": true, "desc": "历史平均晚 29 天，最不稳定，务必盯"}, {"stage": "贴片/组装排产", "lead": 10, "latest": "2026-09-14", "days": 1, "urgent": false, "desc": "齐套后贴片+组装"}, {"stage": "测试/质检/发货", "lead": 4, "latest": "2026-09-20", "days": 7, "urgent": false, "desc": "成品测试、打包、物流"}]}, {"plan": "20260910-001", "product": "融合定位工卡 VDU1530（U", "due": "2026-09-25", "basis": "计划合同交期", "days_left": 12, "est_cycle": 36, "verdict": "高风险", "note": "剩余 12 天 < 历史周期 p75（36 天），大概率赶不上", "stages": [{"stage": "BOM 核对/缺料确认", "lead": 30, "latest": "2026-08-26", "days": -18, "urgent": true, "desc": "盘点 BOM 缺口、确认替代料"}, {"stage": "IC/PCB 采购下单", "lead": 25, "latest": "2026-08-31", "days": -13, "urgent": true, "desc": "交期最长的 IC 先下单（历史中位 8-13 天，留 buffer）"}, {"stage": "组装料/外壳采购", "lead": 20, "latest": "2026-09-05", "days": -8, "urgent": true, "desc": "历史平均晚 29 天，最不稳定，务必盯"}, {"stage": "贴片/组装排产", "lead": 10, "latest": "2026-09-15", "days": 2, "urgent": false, "desc": "齐套后贴片+组装"}, {"stage": "测试/质检/发货", "lead": 4, "latest": "2026-09-21", "days": 8, "urgent": false, "desc": "成品测试、打包、物流"}]}, {"plan": "20260902-005", "product": "星道3号定位卡（4G+RTK+蓝", "due": "2026-10-13", "basis": "计划合同交期", "days_left": 30, "est_cycle": 36, "verdict": "高风险", "note": "剩余 30 天 < 历史周期 p75（36 天），大概率赶不上", "stages": [{"stage": "BOM 核对/缺料确认", "lead": 30, "latest": "2026-09-13", "days": 0, "urgent": true, "desc": "盘点 BOM 缺口、确认替代料"}, {"stage": "IC/PCB 采购下单", "lead": 25, "latest": "2026-09-18", "days": 5, "urgent": false, "desc": "交期最长的 IC 先下单（历史中位 8-13 天，留 buffer）"}, {"stage": "组装料/外壳采购", "lead": 20, "latest": "2026-09-23", "days": 10, "urgent": false, "desc": "历史平均晚 29 天，最不稳定，务必盯"}, {"stage": "贴片/组装排产", "lead": 10, "latest": "2026-10-03", "days": 20, "urgent": false, "desc": "齐套后贴片+组装"}, {"stage": "测试/质检/发货", "lead": 4, "latest": "2026-10-09", "days": 26, "urgent": false, "desc": "成品测试、打包、物流"}]}, {"plan": "20260902-008", "product": "4G+RTK小卡（ZD-XD3）", "due": "2026-10-14", "basis": "计划合同交期", "days_left": 31, "est_cycle": 36, "verdict": "高风险", "note": "剩余 31 天 < 历史周期 p75（36 天），大概率赶不上", "stages": [{"stage": "BOM 核对/缺料确认", "lead": 30, "latest": "2026-09-14", "days": 1, "urgent": false, "desc": "盘点 BOM 缺口、确认替代料"}, {"stage": "IC/PCB 采购下单", "lead": 25, "latest": "2026-09-19", "days": 6, "urgent": false, "desc": "交期最长的 IC 先下单（历史中位 8-13 天，留 buffer）"}, {"stage": "组装料/外壳采购", "lead": 20, "latest": "2026-09-24", "days": 11, "urgent": false, "desc": "历史平均晚 29 天，最不稳定，务必盯"}, {"stage": "贴片/组装排产", "lead": 10, "latest": "2026-10-04", "days": 21, "urgent": false, "desc": "齐套后贴片+组装"}, {"stage": "测试/质检/发货", "lead": 4, "latest": "2026-10-10", "days": 27, "urgent": false, "desc": "成品测试、打包、物流"}]}], "act_now": [{"plan": "20260706-001", "product": "UWB信标", "verdict": "已逾期", "due": "2026-07-20", "days_left": -55, "do_now": ["BOM 核对/缺料确认", "IC/PCB 采购下单", "组装料/外壳采购", "贴片/组装排产", "测试/质检/发货"]}, {"plan": "20260713-006", "product": "AOA基站", "verdict": "已逾期", "due": "2026-07-20", "days_left": -55, "do_now": ["BOM 核对/缺料确认", "IC/PCB 采购下单", "组装料/外壳采购", "贴片/组装排产", "测试/质检/发货"]}, {"plan": "20260716-001", "product": "郑州云峰-4GUWB小卡", "verdict": "已逾期", "due": "2026-08-21", "days_left": -23, "do_now": ["BOM 核对/缺料确认", "IC/PCB 采购下单", "组装料/外壳采购", "贴片/组装排产", "测试/质检/发货"]}, {"plan": "20260817-001", "product": "100口发卡机5", "verdict": "已逾期", "due": "2026-08-24", "days_left": -20, "do_now": ["BOM 核对/缺料确认", "IC/PCB 采购下单", "组装料/外壳采购", "贴片/组装排产", "测试/质检/发货"]}, {"plan": "20260820-001", "product": "人员定位大卡（窄带双频RTK版本", "verdict": "已逾期", "due": "2026-08-24", "days_left": -20, "do_now": ["BOM 核对/缺料确认", "IC/PCB 采购下单", "组装料/外壳采购", "贴片/组装排产", "测试/质检/发货"]}, {"plan": "20260831-001", "product": "人员定位卡（小卡，北斗RTX蓝牙", "verdict": "高风险", "due": "2026-09-24", "days_left": 11, "do_now": ["BOM 核对/缺料确认", "IC/PCB 采购下单", "组装料/外壳采购"]}, {"plan": "20260831-002", "product": "智能人脸识别发卡充电柜（100口", "verdict": "高风险", "due": "2026-09-24", "days_left": 11, "do_now": ["BOM 核对/缺料确认", "IC/PCB 采购下单", "组装料/外壳采购"]}, {"plan": "20260910-001", "product": "融合定位工卡 VDU1530（U", "verdict": "高风险", "due": "2026-09-25", "days_left": 12, "do_now": ["BOM 核对/缺料确认", "IC/PCB 采购下单", "组装料/外壳采购"]}, {"plan": "20260902-005", "product": "星道3号定位卡（4G+RTK+蓝", "verdict": "高风险", "due": "2026-10-13", "days_left": 30, "do_now": ["BOM 核对/缺料确认"]}]}, "supplier": {"samples": 92, "cat_order": ["组装料", "成品", "PCBA", "IC"], "cat_profile": {"IC": {"n": 46, "mean": 0.2, "max": 6.0, "buffer": 0}, "PCBA": {"n": 2, "mean": 2.0, "max": 3.0, "buffer": 2}, "组装料": {"n": 27, "mean": 26.5, "max": 106.0, "buffer": 26}, "成品": {"n": 17, "mean": 2.4, "max": 17.0, "buffer": 2}}, "sup_detail": {"IC": [{"supplier": "创科华", "n": 2, "mean": 3.0, "max": 6.0, "buffer": 3}, {"supplier": "空循环", "n": 3, "mean": 3.0, "max": 6.0, "buffer": 3}, {"supplier": "世鼎", "n": 4, "mean": 2.0, "max": 6.0, "buffer": 2}, {"supplier": "跃之", "n": 1, "mean": 1.0, "max": 1.0, "buffer": 1}, {"supplier": "如般微", "n": 5, "mean": 0.8, "max": 2.0, "buffer": 0}, {"supplier": "三安", "n": 2, "mean": 0.5, "max": 1.0, "buffer": 0}, {"supplier": "芯通", "n": 3, "mean": 0.3, "max": 2.0, "buffer": 0}, {"supplier": "新智法", "n": 4, "mean": 0.2, "max": 2.0, "buffer": 0}, {"supplier": "亿创源-马达散料", "n": 1, "mean": 0.0, "max": 0.0, "buffer": 0}, {"supplier": "言兴和", "n": 2, "mean": 0.0, "max": 1.0, "buffer": 0}, {"supplier": "华之安", "n": 7, "mean": -0.1, "max": 1.0, "buffer": 0}, {"supplier": "华远电机", "n": 2, "mean": -0.5, "max": 0.0, "buffer": 0}, {"supplier": "禾电讯", "n": 2, "mean": -1.0, "max": -1.0, "buffer": 0}, {"supplier": "沐申", "n": 1, "mean": -1.0, "max": -1.0, "buffer": 0}, {"supplier": "寒武纪", "n": 2, "mean": -1.5, "max": -1.0, "buffer": 0}, {"supplier": "淘宝", "n": 1, "mean": -2.0, "max": -2.0, "buffer": 0}, {"supplier": "思睿通", "n": 2, "mean": -2.5, "max": -1.0, "buffer": 0}, {"supplier": "脉芯", "n": 2, "mean": -4.0, "max": -1.0, "buffer": 0}], "PCBA": [{"supplier": "空循环", "n": 2, "mean": 2.0, "max": 3.0, "buffer": 2}], "组装料": [{"supplier": "银赛", "n": 1, "mean": 104.0, "max": 104.0, "buffer": 104}, {"supplier": "倍耐达", "n": 1, "mean": 104.0, "max": 104.0, "buffer": 104}, {"supplier": "正扬五金", "n": 1, "mean": 99.0, "max": 99.0, "buffer": 99}, {"supplier": "欣荣声", "n": 1, "mean": 99.0, "max": 99.0, "buffer": 99}, {"supplier": "聚力", "n": 2, "mean": 53.0, "max": 106.0, "buffer": 53}, {"supplier": "引石磁业", "n": 2, "mean": 51.5, "max": 99.0, "buffer": 51}, {"supplier": "禾电讯", "n": 2, "mean": 29.5, "max": 52.0, "buffer": 29}, {"supplier": "西崖/鼎昇", "n": 1, "mean": 17.0, "max": 17.0, "buffer": 17}, {"supplier": "华宸振凯", "n": 2, "mean": 5.5, "max": 11.0, "buffer": 5}, {"supplier": "载颂", "n": 1, "mean": 5.0, "max": 5.0, "buffer": 5}, {"supplier": "鑫隆庆", "n": 3, "mean": 3.0, "max": 7.0, "buffer": 3}, {"supplier": "淘宝", "n": 2, "mean": 3.0, "max": 6.0, "buffer": 3}, {"supplier": "新智法", "n": 1, "mean": 1.0, "max": 1.0, "buffer": 1}, {"supplier": "铄点", "n": 1, "mean": 1.0, "max": 1.0, "buffer": 1}, {"supplier": "齐犇", "n": 1, "mean": 0.0, "max": 0.0, "buffer": 0}, {"supplier": "言兴和", "n": 4, "mean": -0.5, "max": 1.0, "buffer": 0}, {"supplier": "深圳市云本位科技有限公司", "n": 1, "mean": -6.0, "max": -6.0, "buffer": 0}], "成品": [{"supplier": "触想智能", "n": 4, "mean": 5.2, "max": 17.0, "buffer": 5}, {"supplier": "淘宝", "n": 2, "mean": 4.0, "max": 6.0, "buffer": 4}, {"supplier": "光锥测控", "n": 2, "mean": 3.0, "max": 5.0, "buffer": 3}, {"supplier": "乐畅", "n": 1, "mean": 2.0, "max": 2.0, "buffer": 2}, {"supplier": "齐犇物联", "n": 2, "mean": 1.5, "max": 3.0, "buffer": 1}, {"supplier": "灵慧", "n": 1, "mean": 1.0, "max": 1.0, "buffer": 1}, {"supplier": "空循环", "n": 5, "mean": 0.0, "max": 2.0, "buffer": 0}]}}, "shortage": {"snapshot_at": "2026-09-13 18:55", "plans": [{"product": "4G小卡V4.0—全功能", "plan": "", "matched": false, "due": "", "gap_items": 5, "total_gap": 34, "zero_stock_items": 2, "top_gaps": [{"name": "SAFFB1G56KB0F0A", "ipn": "P0154", "need": 10, "confirmed": 0, "gap": 10, "risk": "无价,零库存"}, {"name": "SW8112QF", "ipn": "P0327", "need": 10, "confirmed": 0, "gap": 10, "risk": "零库存"}, {"name": "ANT_UWB", "ipn": "P0027", "need": 10, "confirmed": 3, "gap": 7, "risk": "库存不足"}, {"name": "GLF71311", "ipn": "P0336", "need": 10, "confirmed": 5, "gap": 5, "risk": "库存不足"}, {"name": "UWB-P1", "ipn": "P0059", "need": 10, "confirmed": 8, "gap": 2, "risk": "库存不足"}], "intransit_n": 0, "intransit_eta": null, "verdict": "必须立刻下单"}], "must_order": [{"product": "4G小卡V4.0—全功能", "plan": "", "matched": false, "due": "", "gap_items": 5, "total_gap": 34, "zero_stock_items": 2, "top_gaps": [{"name": "SAFFB1G56KB0F0A", "ipn": "P0154", "need": 10, "confirmed": 0, "gap": 10, "risk": "无价,零库存"}, {"name": "SW8112QF", "ipn": "P0327", "need": 10, "confirmed": 0, "gap": 10, "risk": "零库存"}, {"name": "ANT_UWB", "ipn": "P0027", "need": 10, "confirmed": 3, "gap": 7, "risk": "库存不足"}, {"name": "GLF71311", "ipn": "P0336", "need": 10, "confirmed": 5, "gap": 5, "risk": "库存不足"}, {"name": "UWB-P1", "ipn": "P0059", "need": 10, "confirmed": 8, "gap": 2, "risk": "库存不足"}], "intransit_n": 0, "intransit_eta": null, "verdict": "必须立刻下单"}]}}};
 let UNLOCK = null;  // 解锁态：null | {level:"admin"} | {level:"role",role:"xxx"}
 let LIVE = null;    // 在线模式：null=探测中/离线 | {origin:"http://127.0.0.1:8790"}
 
@@ -1925,7 +623,7 @@ function liveAPI(path, body, cb){
 /* 口令以 base64 形式嵌在源码里，运行时解码；管理员本地轮换会写 localStorage 覆盖 */
 function _b64dec(s){ try{ const bin=atob(s); const b=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) b[i]=bin.charCodeAt(i); return JSON.parse(new TextDecoder("utf-8").decode(b)); }catch(e){ return {}; } }
 function _b64enc(o){ return btoa(unescape(encodeURIComponent(JSON.stringify(o)))); }
-let PW = (function(){ const o=localStorage.getItem("cockpit_pw_override"); if(o){ try{ return _b64dec(o); }catch(e){} } return _b64dec(__PW_BLOB__); })();
+let PW = (function(){ const o=localStorage.getItem("cockpit_pw_override"); if(o){ try{ return _b64dec(o); }catch(e){} } return _b64dec("eyJhZG1pbiI6ICLogIHmnb82Njg4IiwgImJvc3MiOiAi6ICB5p2/NjY4OCIsICJ3YXJlaG91c2UiOiAi5LuT5bqTMjAyNCIsICJwdXJjaGFzZSI6ICLph4fotK00NDg4IiwgInByb2R1Y3Rpb24iOiAi55Sf5LqnODg2NiIsICJzYWxlcyI6ICLplIDllK4zMzQ0In0="); })();
 
 /* ---------- 工具 ---------- */
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2094,148 +792,11 @@ function clearBackfill(){
 }
 
 /* ---------- 渲染 ---------- */
-/* ---------- 流程思维导图（XMind → 可折叠 SVG 水平树） ---------- */
-const MM={map:0,col:new Set(),q:"",zoom:1};
-function mmText(n){ return String(n&&n.t!=null?n.t:""); }
-function mmDisp(s){ s=String(s); return s.length>22 ? s.slice(0,22)+"…" : s; }
-function mmW(n){ return Math.min(250, Math.max(62, mmText(n).length*12.4+26)); }
-function mmIds(map){
-  (function w(n,p){ n._id=p; (n.c||[]).forEach((k,i)=>w(k,p+"."+i)); })(map.root,"r");
-}
-/* 水平树布局：x 按深度，y 按叶子顺序后序回填，父节点取首末子节点中点 */
-function mmLayout(root, collapsed){
-  const NH=28, STEP=38, XGAP=205, PAD=18;
-  let cur=0; const nodes=[];
-  (function w(n,d){
-    const kids=(n.c && !collapsed.has(n._id)) ? n.c : [];
-    n._d=d;
-    if(!kids.length){ n._y=cur; cur+=STEP; }
-    else { kids.forEach(k=>w(k,d+1)); n._y=(kids[0]._y+kids[kids.length-1]._y)/2; }
-    n._x=d*XGAP;
-    nodes.push(n);
-  })(root,0);
-  const links=[];
-  (function lk(n){
-    const kids=(n.c && !collapsed.has(n._id)) ? n.c : [];
-    kids.forEach(k=>{ links.push([n,k]); lk(k); });
-  })(root);
-  let W=0; nodes.forEach(n=>{ W=Math.max(W, n._x+mmW(n)); });
-  return {nodes, links, W, H:Math.max(cur,STEP), NH, PAD};
-}
-function mmSVG(map, q){
-  const L=mmLayout(map.root, MM.col), PAD=L.PAD, NH=L.NH;
-  const W=L.W+PAD*2+16, H=L.H+PAD*2;
-  const ql=(q||"").toLowerCase();
-  let s=`<svg width="${Math.round(W)}" height="${Math.round(H)}" viewBox="0 0 ${Math.round(W)} ${Math.round(H)}">`;
-  L.links.forEach(([p,c])=>{
-    const px=p._x+mmW(p)+PAD+(p.c&&p.c.length?9:0);
-    const y1=p._y+NH/2+PAD, x2=c._x+PAD, y2=c._y+NH/2+PAD, mx=(px+x2)/2;
-    s+=`<path class="mm-link" d="M${px},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"/>`;
-  });
-  L.nodes.forEach(n=>{
-    const w=mmW(n), x=n._x+PAD, y=n._y+PAD, d=n._d;
-    let fill,stroke,tcol;
-    if(d===0){ fill="var(--primary)"; stroke="var(--primary)"; tcol="#ffffff"; }
-    else if(d===1){ fill="var(--primary-subtle)"; stroke="var(--primary)"; tcol="var(--primary)"; }
-    else { fill="var(--card)"; stroke="var(--line)"; tcol="var(--ink)"; }
-    const hit=ql&&mmText(n).toLowerCase().includes(ql);
-    s+=`<g class="mm-node${hit?" mm-hit":""}" data-mm="${n._id}">`;
-    s+=`<title>${esc(mmText(n))}${n.n?"\n"+esc(n.n):""}</title>`;
-    s+=`<rect x="${x}" y="${y}" width="${w}" height="${NH}" rx="7" fill="${fill}" stroke="${stroke}" stroke-width="1"/>`;
-    s+=`<text x="${x+11}" y="${y+NH/2+1}" fill="${tcol}">${esc(mmDisp(mmText(n)))}</text>`;
-    if(n.c&&n.c.length){
-      const cy=y+NH/2, cx=x+w+9, off=MM.col.has(n._id);
-      s+=`<circle class="mm-tg" cx="${cx}" cy="${cy}" r="8"/>`;
-      s+=`<text class="mm-tg-t" x="${cx}" y="${cy+1}" text-anchor="middle">${off?"+":"–"}</text>`;
-    }
-    s+=`</g>`;
-  });
-  return s+`</svg>`;
-}
-function mountMindmaps(host, model){
-  const maps=(model&&model.maps)||[];
-  if(!maps.length){
-    host.innerHTML=`<div class="empty">未接入思维导图。把 XMind 文件放到 Claw/xmind-download/，运行
-      <code>python extract_mindmaps.py</code> 生成 <code>data/思维导图.json</code> 后重跑本页。</div>`;
-    return;
-  }
-  maps.forEach(mmIds);
-  if(MM.map>=maps.length) MM.map=0;
-  host.innerHTML=
-    `<div class="mm-tabs">`+maps.map((mp,i)=>
-      `<button class="mm-tab${i===MM.map?" on":""}" data-mm-tab="${i}">${esc(mp.file)}<span class="ct">${mp.nodes}</span></button>`
-    ).join("")+`</div>`+
-    `<div class="mm-bar">
-       <input class="tf-input" id="mmQ" type="text" placeholder="🔍 搜索节点…" value="${esc(MM.q)}">
-       <button class="mm-fb" data-mm-act="all">展开全部</button>
-       <button class="mm-fb" data-mm-act="l2">折叠到二级</button>
-       <button class="mm-fb" data-mm-act="zin">放大 ＋</button>
-       <button class="mm-fb" data-mm-act="zout">缩小 －</button>
-       <button class="mm-fb" data-mm-act="z100">100%</button>
-       <span class="tf-cnt" id="mmCnt"></span>
-     </div>`+
-    `<div class="mm-stage" id="mmStage"></div>`+
-    `<div class="note">导图来自 XMind（业务方维护的流程规范，共 ${maps.length} 张 / ${maps.reduce((a,b)=>a+b.nodes,0)} 个节点）。
-      点击节点右侧圆点折叠或展开；搜索可高亮命中节点。</div>`;
-
-  const stage=host.querySelector("#mmStage");
-  function draw(){
-    const mp=maps[MM.map];
-    stage.innerHTML=mmSVG(mp, MM.q);
-    stage.querySelector("svg").style.zoom=MM.zoom;
-    host.querySelector("#mmCnt").textContent=
-      `${mp.file} · ${mp.nodes} 节点 · 深 ${mp.depth}`+(MM.q?` · 命中 ${stage.querySelectorAll(".mm-hit").length}`:"");
-  }
-  function collapseTo(level){
-    MM.col=new Set();
-    (function w(n,d){ if(d>=level&&n.c&&n.c.length) MM.col.add(n._id); (n.c||[]).forEach(k=>w(k,d+1)); })(maps[MM.map].root,0);
-  }
-  host.querySelectorAll("[data-mm-tab]").forEach(b=>b.onclick=()=>{
-    MM.map=+b.dataset.mmTab; MM.q="";
-    host.querySelectorAll("[data-mm-tab]").forEach(x=>x.classList.remove("on"));
-    b.classList.add("on");
-    host.querySelector("#mmQ").value="";
-    draw();
-  });
-  host.querySelectorAll("[data-mm-act]").forEach(b=>b.onclick=()=>{
-    const a=b.dataset.mmAct;
-    if(a==="all") MM.col=new Set();
-    else if(a==="l2") collapseTo(2);
-    else if(a==="zin") MM.zoom=Math.min(2,+(MM.zoom+0.15).toFixed(2));
-    else if(a==="zout") MM.zoom=Math.max(0.4,+(MM.zoom-0.15).toFixed(2));
-    else if(a==="z100") MM.zoom=1;
-    draw();
-  });
-  const qi=host.querySelector("#mmQ");
-  let qt=null;
-  qi.oninput=()=>{
-    MM.q=qi.value.trim();
-    if(MM.q) MM.col=new Set();               /* 搜索时自动展开，避免命中项被折叠藏起来 */
-    clearTimeout(qt); qt=setTimeout(draw,140);
-  };
-  stage.addEventListener("click",ev=>{
-    const g=ev.target.closest(".mm-node"); if(!g) return;
-    const id=g.dataset.mm;
-    if(!id) return;
-    /* 只有带子节点的才响应折叠；据此还原节点引用 */
-    const find=(n)=>{ if(n._id===id) return n; for(const k of (n.c||[])){ const r=find(k); if(r) return r; } return null; };
-    const n=find(maps[MM.map].root);
-    if(!n||!n.c||!n.c.length) return;
-    MM.col.has(id)?MM.col.delete(id):MM.col.add(id);
-    draw();
-  });
-  draw();
-}
 function renderGantt(g, todayStr){
-  if(!g.length) return '<div class="empty">甘特图需「生产计划.立项日期」有值；当前 0 条可用</div>';
+  if(!g.length) return '<div class="empty">甘特图需「立项日期」与「合同交期」均填写，当前可用 '+g.length+' 条</div>';
   const toD=s=>{const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d);};
-  /* 没填「合同交期」的：不推算、不猜日期，单独沉到底部，以「待补交期」条呈现，不参与时间轴刻度 */
-  const isPend=x=>!!x.pending||!x.end;
-  const dated=g.filter(x=>!isPend(x)), undated=g.filter(isPend);
-  const td=toD(todayStr);
-  const starts=dated.map(x=>toD(x.start)), ends=dated.map(x=>toD(x.end));
-  const min=starts.length?new Date(Math.min.apply(null,starts)):new Date(td.getFullYear(),td.getMonth(),1);
-  const max=ends.length?new Date(Math.max.apply(null,ends)):new Date(td.getFullYear(),td.getMonth()+1,0);
+  const starts=g.map(x=>toD(x.start)), ends=g.map(x=>toD(x.end)), td=toD(todayStr);
+  const min=new Date(Math.min.apply(null,starts)), max=new Date(Math.max.apply(null,ends));
   const span=Math.max(1,(max-min)/86400000);
   const pct=d=>((d-min)/86400000)/span*100;
   const ticks=[];
@@ -2250,21 +811,11 @@ function renderGantt(g, todayStr){
   }
   let tp=pct(td); tp=Math.max(0,Math.min(100,tp));
   const rows=g.map((x,i)=>{
-    if(isPend(x)){
-      return `<div class="gantt-row" data-gi="${i}" data-name="${esc(x.name)}" data-state="pend">
-      <div class="gantt-label" title="${esc(x.name)}">${esc(x.name)}</div>
-      <div class="gantt-track"><div class="gantt-bar pend" style="left:0;width:100%"
-        data-i="${i}" tabindex="0" role="button" aria-label="${esc(x.name)} 待补交期">
-        <div class="gantt-prog" style="width:${x.done?100:0}%"></div>
-        <span class="gantt-cap">${x.done?'已完成':'待补交期'}</span></div></div>
-      <span style="display:none" data-tip='{"name":"${esc(x.name)}","status":"${esc(x.status||"")}","start":"${x.start}","end":"待补（未填合同交期）","days":"—","left":"—","prog":"${x.progress}"}'></span>
-    </div>`;
-    }
     const s=toD(x.start), e=toD(x.end);
     const left=pct(s), width=Math.max(1.5,pct(e)-pct(s));
     const k=x.done?'done':(x.overdue?'overdue':'run');
     const cap=x.done?'已完成':(x.overdue?'逾期':x.progress+'%');
-    const st=Math.round((e-s)/86400000);
+    const st=(e-s)/86400000;
     const leftDays=Math.max(0,Math.round((e-td)/86400000));
     return `<div class="gantt-row" data-gi="${i}" data-name="${esc(x.name)}" data-state="${k}">
       <div class="gantt-label" title="${esc(x.name)}">${esc(x.name)}</div>
@@ -2287,10 +838,8 @@ function initGanttTools(g, todayStr, toolsEl, ganttEl){
     {k:"run",    n:"进行中"},
     {k:"overdue",n:"逾期"},
     {k:"done",   n:"已交付"},
-    {k:"pend",   n:"待补交期"},
   ];
-  const isPend=x=>!!x.pending||!x.end;
-  const cnt=k=>k==="all"?g.length:g.filter(x=>k==="pend"?isPend(x):(isPend(x)?false:(k==="done"?x.done:(k==="overdue"?x.overdue:(!x.done&&!x.overdue))))).length;
+  const cnt=k=>k==="all"?g.length:g.filter(x=>k==="done"?x.done:(k==="overdue"?x.overdue:(!x.done&&!x.overdue))).length;
   toolsEl.innerHTML=
     `<input class="tf-input" type="text" placeholder="🔍 搜索产品/状态…">`+
     states.map(s=>`<button class="gantt-fb${s.k==="all"?" on":""}" data-st="${s.k}">${s.n}<span class="ct">${cnt(s.k)}</span></button>`).join("")+
@@ -2368,8 +917,8 @@ function initGanttTools(g, todayStr, toolsEl, ganttEl){
 const ROLES={
   // 老板：只看数据，不含任何写入口（新建/补录均为项目经理职责，不出现在老板页）
   // core = 首屏核心模块（≤4）；more = 折叠进「更多分析」的二级模块
-  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv","Rs","WXC","WXM","FC","Mkt","Raw","PT","PL","MM"],
-              core:["K","A","PW"],                more:["WXC","WXM","FC","Mkt","Raw","Rs","G","T","C","Q","P","Sup","Inv","PT","PL","MM"], actions:null},
+  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv","Rs","WXC","WXM","FC","Mkt","Raw"],
+              core:["K","A","PW"],                more:["WXC","WXM","FC","Mkt","Raw","Rs","G","T","C","Q","P","Sup","Inv"], actions:null},
   // 仓库/采购：非项目经理，不开放「新建」写入口（仅看数据 + 各自作业动作）
   warehouse: {name:"仓库",     sections:["K","A","Inv","P"],
               core:["K","A","Inv"],               more:["P"],                     actions:["warehouse"]},
@@ -2377,12 +926,11 @@ const ROLES={
   purchase:  {name:"采购",     sections:["K","A","Sup","FC","Mkt","Raw"],
               core:["K","A","Sup","FC"],          more:["Mkt","Raw"],             actions:["purchase","market"]},
   // 生产经理：项目经理职责 → 新建生产计划（写「生产计划」表）+ 资源排程 + 风险雷达
-  // 项目经理视角的完整台账（项目全表 / 生产计划全表 / 流程思维导图）默认进首屏
-  production:{name:"生产经理", sections:["K","A","WZ","Rs","FC","G","T","Q","P","Inv","WXC","WXM","PT","PL","MM"],
-              core:["K","A","PT","MM"],           more:["WZ","Rs","FC","G","T","Q","P","Inv","WXC","WXM","PL"],   actions:["production","warehouse","delivery","resource","wechat"]},
+  production:{name:"生产经理", sections:["K","A","WZ","Rs","FC","G","T","Q","P","Inv","WXC","WXM"],
+              core:["K","A","Rs","FC","WZ"],      more:["WXC","WXM","P","G","T","Q","Inv"],   actions:["production","warehouse","delivery","resource","wechat"]},
   // 销售：立项职责 → 新建项目（写「项目」表，对应销售立项表单）
-  sales:     {name:"销售",     sections:["K","A","PW","WZ","G","WXM","PT","MM"],
-              core:["K","A","PW","WZ"],           more:["G","WXM","PT","MM"],                     actions:["sales","delivery"]},
+  sales:     {name:"销售",     sections:["K","A","PW","WZ","G","WXM"],
+              core:["K","A","PW","WZ"],           more:["G","WXM"],                     actions:["sales","delivery"]},
 };
 const ROLE_ORDER=["boss","production","purchase","warehouse","sales"];
 function currentRole(){
@@ -2395,9 +943,9 @@ function buildRoleBar(role, unlock){
   const keys = isAdmin ? ROLE_ORDER : [role];
   const tabs=keys.map(key=>`<button class="role-tab ${key===role?"active":""}" data-role="${key}">${ROLES[key].name}</button>`).join("");
   const shareBtn=(role==="boss"||role==="sales")
-    ? `<button class="role-share" id="roleShareBtn">__IC_SHARE__ 分享给${ROLES[role].name}</button>` : "";
+    ? `<button class="role-share" id="roleShareBtn"><svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l7.8 4"/><path d="M15.4 6.5l-7.8 4"/></svg> 分享给${ROLES[role].name}</button>` : "";
   const keyBtn = isAdmin
-    ? `<button class="role-key" id="pwManageBtn">__IC_KEY__ 口令管理</button>` : "";
+    ? `<button class="role-key" id="pwManageBtn"><svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M14 7a4 4 0 1 0-3.6 5.9L7 17v3H4v-3l5.4-5.4A4 4 0 0 0 14 7zm-1.6 2.4a2 2 0 1 1-2.8 2.8 2 2 0 0 1 2.8-2.8z"/></svg> 口令管理</button>` : "";
   const hint = isAdmin
     ? `每人开一个标签页钉住自己的 #role 即独立窗口；视图按角色裁剪，敏感财务仅老板可见`
     : `本视图已按口令锁定（${ROLES[role].name}），如需切换其他视图请用管理员口令重新打开`;
@@ -2422,7 +970,7 @@ function buildKPIs(m, role){
     projects:{l:"项目总数",v:fmt(k.projects),s:`进行中 ${k.active} · 计划 ${k.planned} · 完成 ${k.done}`,c:"",ac:"blue"},
     contract:{l:"总合同额",v:yuan(k.contract),s:"已收 "+yuan(k.received),c:"",ac:"blue"},
     received:{l:"已收金额",v:yuan(k.received),s:"合同执行率 "+pct(k.exec_rate),c:"",ac:"green"},
-    receivable:{l:"应收款",v:yuan(k.receivable),s:"待回收 · 表内待收 "+yuan((m.recv_check||{}).stored),c:"neg",ac:"red"},
+    receivable:{l:"应收款",v:yuan(k.receivable),s:"待回收",c:"neg",ac:"red"},
     cost:{l:"生产总花销",v:yuan(k.cost),s:"毛利率 "+pct(k.margin),c:"",ac:"amber"},
     margin:{l:"毛利率",v:pct(k.margin),s:"目标 30%",c:"",ac:"green"},
     unit_cost:{l:"单片成本",v:yuan(k.unit_cost),s:"台账均单价",c:"",ac:"amber"},
@@ -2515,7 +1063,7 @@ function render(m){
   /* KPI 概览（按角色裁剪，首屏最多 4 张） */
   const k=m.kpi;
   const kpiG=buildKPIs(m, role);
-  const secK=el(`<section id="sec-K" class="sec"><div class="sec-title">__IC_GRID__ 核心指标概览 · ${ROLES[role].name}</div>
+  const secK=el(`<section id="sec-K" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg> 核心指标概览 · ${ROLES[role].name}</div>
     <div class="hscroll" id="kpig"></div></section>`);
   kpiG.core.forEach(x=>secK.querySelector("#kpig").appendChild(kpiCard(x)));
   put("K", secK);
@@ -2553,7 +1101,7 @@ function render(m){
   /* 下一步行动建议（完整列表，按角色过滤） */
   const actHTML=acts.length?acts.map(a=>`<div class="act"><span class="pri pri-${a.pri}">${a.pri}</span>
     <span class="tx">${a.text}</span></div>`).join(""):`<div class="act"><span class="pri pri-提示">提示</span><span class="tx">当前角色暂无专属待办事项，保持节奏即可 ✔</span></div>`;
-  const secA=el(`<section id="sec-A" class="sec"><div class="sec-title">__IC_NEXT__ 下一步行动建议 · ${ROLES[role].name}（按优先级）</div>
+  const secA=el(`<section id="sec-A" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M5 7l2 2 4-4"/><path d="M5 13l2 2 4-4"/><path d="M14 9h5"/><path d="M14 15h5"/></svg> 下一步行动建议 · ${ROLES[role].name}（按优先级）</div>
     <div class="card"><div class="actions">${actHTML}</div>
     <div class="note">基于当前真实数据自动推导，按角色筛选：红=高优、橙=中优、蓝=提示。老板视图含全部战略项。</div></div></section>`);
   put("A", secA);
@@ -2586,10 +1134,10 @@ function render(m){
   }).join("");
   let bfCnt = 0;
   for (const tbl of ["生产计划", "组装记录"]) for (const rid in (ov[tbl] || {})) for (const k in ov[tbl][rid]) if (ov[tbl][rid][k] !== "") bfCnt++;
-  const secBF = el(`<section id="sec-BF" class="sec"><div class="sec-title">__IC_EDIT__ 补录缺失数据（本地填写 → 复制发我 → 写云端）</div>
+  const secBF = el(`<section id="sec-BF" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg> 补录缺失数据（本地填写 → 复制发我 → 写云端）</div>
     <div class="bf-card">
       <div class="bf-toolbar">
-        <button class="bf-btn copy" id="bfCopy">__IC_COPY__ 一键复制补录数据</button>
+        <button class="bf-btn copy" id="bfCopy"><svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg> 一键复制补录数据</button>
         <button class="bf-btn ghost" id="bfClear">清空本地补录</button>
         <span class="bf-count">已填 <b id="bfCount">${bfCnt}</b> 项 · 数据存本机浏览器，不会自动上传</span>
       </div>
@@ -2622,7 +1170,7 @@ function render(m){
       <td class="num">${w.due||"—"}</td><td><span class="pill ${cls}">${rm}</span></td></tr>`;
   }).join("") : `<tr><td colspan="6" class="empty">无在制品</td></tr>`;
 
-  const secPW=el(`<section id="sec-PW" class="sec"><div class="sec-title">__IC_PROJ__ 项目总览 & 在制品看板</div>
+  const secPW=el(`<section id="sec-PW" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4"/><path d="M3 17l9 4 9-4"/></svg> 项目总览 & 在制品看板</div>
     <div class="grid g2">
       <div class="card"><h3>项目清单（${m.projects.length}）</h3>
         <div style="overflow-x:auto"><table data-paginate="8" data-filter="1" data-select="1"><thead><tr><th>项目</th><th>状态</th><th>合同额</th><th>已收</th><th>应收</th><th>交期</th></tr></thead>
@@ -2636,110 +1184,21 @@ function render(m){
 
   /* 甘特图 */
   const g=m.gantt||[];
-  const secG=el(`<section id="sec-G" class="sec"><div class="sec-title">__IC_GANT__ 生产计划甘特图（立项 → 合同交期）</div>
+  const secG=el(`<section id="sec-G" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 6h10"/><path d="M4 12h14"/><path d="M4 18h7"/></svg> 生产计划甘特图（立项 → 合同交期）</div>
     <div class="card"><div class="gantt-tools" id="ganttTools"></div>
     <div class="gantt-wrap"><div class="gantt" id="gantt"></div></div>
-    <div class="note">紫=进行中，绿=已交付，红=逾期，灰虚线=待补交期；条内浅色填充为当前进度（按日期推算）。竖红线为今日 ${m.snapshot}。悬停条形看详情；点行可高亮联动项目表。
-      ${m.gantt_pending?`<b>「待补交期」${m.gantt_pending} 条</b>：这些生产计划尚未填「合同交期」，按约定不推算、不猜日期，先沉到底部单列；在 SeaTable 补录交期后会自动落到时间轴上。`:""}</div></div></section>`);
+    <div class="note">紫=进行中，绿=已交付，红=逾期；条内浅色填充为当前进度（按日期推算）。竖红线为今日 ${m.snapshot}。悬停条形看详情；点行可高亮联动项目表。</div></div></section>`);
   const gEl=secG.querySelector("#gantt");
   gEl.innerHTML=renderGantt(g,m.snapshot);
   initGanttTools(g, m.snapshot, secG.querySelector("#ganttTools"), gEl);
   put("G", secG);
-
-  /* ══ 项目矩阵：项目全表 / 生产计划全表 / 流程思维导图（项目经理视角完整台账）══ */
-  const pf=m.projects_full||[];
-  const plRows=m.plans_full||[];
-  const mmModel=m.mindmaps;
-  const pillOf=s=>{ const v=String(s==null?"":s).trim();
-    return `<span class="pl pl-${esc(v)}">${esc(v||"—")}</span>`; };
-  const sumCol=(rows,k)=>rows.reduce((a,r)=>a+(parseFloat(String(r[k]).replace(/[^0-9.\-]/g,""))||0),0);
-  const numOr=(v)=>{ const s=String(v==null?"":v).trim(); return /^[0-9.\-]+$/.test(s)?Number(s):null; };
-  /* SeaTable 公式列会回传 "#VALUE!" 之类的错误串——一律显示为「—」，别把公式错误当数据 */
-  const clean=(v)=>{ const s=String(v==null?"":v).trim(); return (!s||s.charAt(0)==="#")?"—":s; };
-  const rc=m.recv_check||{kpi:0,stored:0,diff:0,rows:[],n:0};
-
-  const secPT=el(`<section id="sec-PT" class="sec"><div class="sec-title">__IC_PROJ__ 项目全表（${pf.length} 个项目 · 全字段台账）</div>
-    <div class="card">
-      <div class="note">合同额合计 <b>${yuan(sumCol(pf,"合同总价"))}</b> · 已收 <b>${yuan(sumCol(pf,"实收"))}</b>
-        · 待收（表内公式列）<b>${yuan(sumCol(pf,"待收"))}</b> · 应收（合同额−已收，看板现算）<b>${yuan(sumCol(pf,"合同总价")-sumCol(pf,"实收"))}</b>
-        · 生产花销合计 <b>${yuan(sumCol(pf,"生产花销"))}</b>；末三列＝该项目关联的生产计划 / 发货单 / 维修记录条数。</div>
-      <details class="recv-diff">
-        <summary><span class="rd-ic">⚠️</span> 应收口径说明：表内「待收」<b>${yuan(rc.stored)}</b> ↔ 看板「应收」<b>${yuan(rc.kpi)}</b>，差 <b>${yuan(rc.diff)}</b>（逐项对不上的 <b>${rc.n}</b> 个项目见下）</summary>
-        <div class="rd-body">
-          <p class="rd-p"><b>两个数为什么不同？</b>「待收」直接取 SeaTable 表里的<b>公式列</b>汇总；「应收」是看板按 <b>合同总价 − 实收</b> 现算。二者本应逐项相等，
-            实测差额 <b>${yuan(rc.diff)}</b>，<b>全部来自下面 ${rc.n} 个项目</b>（其余 ${pf.length - rc.n} 个完全一致）：</p>
-          ${rc.rows.length? `<div style="overflow-x:auto"><table class="rd-tbl">
-            <thead><tr><th>项目编号</th><th>项目</th><th>状态</th><th>合同总价</th><th>已收</th><th>表内待收</th><th>应收(算)</th><th>差</th><th>成因说明</th></tr></thead>
-            <tbody>${rc.rows.map(r=>`<tr>
-              <td>${esc(r.no)}</td><td>${esc(r.name)}</td><td>${pillOf(r.status)}</td>
-              <td class="num">${yuan(r.contract)}</td><td class="num">${yuan(r.received)}</td>
-              <td class="num">${yuan(r.stored)}</td><td class="num">${yuan(r.calc)}</td>
-              <td class="num ${r.diff>0?'':'neg'}">${yuan(r.diff)}</td>
-              <td class="rd-why">${esc(r.why)}</td></tr>`).join("")}</tbody></table></div>`
-            : `<div class="note">✅ 逐项一致，无差异。</div>`}
-          <p class="rd-p"><b>建议：</b>到 SeaTable「项目」表核对上表项目的「待收」公式列（多为公式未覆盖新行或未重算），补齐后两个口径即会自动吻合。</p>
-        </div>
-      </details>
-      <div style="overflow-x:auto"><table data-paginate="12" data-filter="1">
-        <thead><tr><th>项目编号</th><th>项目</th><th>状态</th><th>合同总价</th><th>已收</th><th>待收</th>
-          <th>签订</th><th>合同交期</th><th>剩余(天)</th><th>花费天数</th><th>生产花销</th>
-          <th title="关联生产计划数">计划</th><th title="发货单数">发货</th><th title="维修记录数">维修</th></tr></thead>
-        <tbody>${pf.map(r=>`<tr>
-          <td>${esc(r["项目编号"])}</td>
-          <td>${esc(r["项目"])}</td>
-          <td>${pillOf(r["状态"])}</td>
-          <td class="num">${yuan(r["合同总价"])}</td>
-          <td class="num">${yuan(r["实收"])}</td>
-          <td class="num ${numOr(r["待收"])>0?"neg":""}">${yuan(r["待收"])}</td>
-          <td>${esc(clean(r["签订日期"]))}</td>
-          <td>${esc(clean(r["合同交期"]))}</td>
-          <td class="num">${esc(clean(r["剩余（天）"]))}</td>
-          <td class="num">${esc(clean(r["花费天数"]))}</td>
-          <td class="num">${yuan(r["生产花销"])}</td>
-          <td class="num">${r["_计划"]}</td>
-          <td class="num">${r["_发货"]}</td>
-          <td class="num">${r["_维修"]}</td>
-        </tr>`).join("")}</tbody></table></div>
-      <div class="note">共 ${pf.length} 行；表头下方工具条可搜索项目名/编号，按状态筛选，分页浏览。</div>
-    </div></section>`);
-  put("PT", secPT);
-
-  const secPL=el(`<section id="sec-PL" class="sec"><div class="sec-title">__IC_TIME__ 生产计划全表（${plRows.length} 条 · 在产/交付台账）</div>
-    <div class="card">
-      <div class="note">生产花销合计 <b>${yuan(sumCol(plRows,"生产总花销"))}</b> · 已填单片成本
-        <b>${plRows.filter(r=>numOr(r["此次单片成本"])>0).length}</b> 条，均值
-        <b>${yuan(sumCol(plRows,"此次单片成本")/(plRows.filter(r=>numOr(r["此次单片成本"])>0).length||1))}</b></div>
-      <div style="overflow-x:auto"><table data-paginate="12" data-filter="1">
-        <thead><tr><th>计划编号</th><th>生产产品</th><th>数量</th><th>状态</th><th>阶段</th><th>关联项目</th>
-          <th>立项</th><th>合同交期</th><th>花费天数</th><th>生产总花销</th><th>单片成本</th><th>批次号</th></tr></thead>
-        <tbody>${plRows.map(r=>`<tr>
-          <td>${esc(r["生产计划编号"])}</td>
-          <td>${esc(r["生产产品"])}</td>
-          <td class="num">${fmt(r["数量"])}</td>
-          <td>${pillOf(r["状态"])}</td>
-          <td>${pillOf(r["阶段"])}</td>
-          <td>${esc(r["关联项目"])}</td>
-          <td>${esc(clean(r["立项日期"]))}</td>
-          <td>${esc(clean(r["合同交期"]))}</td>
-          <td class="num">${esc(clean(r["花费天数"]))}</td>
-          <td class="num">${yuan(r["生产总花销"])}</td>
-          <td class="num">${numOr(r["此次单片成本"])>0?yuan(r["此次单片成本"]):"—"}</td>
-          <td>${esc(r["批次号"])}</td>
-        </tr>`).join("")}</tbody></table></div>
-    </div></section>`);
-  put("PL", secPL);
-
-  const secMM=el(`<section id="sec-MM" class="sec"><div class="sec-title">__IC_PROJ__ 流程思维导图（${mmModel?mmModel.count:0} 张 XMind · ${mmModel?mmModel.nodes_total:0} 个节点）</div>
-    <div class="card"><div id="mmHost"></div></div></section>`);
-  mountMindmaps(secMM.querySelector("#mmHost"), mmModel);
-  put("MM", secMM);
 
   /* 工时 */
   const t=m.time;
   const stageItems=Object.entries(t.stage_dist).map(([k,v],i)=>({name:k,value:v,
     color:["#3b5bdb","#1c7ed6","#0ca678","#f08c00","#7048e8","#e8590c"][i%6]}));
   const cycleTxt=t.cycle_list.length?t.cycle_list.map(c=>c.product+":"+c.days+"天").join(" · "):"暂无工序耗时记录";
-  const secT=el(`<section id="sec-T" class="sec"><div class="sec-title">__IC_TIME__ 工时分析（交付能力）</div>
+  const secT=el(`<section id="sec-T" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg> 工时分析（交付能力）</div>
     <div class="grid g3">
       <div class="card"><h3>交期达成率（内部周期）</h3><div class="donut-wrap">
         <div>${donut(t.ontime_rate,"#3b5bdb")}</div>
@@ -2784,7 +1243,7 @@ function render(m){
   const recvBarsHTML=c.receivable_list.length?`<div style="margin-top:14px">
     <h3 style="font-size:13px;color:var(--sub);font-weight:600;margin-bottom:2px">应收账龄分布（元）</h3>
     ${bars(ageItems,{fmt:v=>yuan(v)})}</div>`:"";
-  const secC=el(`<section id="sec-C" class="sec"><div class="sec-title">__IC_COST__ 成本分析（盈利能力）</div>
+  const secC=el(`<section id="sec-C" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M16.5 7.5c0-1.7-2-3-4.5-3s-4.5 1.3-4.5 3 2 2.7 4.5 3 4.5 1.3 4.5 3-2 3-4.5 3-4.5-1.3-4.5-3"/></svg> 成本分析（盈利能力）</div>
     <div class="grid g2">
       <div class="card"><h3>成本结构（总花销 ${yuan(c.cost)}）</h3>
         <div class="donut-wrap"><div>${pie(catItems,150)}</div>
@@ -2813,7 +1272,7 @@ function render(m){
 
   /* 质量 */
   const q=m.quality;
-  const secQ=el(`<section id="sec-Q" class="sec"><div class="sec-title">__IC_QUAL__ 质量分析（交付质量）</div>
+  const secQ=el(`<section id="sec-Q" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5L12 21l-4.9 2.2.9-5.5-4-3.9 5.5-.8z"/></svg> 质量分析（交付质量）</div>
     <div class="grid g3">
       <div class="card"><h3>贴片良品率</h3><div class="donut-wrap">
         <div>${donut(q.smt_yield,"#0ca678")}</div>
@@ -2846,7 +1305,7 @@ function render(m){
       <div class="bar-track"><div class="bar-fill" style="width:${Math.round(i.value/flowMax*100)}%;background:${i.color}"></div></div>
       <div class="vl num">${i.value}</div></div>`).join("");
   const stageItems2=Object.entries(tp.stage_dist).map(([k,v],i)=>({name:k,value:v,color:["#3b5bdb","#1c7ed6","#0ca678","#f08c00","#7048e8","#e8590c"][i%6]}));
-  const secP=el(`<section id="sec-P" class="sec"><div class="sec-title">__IC_PROJ__ 生产进度 & 产线流转</div>
+  const secP=el(`<section id="sec-P" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4"/><path d="M3 17l9 4 9-4"/></svg> 生产进度 & 产线流转</div>
     <div class="grid g2">
       <div class="card"><h3>产线实时流转（在产计划当前工序）</h3>${flowHTML}
         <div class="note">基于生产计划表「阶段」（在产 = 状态≠已交付）：每个在产计划当前所处工序，用于定位产能瓶颈。共 ${flowEntries.length} 个工序环节在流转。</div></div>
@@ -2927,7 +1386,7 @@ function render(m){
       <tbody>${invRows}</tbody></table></div>
       <div class="note">⚠ PartDB 未配置，BOM 级缺料检查已跳过；以上仅基于「库存核对记录」的最终完成状态判定。</div></div>`;
   }
-  const secSup=el(`<section id="sec-Sup" class="sec"><div class="sec-title">__IC_SUP__ 供应链（采购）</div>
+  const secSup=el(`<section id="sec-Sup" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 8l9-4 9 4-9 4-9-4z"/><path d="M3 8v8l9 4 9-4V8"/><path d="M12 12v8"/></svg> 供应链（采购）</div>
     <div class="grid g2">
       <div class="card"><h3>采购逾期（${s.overdue_list.length}）</h3>
         <div style="overflow-x:auto"><table data-paginate="8" data-filter="1" data-select="1"><thead><tr><th>供应商</th><th>物料</th><th>关联计划</th><th>预计到货</th><th>状态</th></tr></thead>
@@ -2937,7 +1396,7 @@ function render(m){
         <tbody>${supRows}</tbody></table></div>
         ${supBarsHTML?`<div style="margin-top:14px"><h3 style="font-size:13px;color:var(--sub);font-weight:600;margin-bottom:2px">准时率排行（最差优先）</h3>${supBarsHTML}</div>`:""}</div>
     </div></section>`);
-  const secInv=el(`<section id="sec-Inv" class="sec"><div class="sec-title">__IC_BOX__ 物料库存预警（PartDB 实时）</div>
+  const secInv=el(`<section id="sec-Inv" class="sec"><div class="sec-title"><svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/><path d="M12 11v10"/></svg> 物料库存预警（PartDB 实时）</div>
     ${pdHTML}</section>`);
   put("Sup", secSup);
   put("Inv", secInv);
@@ -2984,7 +1443,7 @@ function render(m){
       <h3>负载排行（超载优先）</h3>${bars(loadItems,{fmt:v=>v+"%"})}
       <div class="note">红=超载(&gt;100%) · 橙=繁忙(≥70%) · 绿=正常 · 灰=闲置。</div></div>`:"";
 
-    const secRs=el(`<section id="sec-Rs" class="sec"><div class="sec-title">__IC_USER__ 资源负载与分配（${res.week.start} ~ ${res.week.end}）</div>
+    const secRs=el(`<section id="sec-Rs" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3 20v-1.5C3 16 5.7 14.5 9 14.5s6 1.5 6 4V20"/><path d="M17 8.5h4"/><path d="M17 12h4"/><path d="M17 15.5h4"/></svg> 资源负载与分配（${res.week.start} ~ ${res.week.end}）</div>
       <div class="card">
         <div class="rs-sum">
           <span>在岗 <b>${res.on_duty}</b>/${res.total}</span>
@@ -3038,7 +1497,7 @@ function render(m){
         `<div class="act"><span class="pri ${a.type==='停产'?'pri-高':'pri-中'}">${a.type}</span>
          <span class="tx"><b>${a.model}</b>：${a.text}</span></div>`).join("")}</div>
       <div class="note">停产/NRND = 高优（确认替代料、锁定最后采购窗口）；涨跌超阈值 = 中优（评估提前备货或换源）。</div></div>`:"";
-    const secMkt=el(`<section id="sec-Mkt" class="sec"><div class="sec-title">__IC_MKT__ 物料行情（价格涨跌 · 停产/EOL）</div>
+    const secMkt=el(`<section id="sec-Mkt" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 6-8"/><path d="M14 6h4v4"/><path d="M3 21h18"/></svg> 物料行情（价格涨跌 · 停产/EOL）</div>
       <div class="card"><div style="overflow-x:auto"><table data-paginate="12" data-filter="1"><thead><tr>
         <th>物料型号</th><th>上次采购价</th><th>最新行情</th><th>vs采购价</th><th>生命周期</th><th>趋势</th><th>行情日期</th>
       </tr></thead><tbody>${mktRows}</tbody></table></div>
@@ -3075,7 +1534,7 @@ function render(m){
         `<div class="act"><span class="pri ${a.type==='涨'?'pri-高':'pri-中'}">${a.type}</span>
          <span class="tx"><b>${a.name}</b>：${a.text}</span></div>`).join("")}</div>
       <div class="note">原料波动影响的是<b>整体报价基调</b>，不是单个料号——涨了复核供应商报价有效期与备货节奏，跌了可择机锁价。</div></div>`:"";
-    const secRaw=el(`<section id="sec-Raw" class="sec"><div class="sec-title">__IC_MKT__ 原料行情（上游成本 · 金属 / 塑料）</div>
+    const secRaw=el(`<section id="sec-Raw" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 6-8"/><path d="M14 6h4v4"/><path d="M3 21h18"/></svg> 原料行情（上游成本 · 金属 / 塑料）</div>
       <div class="card"><div style="overflow-x:auto"><table data-paginate="12" data-filter="1"><thead><tr>
         <th>原料</th><th>口径</th><th>最新价</th><th>区间涨跌</th><th>趋势</th><th>日期</th><th>来源</th>
       </tr></thead><tbody>${rawRows}</tbody></table></div>
@@ -3108,7 +1567,7 @@ function render(m){
         <td>${catPill(e["分类"])}</td>
         <td style="max-width:300px">${(e["原文"]||"").slice(0,80)}</td>
         <td class="rs-sub">${e["状态"]||""}${e["写入结果"]?` · ${(e["写入结果"]||"").slice(0,28)}`:""}</td></tr>`).join("");
-    const secWXC=el(`<section id="sec-WXC" class="sec"><div class="sec-title">__IC_CHAT__ 微信情报台（今日 ${wx.today_count} 条 · 待确认 ${wx.pending_count} 条）</div>
+    const secWXC=el(`<section id="sec-WXC" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-5 4V6a1 1 0 0 1 1-1z"/><path d="M8 10h8"/><path d="M8 13h5"/></svg> 微信情报台（今日 ${wx.today_count} 条 · 待确认 ${wx.pending_count} 条）</div>
       <div class="card"><h3>待确认事件（勾选 → 确认写 SeaTable / 忽略）</h3>
         <div style="overflow-x:auto"><table data-paginate="8" data-filter="1"><thead><tr>
           <th style="width:34px;text-align:center">✓</th><th>编号/时间</th><th>来源</th><th>分类</th><th>原文</th><th>状态</th>
@@ -3155,7 +1614,7 @@ function render(m){
     const confStat=Object.entries(wmatch.by_conf||{}).map(([c,n])=>
       `<span class="pill ${c==="高"?"tag-red":(c==="中"?"tag-amber":"")}" style="margin-right:6px">${c}置信 ${n}</span>`).join("")
       ||`<span class="rs-sub">暂无置信度数据</span>`;
-    const secWXM=el(`<section id="sec-WXM" class="sec"><div class="sec-title">__IC_CHECK__ 消息↔SeaTable 核对台（待核对 ${wmatch.pending_count} 条 · 已处置 ${wmatch.done_count} 条）</div>
+    const secWXM=el(`<section id="sec-WXM" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 12l3 3 5-6"/></svg> 消息↔SeaTable 核对台（待核对 ${wmatch.pending_count} 条 · 已处置 ${wmatch.done_count} 条）</div>
       <div class="card"><h3>待核对项（收款 / 下单 / 客户合同 / 供应商合同 ↔ 业务表）</h3>
         <div style="overflow-x:auto"><table data-paginate="10" data-filter="1" data-select="1"><thead><tr>
           <th>编号/日期</th><th>类型</th><th>信号内容</th><th>匹配项目/结果</th><th>建议动作</th><th>置信度</th>
@@ -3214,7 +1673,7 @@ function render(m){
         <td>${vBadge(e.verdict)}</td>
         <td style="max-width:280px">${gaps||'<span class="rs-sub">—</span>'}</td></tr>`;
     }).join("")||`<tr><td colspan="7" class="empty">活动计划无缺料缺口（PartDB 快照 ${fsh.snapshot_at||"缺失"}）</td></tr>`;
-    const secFC=el(`<section id="sec-FC" class="sec"><div class="sec-title">__IC_RADAR__ 风险雷达（合同倒排 · 供应商画像 · 缺料预警 · 生成于 ${fc.generated_at||"?"}）</div>
+    const secFC=el(`<section id="sec-FC" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/><path d="M12 12L20 7"/></svg> 风险雷达（合同倒排 · 供应商画像 · 缺料预警 · 生成于 ${fc.generated_at||"?"}）</div>
       <div class="card"><h3>【1】合同倒排 — 按历史工期预警（样本 n=${fb.hist_n||0}，中位 ${fb.hist_median||"—"} / p75 ${fb.hist_p75||"—"} / p90 ${fb.hist_p90||"—"} 天）</h3>
         <div style="overflow-x:auto"><table data-paginate="10" data-filter="1"><thead><tr>
           <th>计划/产品</th><th>目标交期</th><th>剩余</th><th>历史周期 p75</th><th>风险</th><th>环节预警</th>
@@ -3241,7 +1700,7 @@ function render(m){
   const _wzNameLbl = _isSales ? "项目名称 *" : "产品名称 *";
   const _wzNamePh = _isSales ? "如 客户A-4G小卡二代" : "如 4G小卡二代";
   const _wzTargetName = _isSales ? "项目" : "生产计划";
-  const secWZ=el(`<section id="sec-WZ" class="sec"><div class="sec-title">__IC_ADD__ ${_wzTitle}</div>
+  const secWZ=el(`<section id="sec-WZ" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg> ${_wzTitle}</div>
     <div class="card">
       <p class="note">填完点「🚀 一键发起 → WorkBuddy 预填待确认」：会把信息整理成文字、<b>复制到剪贴板</b>，并<b>拉起本地 WorkBuddy、自动预填任务并开始执行</b>。注意：按技能铁律「任何增删改必须先向你确认」，专家会先列出完整数据<b>等你点头</b>，确认后才写库、算缺料、刷新驾驶舱——所以<b>不是全自动落库</b>，但仍省去手动复制粘贴。没装桌面端时点「🌐 网页版提交」手动发送。最终写入 SeaTable「${_wzTargetName}」表${_isSales?"（即销售立项表单）":""}。</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:680px">
@@ -3253,9 +1712,9 @@ function render(m){
         <label>备注<input id="wz-note" type="text" placeholder="选填" style="width:100%"></label>
       </div>
       <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <button class="btn-primary" onclick="submitWizardCopy()">__IC_ADD__ 一键发起 → WorkBuddy 预填待确认</button>
+        <button class="btn-primary" onclick="submitWizardCopy()"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg> 一键发起 → WorkBuddy 预填待确认</button>
         <button class="btn-ghost" onclick="window.open('https://www.workbuddy.cn/','_blank')">🌐 网页版提交（workbuddy.cn）</button>
-        <button class="btn-ghost" onclick="submitWizardDownload()">__IC_DOWNLOAD__ 下载 JSON（备用）</button>
+        <button class="btn-ghost" onclick="submitWizardDownload()"><svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M4 20h16"/></svg> 下载 JSON（备用）</button>
       </div>
       <textarea id="wz-text" readonly style="display:none;width:100%;max-width:680px;height:130px;margin-top:12px;font-size:13px;padding:8px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit"></textarea>
       <p class="note" style="margin-top:10px">💡 「一键发起」需要 WorkBuddy 桌面端已安装，且<strong>在本机系统浏览器（Chrome / Edge）中打开本页</strong>再点按钮——浏览器会弹「是否用 WorkBuddy 打开」并拉起客户端、预填任务，专家会<b>请你确认后再写库</b>。注意：在 WorkBuddy 自带的预览面板里点可能不会触发系统协议，请改用外部浏览器打开 HTML 文件。没装桌面端则在系统浏览器打开「🌐 网页版提交（workbuddy.cn）」粘贴发送即可（网页版需先登录）。网页不持有任何账号/口令，数据由本机 Python 落库。</p>
@@ -3264,7 +1723,7 @@ function render(m){
 
   /* 更多分析（二级折叠区）：把非核心模块 + 次要指标收进来，首屏只保留 3-4 块 */
   if(kpiG.more.length){
-    const secKM=el(`<section id="sec-KM" class="sec"><div class="sec-title">__IC_GRID__ 更多指标</div>
+    const secKM=el(`<section id="sec-KM" class="sec"><div class="sec-title"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg> 更多指标</div>
       <div class="hscroll" id="kpigm"></div></section>`);
     kpiG.more.forEach(x=>secKM.querySelector("#kpigm").appendChild(kpiCard(x)));
     moreBody.insertBefore(secKM, moreBody.firstChild);
@@ -3280,19 +1739,18 @@ function render(m){
   }
 
   /* 快速导航条：首屏模块直接跳；折叠区模块点击时自动展开再跳 */
-  const SEC_NAV={K:['核心指标','__IC_GRID__'],KM:['更多指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],
-    WZ:['新建项目','__IC_ADD__'],BF:['补录数据','__IC_EDIT__'],Rs:['资源负载','__IC_USER__'],
-    WXC:['微信情报','__IC_CHAT__'],Mkt:['物料行情','__IC_MKT__'],Raw:['原料行情','__IC_MKT__'],
-    WXM:['消息核对','__IC_CHECK__'],FC:['风险雷达','__IC_RADAR__'],
-    PW:['项目&在制','__IC_PROJ__'],G:['甘特图','__IC_GANT__'],T:['工时','__IC_TIME__'],
-    C:['成本','__IC_COST__'],Q:['质量','__IC_QUAL__'],P:['产线流转','__IC_PROJ__'],
-    Sup:['供应链','__IC_SUP__'],Inv:['库存预警','__IC_BOX__'],
-    PT:['项目全表','__IC_PROJ__'],PL:['生产计划','__IC_TIME__'],MM:['思维导图','__IC_MIND__']};
+  const SEC_NAV={K:['核心指标','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>'],KM:['更多指标','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>'],A:['行动建议','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M5 7l2 2 4-4"/><path d="M5 13l2 2 4-4"/><path d="M14 9h5"/><path d="M14 15h5"/></svg>'],
+    WZ:['新建项目','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>'],BF:['补录数据','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg>'],Rs:['资源负载','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3 20v-1.5C3 16 5.7 14.5 9 14.5s6 1.5 6 4V20"/><path d="M17 8.5h4"/><path d="M17 12h4"/><path d="M17 15.5h4"/></svg>'],
+    WXC:['微信情报','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-5 4V6a1 1 0 0 1 1-1z"/><path d="M8 10h8"/><path d="M8 13h5"/></svg>'],Mkt:['物料行情','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 6-8"/><path d="M14 6h4v4"/><path d="M3 21h18"/></svg>'],Raw:['原料行情','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 6-8"/><path d="M14 6h4v4"/><path d="M3 21h18"/></svg>'],
+    WXM:['消息核对','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 12l3 3 5-6"/></svg>'],FC:['风险雷达','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/><path d="M12 12L20 7"/></svg>'],
+    PW:['项目&在制','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4"/><path d="M3 17l9 4 9-4"/></svg>'],G:['甘特图','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 6h10"/><path d="M4 12h14"/><path d="M4 18h7"/></svg>'],T:['工时','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>'],
+    C:['成本','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M16.5 7.5c0-1.7-2-3-4.5-3s-4.5 1.3-4.5 3 2 2.7 4.5 3 4.5 1.3 4.5 3-2 3-4.5 3-4.5-1.3-4.5-3"/></svg>'],Q:['质量','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5L12 21l-4.9 2.2.9-5.5-4-3.9 5.5-.8z"/></svg>'],P:['产线流转','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4"/><path d="M3 17l9 4 9-4"/></svg>'],
+    Sup:['供应链','<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M3 8l9-4 9 4-9 4-9-4z"/><path d="M3 8v8l9 4 9-4V8"/><path d="M12 12v8"/></svg>'],Inv:['库存预警','<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/><path d="M12 11v10"/></svg>']};
   const navKeys=[["Today",null]].concat(
     CORE.filter(k=>SEC_NAV[k]).map(k=>[k,false]),
     MORE.filter(k=>SEC_NAV[k]).map(k=>[k,true]));
   const navHTML=navKeys.map(([k,inMore])=>{
-    if(k==="Today") return `<button class="sec-nav-item" data-target="sec-Today">__IC_NEXT__今天要处理</button>`;
+    if(k==="Today") return `<button class="sec-nav-item" data-target="sec-Today"><svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M5 7l2 2 4-4"/><path d="M5 13l2 2 4-4"/><path d="M14 9h5"/><path d="M14 15h5"/></svg>今天要处理</button>`;
     return `<button class="sec-nav-item${inMore?' in-more':''}" data-target="sec-${k}" data-more="${inMore?1:0}">${SEC_NAV[k][1]}${SEC_NAV[k][0]}</button>`;
   }).join("");
   const navBar=el(`<nav class="sec-nav" id="secNav">${navHTML}</nav>`);
@@ -3785,7 +2243,7 @@ function openSync(){
     ["数据新鲜度", '<span class="dot" style="background:'+color+'"></span>'+f.txt],
     ["当前状态", MODEL.isDemo?"演示模式（非真实库）":"已接入真实库 · 只读快照"],
   ];
-  let html='<div class="modal-mask" id="syncMask"><div class="modal"><div class="modal-h">__IC_SYNC__ 同步状况</div><table class="sync-t"><tbody>';
+  let html='<div class="modal-mask" id="syncMask"><div class="modal"><div class="modal-h"><svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-8-5"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 8 5"/><path d="M21 4v5h-5"/><path d="M3 20v-5h5"/></svg> 同步状况</div><table class="sync-t"><tbody>';
   for(const r of rows) html+='<tr><td class="sk">'+r[0]+'</td><td class="sv">'+r[1]+'</td></tr>';
   html+='</tbody></table>';
   if(f.lvl==="red") html+='<div class="note" style="color:var(--red)">⚠ 距上次同步已超过 24 小时，建议重新同步获取最新数据。</div>';
@@ -3872,51 +2330,3 @@ window.addEventListener("DOMContentLoaded",()=>{
 </script>
 </body>
 </html>
-"""
-
-
-def main():
-    # Windows 控制台默认 GBK，末行 print 里的 ¥ 会抛 UnicodeEncodeError 让整个进程退出码=1
-    # （HTML 其实已写好，但自动化会误判成失败）。统一把 stdout 切到 UTF-8。
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
-    # 支持 --config，使其能对指定的库生成驾驶舱。缺了它的话，
-    # op.py 写入 A 库后刷新出来的却是默认库的驾驶舱（写 A 看 B）。
-    argv = sys.argv[1:]
-    cfg_path = None
-    rest = []
-    n = 0
-    while n < len(argv):
-        a = argv[n]
-        if a == "--config" and n + 1 < len(argv):
-            cfg_path = argv[n + 1]
-            n += 2
-            continue
-        if a.startswith("--config="):
-            cfg_path = a.split("=", 1)[1]
-            n += 1
-            continue
-        rest.append(a)
-        n += 1
-
-    out = rest[0] if rest else DEFAULT_OUT
-    adapter = get_adapter(load_config(cfg_path) if cfg_path else None)
-    adapter.auth()
-    today = datetime.now(_TZ).date()
-    model = compute(_NormAdapter(adapter), today)
-    html = HTML.replace("__MODEL__", json.dumps(model, ensure_ascii=False))
-    for k, v in ICONS.items():
-        html = html.replace("__" + k + "__", v)
-    html = html.replace("__PW_BLOB__", json.dumps(PW_BLOB))
-    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(html)
-    print(f"[ok] 驾驶舱已生成：{out}")
-    print(f"     快照日期 {model['snapshot']} · 项目 {model['kpi']['projects']} · "
-          f"合同额 ¥{model['kpi']['contract']:,.0f} · 采购逾期 {model['kpi']['purchase_overdue']}")
-
-
-if __name__ == "__main__":
-    main()

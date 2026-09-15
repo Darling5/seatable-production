@@ -82,6 +82,26 @@ def _crm_brief(target_date=None):
     return counts, lines
 
 
+def _business_loop_brief():
+    """业务闭环控制平面摘要：当前在途案件数、状态分布、待人工确认动作。"""
+    loop_dir = os.path.join(DATA, "business_loop")
+    obj_path = os.path.join(loop_dir, "objects.csv")
+    if not os.path.exists(obj_path):
+        return {"cases": 0}, []
+    with open(obj_path, "r", encoding="utf-8-sig", newline="") as f:
+        objects = [dict(r) for r in csv.DictReader(f)]
+    roots = [r for r in objects if r.get("root_id") and r.get("object_id") == r.get("root_id")]
+    counts = {"cases": len(roots)}
+    lines = []
+    for r in roots[:10]:
+        state = (r.get("state") or "").strip() or "lead"
+        counts[state] = counts.get(state, 0) + 1
+        nxt = (r.get("next_action") or "").strip()
+        if state != "closed" and nxt:
+            lines.append("%s【%s】%s" % (r["root_id"], state, nxt[:52]))
+    return counts, lines
+
+
 def build(target_date=None):
     today = target_date or datetime.now().strftime("%Y-%m-%d")
     # 1) 异常
@@ -114,6 +134,9 @@ def build(target_date=None):
     # 5) CRM 自动写入（当日台账，供人工核对）
     crm_counts, crm_lines = _crm_brief(today)
 
+    # 6) 业务闭环控制平面（business_loop：从客户到售后的案件进展）
+    loop_counts, loop_lines = _business_loop_brief()
+
     # ── 组装精简版（目标 200 字）──
     L = []
     L.append("📋 生产站会 %s" % today)
@@ -137,6 +160,11 @@ def build(target_date=None):
                  % (crm_counts["create_lead"], crm_counts["reused"], crm_counts["add_follow"]))
         for c in crm_lines[:3]:
             L.append("· %s" % c[:56])
+    if loop_counts.get("cases"):
+        L.append("")
+        L.append("🔗 业务闭环：在途案件 %d 个" % loop_counts["cases"])
+        for ln in loop_lines[:3]:
+            L.append("· %s" % ln[:56])
     L.append("")
     L.append("📊 面：%d 项目在产 · %d 计划执行 · 待收 ¥%s · 昨发 %d 批"
              % (len(active_p), len(active_plans), f"{receivable:,.0f}", len(ships)))
@@ -177,6 +205,11 @@ def build(target_date=None):
         F.append("- 核对：`python crm_dispatch.py ledger`；不对的单条告诉我撤销")
     else:
         F.append("- 今日暂无自动写入（周末无来单属正常）")
+    if loop_counts.get("cases"):
+        F.append("\n## 🔗 业务闭环案件（%d 个，business_loop 控制平面）\n" % loop_counts["cases"])
+        for ln in loop_lines:
+            F.append("- %s" % ln)
+        F.append("- 明细：`python business_loop.py cases --json`；看板：`python business_loop.py report`")
     low = [h for h in ar["alerts"] if h["level"] == "低"]
     if low:
         F.append("\n## 🔧 数据体检（%d，低）\n" % len(low))

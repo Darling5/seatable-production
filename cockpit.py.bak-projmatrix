@@ -108,15 +108,7 @@ class _NormAdapter:
 def _date(v):
     if not v:
         return None
-    s = _text(v).strip()
-    if not s:
-        return None
-    # 云端直连的日期列是完整 ISO（2026-05-07T00:00:00+08:00）；本地 CSV 是 2026-05-07。
-    # 统一截到日期部分再解析，否则 strptime 全部失败 → 甘特图为空、剩余天数为 null。
-    if "T" in s:
-        s = s.split("T", 1)[0]
-    elif " " in s:
-        s = s.split(" ", 1)[0]
+    s = _text(v)
     for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
         try:
             return datetime.strptime(s, fmt).date()
@@ -558,8 +550,7 @@ def compute(adapter, today):
     # ── 项目指标 ──
     p_total = len(projects)
     p_active = sum(1 for p in projects if p.get("状态") in STATUS_ACTIVE)
-    # 「暂放」按业主口径归入「计划中」桶（否则 1+10+22=33 ≠ 36，有 3 个项目会凭空消失）
-    p_planned = sum(1 for p in projects if p.get("状态") in ("计划中", "暂放"))
+    p_planned = sum(1 for p in projects if p.get("状态") == "计划中")
     p_done = sum(1 for p in projects if p.get("状态") in STATUS_DONE)
     contract = sum(_num(p.get("合同总价")) for p in projects)
     received = sum(_num(p.get("实收")) for p in projects)
@@ -575,38 +566,8 @@ def compute(adapter, today):
             "contract": c,
             "received": r,
             "receivable": c - r,
-            "due": p.get("合同交期") or "",
+            "due": p.get("合同交期", ""),
         })
-
-    # ── 应收口径对照：「表内待收」(SeaTable 公式列) vs 「应收」(看板现算 = 合同总价 − 实收) ──
-    # 两者本应逐项相等，实测有 3 个项目对不上（合计差 ¥150,043）。逐项列出并给出成因，
-    # 避免看板上「待收 96 万 / 应收 111 万」两个数并存却没人知道差在哪。
-    recv_stored = sum(_num(p.get("待收")) for p in projects)
-    recv_diff_rows = []
-    for p in projects:
-        _c = _num(p.get("合同总价"))
-        _r = _num(p.get("实收"))
-        _d = _num(p.get("待收"))
-        _calc = _c - _r
-        if abs(_d - _calc) <= 1:
-            continue
-        if _d > 0 and _calc > 0:
-            _why = "元级舍入误差（公式列 vs 现算）"
-        else:
-            _why = "表内「待收」为空/0，实际仍有未收 ¥%s —— 建议补录或核对付款" % format(_calc, ",.0f")
-        recv_diff_rows.append({
-            "no": _text(p.get("项目编号")), "name": _text(p.get("项目")),
-            "status": _text(p.get("状态")),
-            "contract": round(_c, 2), "received": round(_r, 2),
-            "stored": round(_d, 2), "calc": round(_calc, 2),
-            "diff": round(_d - _calc, 2), "why": _why,
-        })
-    recv_diff_rows.sort(key=lambda x: -abs(x["diff"]))
-    recv_check = {
-        "kpi": round(receivable, 2), "stored": round(recv_stored, 2),
-        "diff": round(recv_stored - receivable, 2),
-        "rows": recv_diff_rows, "n": len(recv_diff_rows),
-    }
 
     # ── 成本归集 ──
     category_cost = {c[2]: 0.0 for c in COST_MAP}
@@ -682,8 +643,8 @@ def compute(adapter, today):
             "qty": _num(p.get("数量")),
             "stage": stage,
             "status": p.get("状态", ""),
-            "start": p.get("立项日期") or "",
-            "due": p.get("合同交期") or "",
+            "start": p.get("立项日期", ""),
+            "due": p.get("合同交期", ""),
             "remain": remain,
             "overdue": (remain is not None and remain < 0),
         })
@@ -841,46 +802,31 @@ def compute(adapter, today):
 
     # 应收款明细
     receivable_list = [p for p in proj_overview if p["receivable"] > 0]
-    # 合同交期可能为空（None/""）——排序键统一转字符串，避免 None 与 str 比较抛 TypeError
-    receivable_list.sort(key=lambda x: str(x.get("due") or ""))
+    receivable_list.sort(key=lambda x: x["due"])
 
     # ── 甘特图数据（立项 → 合同交期；进度按日期推算）──
-    # 真实库有 13/34 条生产计划没填「合同交期」（且「交货时间(自动记录)」「创建时间」也空），
-    # 直接跳过会让甘特图只剩一半。这里用「立项日期 + 实际花费天数」推算一个结束日兜底，
-    # 并用 est=True 显式标注，前端以 * 号 + 虚线文案区分，绝不把推算值伪装成真实交期。
     gantt = []
-    pend_count = 0
     for p in plans:
         sd = _date(p.get("立项日期"))
         cd = _date(p.get("合同交期"))
-        if not sd:
-            continue  # 连立项日期都没有 → 无法定位到时间轴，跳过
-        # 合同交期「暂时还没有，后期手补」→ 不推算、不猜日期，单列「待补交期」长条
-        pend = cd is None
-        if pend:
-            pend_count += 1
+        if not (sd and cd):
+            continue
         status = p.get("状态", "")
         done = status in STATUS_DONE
-        if pend:
-            overdue, prog, span, end_iso = False, (100 if done else 0), 0, ""
+        overdue = (not done) and cd < today
+        span = (cd - sd).days
+        if span <= 0 or done:
+            prog = 100
         else:
-            overdue = (not done) and cd < today
-            span = (cd - sd).days
-            if span <= 0 or done:
-                prog = 100
-            else:
-                elapsed = (today - sd).days
-                prog = max(0, min(100, int(elapsed / span * 100)))
-            end_iso = cd.isoformat()
+            elapsed = (today - sd).days
+            prog = max(0, min(100, int(elapsed / span * 100)))
         gantt.append({
-            "name": p.get("生产产品", "") or p.get("生产计划编号", "") or "(未命名)",
-            "status": status,
-            "start": sd.isoformat(), "end": end_iso,
+            "name": p.get("生产产品", ""), "status": status,
+            "start": sd.isoformat(), "end": cd.isoformat(),
             "done": done, "overdue": bool(overdue), "progress": prog,
-            "pending": pend, "days": span, "row_id": _rid(p),
+            "row_id": _rid(p),
         })
-    # 已定交期的按立项日排前面；待补交期的统一沉到底部单独成组
-    gantt.sort(key=lambda x: (x["pending"], x["start"]))
+    gantt.sort(key=lambda x: x["start"])
 
     # ── 下一步行动建议（按优先级推导）──
     pd = _load_partdb()
@@ -1032,8 +978,7 @@ def compute(adapter, today):
             return len([x for x in v if str(x).strip()])
         return 1 if str(v or "").strip() else 0
 
-    # 「阶段」是 link 列，云端只给回 linked row 的 display_value（形如 673602），对人不具可读性，故不进表
-    PROJ_COLS = ["项目编号", "项目", "状态", "合同总价", "签订日期",
+    PROJ_COLS = ["项目编号", "项目", "状态", "阶段", "合同总价", "签订日期",
                  "下单付", "收货付", "验收付", "实收", "待收", "合同交期",
                  "剩余（天）", "花费天数", "完货日期", "生产花销"]
     projects_full = []
@@ -1081,7 +1026,6 @@ def compute(adapter, today):
             "bom_shortage": (lambda p: (p.get("bom") or {}).get("shortage", []) and len((p.get("bom") or {}).get("shortage", [])) or 0)(_load_partdb()) if _load_partdb() else 0,
         },
         "projects": proj_overview,
-        "recv_check": recv_check,
         "wip": wip,
         "time": {
             "ontime_rate": round(ontime_rate, 1) if ontime_rate is not None else None, "ontime": ontime, "dated": dated, "total": total_plans,
@@ -1104,7 +1048,6 @@ def compute(adapter, today):
             "inventory_warn": inventory_warn, "process_count": len(processes),
         },
         "gantt": gantt,
-        "gantt_pending": pend_count,
         # 项目矩阵板块：项目表全字段 / 生产计划全字段 / 流程思维导图
         "projects_full": projects_full,
         "plans_full": plans_full,
@@ -1581,24 +1524,6 @@ td{color:var(--txt)}
 .mm-tg{fill:var(--card);stroke:var(--bd);stroke-width:1}
 .mm-tg-t{font-size:11px;fill:var(--sub);pointer-events:none;dominant-baseline:middle}
 
-/* ══ 项目矩阵：应收口径差异说明（表内「待收」vs 看板「应收」）══ */
-.recv-diff{margin:10px 0 2px;border:1px solid color-mix(in srgb,var(--amber) 30%,var(--line));
-  border-radius:10px;background:color-mix(in srgb,var(--amber) 7%,transparent);overflow:hidden}
-.recv-diff>summary{cursor:pointer;padding:9px 13px;font-size:12.5px;line-height:1.65;color:var(--ink);
-  list-style:none;display:block}
-.recv-diff>summary::-webkit-details-marker{display:none}
-.recv-diff>summary::after{content:" ▾";color:var(--sub);font-size:11px}
-.recv-diff[open]>summary::after{content:" ▴"}
-.recv-diff>summary b{color:var(--amber);font-variant-numeric:tabular-nums}
-.rd-body{padding:0 13px 11px}
-.rd-p{margin:6px 0;font-size:12.5px;line-height:1.7;color:var(--sub)}
-.rd-p b{color:var(--ink)}
-.rd-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
-.rd-tbl th,.rd-tbl td{padding:6px 9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
-.rd-tbl th{font-size:11.5px;color:var(--sub);font-weight:600;background:var(--subbg2)}
-.rd-tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
-.rd-tbl .rd-why{white-space:normal;color:var(--sub);min-width:220px}
-
 /* ══ 项目矩阵：状态标签（项目/生产计划的真实取值）══ */
 .pl{display:inline-block;padding:2.5px 10px;border-radius:6px;font-size:11.5px;font-weight:600;
   white-space:nowrap;border:1px solid var(--line);background:var(--subbg2);color:var(--sub);line-height:1.5}
@@ -1639,10 +1564,6 @@ td{color:var(--txt)}
   color:#fff;font-size:10.5px;font-weight:600;cursor:pointer;transition:filter .15s,transform .15s}
 .gantt-bar:hover{filter:brightness(1.12);transform:translateY(-1px);box-shadow:var(--shadow-md);z-index:5}
 .gantt-bar.done{background:var(--green)} .gantt-bar.overdue{background:var(--red)} .gantt-bar.run{background:var(--primary)}
-/* 未填「合同交期」：灰底虚线，明确区别于真实排期条，表示「待补交期」而非「暂无计划」 */
-.gantt-bar.pend{background:color-mix(in srgb,var(--sub) 22%,transparent);border:1px dashed color-mix(in srgb,var(--sub) 55%,transparent);
-  color:var(--sub)} .gantt-bar.pend .gantt-prog{background:color-mix(in srgb,var(--sub) 30%,transparent)}
-.gantt-row[data-state="pend"] .gantt-label{color:var(--sub)}
 .gantt-prog{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.32)}
 .gantt-cap{position:relative;padding:0 6px;white-space:nowrap}
 .gantt-today{position:absolute;top:0;bottom:0;width:2px;background:var(--red);z-index:2}
@@ -2227,15 +2148,10 @@ function mountMindmaps(host, model){
   draw();
 }
 function renderGantt(g, todayStr){
-  if(!g.length) return '<div class="empty">甘特图需「生产计划.立项日期」有值；当前 0 条可用</div>';
+  if(!g.length) return '<div class="empty">甘特图需「立项日期」与「合同交期」均填写，当前可用 '+g.length+' 条</div>';
   const toD=s=>{const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d);};
-  /* 没填「合同交期」的：不推算、不猜日期，单独沉到底部，以「待补交期」条呈现，不参与时间轴刻度 */
-  const isPend=x=>!!x.pending||!x.end;
-  const dated=g.filter(x=>!isPend(x)), undated=g.filter(isPend);
-  const td=toD(todayStr);
-  const starts=dated.map(x=>toD(x.start)), ends=dated.map(x=>toD(x.end));
-  const min=starts.length?new Date(Math.min.apply(null,starts)):new Date(td.getFullYear(),td.getMonth(),1);
-  const max=ends.length?new Date(Math.max.apply(null,ends)):new Date(td.getFullYear(),td.getMonth()+1,0);
+  const starts=g.map(x=>toD(x.start)), ends=g.map(x=>toD(x.end)), td=toD(todayStr);
+  const min=new Date(Math.min.apply(null,starts)), max=new Date(Math.max.apply(null,ends));
   const span=Math.max(1,(max-min)/86400000);
   const pct=d=>((d-min)/86400000)/span*100;
   const ticks=[];
@@ -2250,21 +2166,11 @@ function renderGantt(g, todayStr){
   }
   let tp=pct(td); tp=Math.max(0,Math.min(100,tp));
   const rows=g.map((x,i)=>{
-    if(isPend(x)){
-      return `<div class="gantt-row" data-gi="${i}" data-name="${esc(x.name)}" data-state="pend">
-      <div class="gantt-label" title="${esc(x.name)}">${esc(x.name)}</div>
-      <div class="gantt-track"><div class="gantt-bar pend" style="left:0;width:100%"
-        data-i="${i}" tabindex="0" role="button" aria-label="${esc(x.name)} 待补交期">
-        <div class="gantt-prog" style="width:${x.done?100:0}%"></div>
-        <span class="gantt-cap">${x.done?'已完成':'待补交期'}</span></div></div>
-      <span style="display:none" data-tip='{"name":"${esc(x.name)}","status":"${esc(x.status||"")}","start":"${x.start}","end":"待补（未填合同交期）","days":"—","left":"—","prog":"${x.progress}"}'></span>
-    </div>`;
-    }
     const s=toD(x.start), e=toD(x.end);
     const left=pct(s), width=Math.max(1.5,pct(e)-pct(s));
     const k=x.done?'done':(x.overdue?'overdue':'run');
     const cap=x.done?'已完成':(x.overdue?'逾期':x.progress+'%');
-    const st=Math.round((e-s)/86400000);
+    const st=(e-s)/86400000;
     const leftDays=Math.max(0,Math.round((e-td)/86400000));
     return `<div class="gantt-row" data-gi="${i}" data-name="${esc(x.name)}" data-state="${k}">
       <div class="gantt-label" title="${esc(x.name)}">${esc(x.name)}</div>
@@ -2287,10 +2193,8 @@ function initGanttTools(g, todayStr, toolsEl, ganttEl){
     {k:"run",    n:"进行中"},
     {k:"overdue",n:"逾期"},
     {k:"done",   n:"已交付"},
-    {k:"pend",   n:"待补交期"},
   ];
-  const isPend=x=>!!x.pending||!x.end;
-  const cnt=k=>k==="all"?g.length:g.filter(x=>k==="pend"?isPend(x):(isPend(x)?false:(k==="done"?x.done:(k==="overdue"?x.overdue:(!x.done&&!x.overdue))))).length;
+  const cnt=k=>k==="all"?g.length:g.filter(x=>k==="done"?x.done:(k==="overdue"?x.overdue:(!x.done&&!x.overdue))).length;
   toolsEl.innerHTML=
     `<input class="tf-input" type="text" placeholder="🔍 搜索产品/状态…">`+
     states.map(s=>`<button class="gantt-fb${s.k==="all"?" on":""}" data-st="${s.k}">${s.n}<span class="ct">${cnt(s.k)}</span></button>`).join("")+
@@ -2422,7 +2326,7 @@ function buildKPIs(m, role){
     projects:{l:"项目总数",v:fmt(k.projects),s:`进行中 ${k.active} · 计划 ${k.planned} · 完成 ${k.done}`,c:"",ac:"blue"},
     contract:{l:"总合同额",v:yuan(k.contract),s:"已收 "+yuan(k.received),c:"",ac:"blue"},
     received:{l:"已收金额",v:yuan(k.received),s:"合同执行率 "+pct(k.exec_rate),c:"",ac:"green"},
-    receivable:{l:"应收款",v:yuan(k.receivable),s:"待回收 · 表内待收 "+yuan((m.recv_check||{}).stored),c:"neg",ac:"red"},
+    receivable:{l:"应收款",v:yuan(k.receivable),s:"待回收",c:"neg",ac:"red"},
     cost:{l:"生产总花销",v:yuan(k.cost),s:"毛利率 "+pct(k.margin),c:"",ac:"amber"},
     margin:{l:"毛利率",v:pct(k.margin),s:"目标 30%",c:"",ac:"green"},
     unit_cost:{l:"单片成本",v:yuan(k.unit_cost),s:"台账均单价",c:"",ac:"amber"},
@@ -2639,8 +2543,7 @@ function render(m){
   const secG=el(`<section id="sec-G" class="sec"><div class="sec-title">__IC_GANT__ 生产计划甘特图（立项 → 合同交期）</div>
     <div class="card"><div class="gantt-tools" id="ganttTools"></div>
     <div class="gantt-wrap"><div class="gantt" id="gantt"></div></div>
-    <div class="note">紫=进行中，绿=已交付，红=逾期，灰虚线=待补交期；条内浅色填充为当前进度（按日期推算）。竖红线为今日 ${m.snapshot}。悬停条形看详情；点行可高亮联动项目表。
-      ${m.gantt_pending?`<b>「待补交期」${m.gantt_pending} 条</b>：这些生产计划尚未填「合同交期」，按约定不推算、不猜日期，先沉到底部单列；在 SeaTable 补录交期后会自动落到时间轴上。`:""}</div></div></section>`);
+    <div class="note">紫=进行中，绿=已交付，红=逾期；条内浅色填充为当前进度（按日期推算）。竖红线为今日 ${m.snapshot}。悬停条形看详情；点行可高亮联动项目表。</div></div></section>`);
   const gEl=secG.querySelector("#gantt");
   gEl.innerHTML=renderGantt(g,m.snapshot);
   initGanttTools(g, m.snapshot, secG.querySelector("#ganttTools"), gEl);
@@ -2654,32 +2557,11 @@ function render(m){
     return `<span class="pl pl-${esc(v)}">${esc(v||"—")}</span>`; };
   const sumCol=(rows,k)=>rows.reduce((a,r)=>a+(parseFloat(String(r[k]).replace(/[^0-9.\-]/g,""))||0),0);
   const numOr=(v)=>{ const s=String(v==null?"":v).trim(); return /^[0-9.\-]+$/.test(s)?Number(s):null; };
-  /* SeaTable 公式列会回传 "#VALUE!" 之类的错误串——一律显示为「—」，别把公式错误当数据 */
-  const clean=(v)=>{ const s=String(v==null?"":v).trim(); return (!s||s.charAt(0)==="#")?"—":s; };
-  const rc=m.recv_check||{kpi:0,stored:0,diff:0,rows:[],n:0};
 
   const secPT=el(`<section id="sec-PT" class="sec"><div class="sec-title">__IC_PROJ__ 项目全表（${pf.length} 个项目 · 全字段台账）</div>
     <div class="card">
-      <div class="note">合同额合计 <b>${yuan(sumCol(pf,"合同总价"))}</b> · 已收 <b>${yuan(sumCol(pf,"实收"))}</b>
-        · 待收（表内公式列）<b>${yuan(sumCol(pf,"待收"))}</b> · 应收（合同额−已收，看板现算）<b>${yuan(sumCol(pf,"合同总价")-sumCol(pf,"实收"))}</b>
+      <div class="note">合同额合计 <b>${yuan(sumCol(pf,"合同总价"))}</b> · 已收 <b>${yuan(sumCol(pf,"实收"))}</b> · 待收 <b>${yuan(sumCol(pf,"待收"))}</b>
         · 生产花销合计 <b>${yuan(sumCol(pf,"生产花销"))}</b>；末三列＝该项目关联的生产计划 / 发货单 / 维修记录条数。</div>
-      <details class="recv-diff">
-        <summary><span class="rd-ic">⚠️</span> 应收口径说明：表内「待收」<b>${yuan(rc.stored)}</b> ↔ 看板「应收」<b>${yuan(rc.kpi)}</b>，差 <b>${yuan(rc.diff)}</b>（逐项对不上的 <b>${rc.n}</b> 个项目见下）</summary>
-        <div class="rd-body">
-          <p class="rd-p"><b>两个数为什么不同？</b>「待收」直接取 SeaTable 表里的<b>公式列</b>汇总；「应收」是看板按 <b>合同总价 − 实收</b> 现算。二者本应逐项相等，
-            实测差额 <b>${yuan(rc.diff)}</b>，<b>全部来自下面 ${rc.n} 个项目</b>（其余 ${pf.length - rc.n} 个完全一致）：</p>
-          ${rc.rows.length? `<div style="overflow-x:auto"><table class="rd-tbl">
-            <thead><tr><th>项目编号</th><th>项目</th><th>状态</th><th>合同总价</th><th>已收</th><th>表内待收</th><th>应收(算)</th><th>差</th><th>成因说明</th></tr></thead>
-            <tbody>${rc.rows.map(r=>`<tr>
-              <td>${esc(r.no)}</td><td>${esc(r.name)}</td><td>${pillOf(r.status)}</td>
-              <td class="num">${yuan(r.contract)}</td><td class="num">${yuan(r.received)}</td>
-              <td class="num">${yuan(r.stored)}</td><td class="num">${yuan(r.calc)}</td>
-              <td class="num ${r.diff>0?'':'neg'}">${yuan(r.diff)}</td>
-              <td class="rd-why">${esc(r.why)}</td></tr>`).join("")}</tbody></table></div>`
-            : `<div class="note">✅ 逐项一致，无差异。</div>`}
-          <p class="rd-p"><b>建议：</b>到 SeaTable「项目」表核对上表项目的「待收」公式列（多为公式未覆盖新行或未重算），补齐后两个口径即会自动吻合。</p>
-        </div>
-      </details>
       <div style="overflow-x:auto"><table data-paginate="12" data-filter="1">
         <thead><tr><th>项目编号</th><th>项目</th><th>状态</th><th>合同总价</th><th>已收</th><th>待收</th>
           <th>签订</th><th>合同交期</th><th>剩余(天)</th><th>花费天数</th><th>生产花销</th>
@@ -2691,10 +2573,10 @@ function render(m){
           <td class="num">${yuan(r["合同总价"])}</td>
           <td class="num">${yuan(r["实收"])}</td>
           <td class="num ${numOr(r["待收"])>0?"neg":""}">${yuan(r["待收"])}</td>
-          <td>${esc(clean(r["签订日期"]))}</td>
-          <td>${esc(clean(r["合同交期"]))}</td>
-          <td class="num">${esc(clean(r["剩余（天）"]))}</td>
-          <td class="num">${esc(clean(r["花费天数"]))}</td>
+          <td>${esc(r["签订日期"]||"—")}</td>
+          <td>${esc(r["合同交期"]||"—")}</td>
+          <td class="num">${esc(r["剩余（天）"]||"—")}</td>
+          <td class="num">${esc(r["花费天数"]||"—")}</td>
           <td class="num">${yuan(r["生产花销"])}</td>
           <td class="num">${r["_计划"]}</td>
           <td class="num">${r["_发货"]}</td>
@@ -2719,9 +2601,9 @@ function render(m){
           <td>${pillOf(r["状态"])}</td>
           <td>${pillOf(r["阶段"])}</td>
           <td>${esc(r["关联项目"])}</td>
-          <td>${esc(clean(r["立项日期"]))}</td>
-          <td>${esc(clean(r["合同交期"]))}</td>
-          <td class="num">${esc(clean(r["花费天数"]))}</td>
+          <td>${esc(r["立项日期"]||"—")}</td>
+          <td>${esc(r["合同交期"]||"—")}</td>
+          <td class="num">${esc(r["花费天数"]||"—")}</td>
           <td class="num">${yuan(r["生产总花销"])}</td>
           <td class="num">${numOr(r["此次单片成本"])>0?yuan(r["此次单片成本"]):"—"}</td>
           <td>${esc(r["批次号"])}</td>
@@ -3876,12 +3758,6 @@ window.addEventListener("DOMContentLoaded",()=>{
 
 
 def main():
-    # Windows 控制台默认 GBK，末行 print 里的 ¥ 会抛 UnicodeEncodeError 让整个进程退出码=1
-    # （HTML 其实已写好，但自动化会误判成失败）。统一把 stdout 切到 UTF-8。
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
     # 支持 --config，使其能对指定的库生成驾驶舱。缺了它的话，
     # op.py 写入 A 库后刷新出来的却是默认库的驾驶舱（写 A 看 B）。
     argv = sys.argv[1:]

@@ -25,14 +25,26 @@ class TestDailyDag(unittest.TestCase):
         self.assertEqual(ids, {
             "seatable_sync", "partdb_sync", "wechat_pull", "wechat_summary",
             "wxmatch_scan", "alerts", "foresee", "foresee_review",
-            "daily_brief", "cockpit"})
+            "loop_sync", "daily_brief", "cockpit"})
 
     def test_no_online_write_or_destructive(self):
-        """每日刷新只允许本地写入——CRM/production/tasks 的云端写入仍走
-        各自的人工/AI 通道（wx_dispatch 候选 + crm_dispatch 台账），DAG 不碰。"""
+        """每日刷新只允许本地写入 + loop_sync 的 CRM 镜像——
+        loop_sync 与 crm 路由同策略（auto_with_ledger：自动写入 + 幂等 + 可撤销），
+        production/tasks 的云端写入仍走候选制，DAG 不碰。"""
         for s in self.steps:
+            if s.id == "loop_sync":
+                self.assertEqual(s.side_effect, C.SIDE_ONLINE_WRITE)
+                continue
             self.assertIn(s.side_effect, (C.SIDE_LOCAL_APPEND, C.SIDE_READ_ONLY),
                           "%s 副作用越界：%s" % (s.id, s.side_effect))
+
+    def test_loop_sync_step_shape(self):
+        """loop_sync：CRM 镜像写入，幂等 upsert，依赖 seatable_sync。"""
+        by = {s.id: s for s in self.steps}
+        ls = by["loop_sync"]
+        self.assertEqual(ls.side_effect, C.SIDE_ONLINE_WRITE)
+        self.assertEqual(ls.failure_policy, "continue")
+        self.assertIn("seatable_sync", ls.depends_on)
 
     def test_sync_steps_are_abort(self):
         by = {s.id: s for s in self.steps}

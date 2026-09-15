@@ -168,6 +168,12 @@ def make_step(cmd: Sequence[str], step_id: str, name: str, **kw) -> C.StepSpec:
 
     这是 Phase 1 的核心兼容手段——不重写业务，先拿到统一编号、
     结构化结果、checkpoint 与失败策略。
+
+    退出码约定：
+      0        → success
+      3        → skipped（数据源不可用/开关关闭，产物不刷新是正常结果，
+                  不是失败也不是成功——验收器不查其产物新鲜度）
+      其他非 0 → failed（retry 生效）
     """
     def _run(ctx: C.RunContext) -> C.StepResult:
         import subprocess
@@ -179,8 +185,18 @@ def make_step(cmd: Sequence[str], step_id: str, name: str, **kw) -> C.StepSpec:
                               env={**os.environ, "PYTHONIOENCODING": "utf-8"})
         out = (proc.stdout or "") + (proc.stderr or "")
         res.artifacts = []
-        res.warnings = [l for l in out.splitlines() if "[warn]" in l or "[!]" in l][:10]
+        res.warnings = [l for l in out.splitlines() if "[warn]" in l or "[!]" in l or "[skip]" in l][:10]
         if proc.returncode == 0:
             return res.ok()
+        if proc.returncode == 3:
+            return _skipped(res, out)
         return res.fail("exit=%s %s" % (proc.returncode, out.strip()[-400:]))
     return C.StepSpec(id=step_id, name=name, run=_run, **kw)
+
+
+def _skipped(res: C.StepResult, out: str) -> C.StepResult:
+    res.status = C.STATUS_SKIPPED
+    res.error = ""
+    skip_line = next((l for l in out.splitlines() if "[skip]" in l or "[!]" in l), "")
+    res.counts = {"skipped_reason": skip_line[:120]} if skip_line else {}
+    return res

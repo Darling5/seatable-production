@@ -164,10 +164,24 @@ class TestMakeStep(BaseRunnerTest):
         self.assertEqual(rr.steps[0]["status"], C.STATUS_SUCCESS)
 
     def test_nonzero_exit_fails(self):
-        step = make_step([sys.executable, "-c", "import sys; sys.exit(3)"], "bad", "失败步骤")
+        step = make_step([sys.executable, "-c", "import sys; sys.exit(2)"], "bad", "失败步骤")
         rr = WorkflowRunner(self.ctx, [step], self.runs_dir).run()
         self.assertEqual(rr.steps[0]["status"], C.STATUS_FAILED)
-        self.assertIn("exit=3", rr.steps[0]["error"])
+        self.assertIn("exit=2", rr.steps[0]["error"])
+
+    def test_exit3_is_skipped_not_failed(self):
+        """退出码 3 = skipped（数据源不可用）：不冒充成功，也不算失败。
+
+        这是 2026-09-13 实测发现的缺口：微信未登录时 wechat_pull 打印 skip
+        后返回 0，runner 记 success，但产物是旧文件——验收器当场抓包。
+        语义修正：skip 用退出码 3，runner 记 skipped，验收不查其产物新鲜度。
+        """
+        step = make_step([sys.executable, "-c",
+                          "import sys; print('[skip] 数据源不可用'); sys.exit(3)"],
+                         "sk", "跳过步骤")
+        rr = WorkflowRunner(self.ctx, [step], self.runs_dir).run()
+        self.assertEqual(rr.steps[0]["status"], C.STATUS_SKIPPED)
+        self.assertNotIn("exit=3", rr.steps[0].get("error") or "")
 
 
 if __name__ == "__main__":

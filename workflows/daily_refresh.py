@@ -67,6 +67,11 @@ def build_steps() -> list[C.StepSpec]:
           ["foresee.py", "review"], side_effect=C.SIDE_LOCAL_APPEND,
           depends_on=("foresee",), failure_policy="continue"),
 
+        # ── 3.5 控制平面 → CRM 云端镜像（幂等 upsert；本地无数据自动跳过不算失败）──
+        s("loop_sync", "业务闭环台账镜像 CRM",
+          ["loop_sync.py", "--yes"], side_effect=C.SIDE_ONLINE_WRITE,
+          depends_on=("seatable_sync",), failure_policy="continue", retry=1),
+
         # ── 4. 摘要与驾驶舱（生成）──
         s("daily_brief", "站会摘要 + 发件箱",
           ["daily_brief.py", "--push"], side_effect=C.SIDE_LOCAL_APPEND,

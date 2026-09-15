@@ -36,6 +36,8 @@ FILES = [
     "adapters/__init__.py", "adapters/factory.py", "adapters/schema.py",
     "adapters/local.py", "adapters/seatable.py", "adapters/partdb.py",
     "docs/manual.md", "docs/usage-guide.html",
+    "references/changelog.md", "references/wx-intake-and-check.md",
+    "references/won-deal.md", "references/cockpit-advanced.md",
 ]
 
 # 绝不同步：本地数据、凭证、缓存、产物
