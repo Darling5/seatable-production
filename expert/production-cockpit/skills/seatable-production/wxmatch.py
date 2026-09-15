@@ -26,14 +26,22 @@ wxmatch.py — 群消息 ↔ SeaTable 业务核对引擎。
   - data/核对结果.csv            核对明细（供驾驶舱/播报消费）
   - 终端报告                     人类可读，含建议动作
 
+v1.9（2026-09-15，当日复盘升级）：
+  4. 到货/发货信号：群消息「XX到货/已发货」↔ 采购表「已下单/已付款-未到货」
+     在途行匹配（供应商名含别名唯一命中=高置信，生成 状态→已到货 更新意图）。
+  5. apply 子命令：把「待确认」的**高置信**预填意图自动写入 SeaTable
+     （用户决策：高置信自动写 + 低置信待确认）。幂等——状态 != 待确认 的行
+     永不重写；写失败回退待确认明晚重试；中低置信项仍走人工确认。
+
 铁律：
-  - **只读核对，绝不自动写 SeaTable**。更新实收/立项/补合同都必须人确认
-    （走 wechat_intake.py approve 流程或对话确认），引擎只产「建议意图」。
+  - scan 保持**只读**，绝不自动写 SeaTable；自动写只发生在显式的
+    `python wxmatch.py apply` 命令里，且只碰高置信项。
   - 金额/日期匹配是**启发式**，置信度写进结果列，低置信度的只提示不预填。
   - 微信文件名是**隐私数据**，核对结果 CSV 落 data/（gitignore），绝不入库。
 """
 import argparse
 import csv
+import json
 import os
 import re
 import sys
@@ -424,6 +432,180 @@ def scan_contract_pdfs(days=30):
     return out
 
 
+# ─────────────────────────────────────────────── 到货/发货信号核对（新增 v1.9）
+# 群里「XX到货了/已发货」↔ 采购记录表「已下单」在途行 / 生产计划交付。
+# 到货词锚定（比收款词更泛，要求「到货/发货动作词」明确出现）
+ARRIVAL_HINTS = [
+    "到货", "已到", "收到了", "签收", "验货通过", "入库了",
+    "货已发", "已发货", "发出去了", "物流单号", "快递单号", "已出库",
+]
+# 供应商消息里常见的自报家门写法（「我们是XX」「XX发货」）——匹配用
+_SHIP_EXCLUDE = re.compile(r"到货提醒|设置到货|预计到货|等待到货|什么时候到货|几号到货")
+
+
+def scan_arrivals(days=7):
+    """扫微信事件里的到货/发货信号 ↔ 采购表在途行 + 项目交付核对。
+
+    匹配维度：供应商名（含别名）命中在途采购行 → 生成「状态→已到货」
+    更新意图（高置信：供应商名+在途唯一）；命中多条/只含物料词 → 中低置信。
+    同时扫生产计划：交期已过的在产计划 + 群里有对应产品发货词 → 提示确认交付。
+    """
+    events = _read_csv(EVENTS_PATH)
+    purchases = _load_purchase_rows()
+    if not events:
+        return []
+    cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+    pending = [p for p in purchases if p["状态"] in ("已下单", "已付款-未到货")]
+    out = []
+    for e in events:
+        d = str(e.get("日期", ""))[:10]
+        if d < cutoff:
+            continue
+        text = e.get("原文", "") or ""
+        if not any(h in text for h in ARRIVAL_HINTS):
+            continue
+        if _SHIP_EXCLUDE.search(text):
+            continue          # 问句/提醒不算到货事实
+        sig = "%s|%s" % (e.get("来源群", ""), e.get("发送人", ""))
+        # 维度1：供应商名直接出现在消息里（含别名）
+        sup_hits = []
+        for p in pending:
+            sup = p["供应商"]
+            names = {sup}
+            for alias, real in SUPPLIER_ALIASES.items():
+                if sup == real:
+                    names.add(alias)
+                elif alias == sup:
+                    names.add(real)
+            if any(n and n in text for n in names):
+                sup_hits.append(p)
+        if sup_hits:
+            if len(sup_hits) == 1:
+                p = sup_hits[0]
+                rid = p["行"].get("__row_id__", "")
+                intent = ("[{\"op\":\"update\",\"table\":\"%s\",\"row_id\":\"%s\","
+                          "\"data\":{\"状态\":\"已到货\",\"到货时间\":\"%s\"},"
+                          "\"reason\":\"群消息到货核对：%s 在途采购确认到货\"}]"
+                          % (p["表"], rid, d, p["供应商"]))
+                out.append(_mk(d, "到货", sig, text, [], None,
+                               "「%s」在「%s」有 1 条在途采购（%s·下单 %s·交期 %s）"
+                               % (p["供应商"], p["表"], (p["物料"] or "?")[:20],
+                                  p["下单时间"] or "?", p["交期"] or "?"),
+                               "确认到货，更新状态与到货时间", intent, "高", "待确认"))
+            else:
+                out.append(_mk(d, "到货", sig, text, [], None,
+                               "「%s」有 %d 条在途采购，消息无法区分是哪批"
+                               % (sup_hits[0]["供应商"], len(sup_hits)),
+                               "人工指定具体采购编号", "", "中"))
+            continue
+        # 维度2：物料词命中（无供应商名，只有「LM620S 到货了」这类）
+        mat_hits = [p for p in pending
+                    if p["物料"] and p["物料"][:8] in text]
+        if mat_hits:
+            out.append(_mk(d, "到货", sig, text, [], None,
+                           "物料「%s」在途（%s·%s），消息未提供应商"
+                           % (mat_hits[0]["物料"][:20], mat_hits[0]["供应商"],
+                              mat_hits[0]["表"]),
+                           "人工确认是否这批", "", "中"))
+    return out
+
+
+# ─────────────────────────────────────────────── apply：高置信意图自动写库（v1.9）
+# 设计边界（2026-09-15 用户决策）：
+#   高置信（金额±2%吻合的唯一收款匹配 / 供应商名唯一的在途到货）→ 自动写；
+#   中低置信 → 保持待确认，只在复盘播报里列清单。
+# 写库链路复用 wechat_intake.py 的 Intent + adapter（update/append/log），
+# 不复制业务逻辑；每条写完读回验证由 adapter.update_row 的 SeaTable 实现
+# 自带（列名错抛异常）保证。台账留痕：核对结果.csv 状态列回填「已自动写入」。
+
+def _get_business_adapter():
+    """复用 wechat_intake 的业务 Base adapter 初始化（不 import 整个模块避免副作用）。"""
+    import yaml
+    cfg_path = os.path.join(HERE, "config.yaml")
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    biz = (cfg.get("seatable") or {}).get("business") or {}
+    if not (biz.get("api_token") and biz.get("server") and biz.get("base_uuid")):
+        from adapters.local import LocalAdapter
+        return LocalAdapter(os.path.join(HERE, "data"), cfg), "local"
+    from adapters.seatable import SeaTableAdapter
+    return SeaTableAdapter(biz["api_token"], biz["server"], biz["base_uuid"],
+                           base_name=biz.get("base_name", "business")), "seatable"
+
+
+def cmd_apply(dry=False):
+    """把核对台账里「待确认」的高置信预填意图自动写入 SeaTable。
+
+    幂等：状态 != 待确认 的行永不重写；写入失败该行保持待确认。
+    dry=True 只打印将写什么，不落库（晚间自动化先 dry 看一遍再实写）。
+    """
+    rows = _read_csv(MATCH_PATH)
+    todo = [r for r in rows
+            if r.get("状态") == "待确认" and r.get("置信度") == "高"
+            and (r.get("预填意图") or "").strip()]
+    if not todo:
+        print("[ok] 无待自动写入的高置信核对项（%d 条待确认中置信均≤中）"
+              % sum(1 for r in rows if r.get("状态") == "待确认"))
+        return []
+    print("── 自动写入高置信核对项（%d 条）──" % len(todo))
+    if dry:
+        for r in todo:
+            print("  [dry] %s %s → %s" % (r["核对编号"], r["类型"], r["匹配结果"][:50]))
+            print("         意图: %s" % (r["预填意图"][:120]))
+        return todo
+    adapter, where = _get_business_adapter()
+    print("  写入目标：%s" % where)
+    from intake import Intent
+    results = {}
+    for r in todo:
+        try:
+            intents = json.loads(r["预填意图"])
+            if isinstance(intents, dict):
+                intents = [intents]
+            msgs = []
+            for it in intents:
+                obj = Intent(it.get("op", "log"), it.get("table", "工作日志"),
+                             it.get("data") or {}, it.get("row_id"), it.get("reason", ""))
+                if obj.op == "update":
+                    if not obj.row_id:
+                        msgs.append("跳过：缺 row_id")
+                        continue
+                    adapter.update_row(obj.table, obj.row_id, obj.data)
+                    msgs.append("已更新「%s」%s：%s" % (obj.table, obj.row_id,
+                                                      ",".join(obj.data.keys())))
+                elif obj.op == "append":
+                    rid = adapter.append_row(obj.table, obj.data)
+                    msgs.append("已写入「%s」row=%s" % (obj.table, rid))
+                elif obj.op == "log":
+                    rid = adapter.append_row("工作日志", obj.data or
+                                             {"日期": datetime.now().strftime("%Y-%m-%d"),
+                                              "原话": r.get("信号内容", ""), "类型": "核对"})
+                    msgs.append("已记工作日志 row=%s" % rid)
+                else:
+                    msgs.append("未知 op=%s 跳过" % obj.op)
+            results[r["核对编号"]] = "；".join(msgs)[:400]
+        except Exception as e:
+            results[r["核对编号"]] = "失败：%s" % e
+    # 回填台账
+    for r in rows:
+        res = results.get(r.get("核对编号"))
+        if res is None:
+            continue
+        if res.startswith("失败"):
+            r["状态"] = "待确认"            # 失败回退，明晚重试
+            r["建议动作"] = (r.get("建议动作", "") + "；自动写入失败待重试")[:200]
+        else:
+            r["状态"] = "已自动写入"
+        r["匹配结果"] = (r.get("匹配结果", "") + "｜" + res)[:400]
+    _write_csv(MATCH_PATH, MATCH_COLS, rows)
+    ok = sum(1 for v in results.values() if not v.startswith("失败"))
+    for k, v in results.items():
+        print("  · %s %s" % (k, v))
+    print("[ok] 自动写入完成：成功 %d / 失败 %d（失败项保持待确认）"
+          % (ok, len(results) - ok))
+    return todo
+
+
 def _fmt(v):
     try:
         return "{:,.0f}".format(float(v))
@@ -441,7 +623,8 @@ def _mk(date, typ, src, text, hits, proj, result, action, intent, conf, status="
 
 
 def cmd_scan(days_ev=7, days_pdf=30, write=True):
-    rows = scan_events(days_ev) + scan_contract_pdfs(days_pdf)
+    rows = (scan_events(days_ev) + scan_arrivals(days_ev)
+            + scan_contract_pdfs(days_pdf))
     # 编号：WX-M-YYYYMMDD-NN
     seq = 0
     for r in rows:
@@ -527,9 +710,9 @@ def cmd_export_intent(no):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="群消息 ↔ SeaTable 业务核对引擎（只读）")
+    ap = argparse.ArgumentParser(description="群消息 ↔ SeaTable 业务核对引擎")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("scan", help="扫描核对（事件 7 天 + 合同PDF 30 天）")
+    p = sub.add_parser("scan", help="扫描核对（事件/到货 7 天 + 合同PDF 30 天，只读）")
     p.add_argument("--days", type=int, default=7, help="事件回看天数")
     p.add_argument("--pdf-days", type=int, default=30, help="合同 PDF 回看天数")
     p.add_argument("--no-write", action="store_true", help="只打印不写核对台账")
@@ -540,6 +723,8 @@ def main():
     p.add_argument("--note", default="")
     sub.add_parser("intent", help="打印某项的预填意图 JSON")
     p.add_argument("no")
+    p = sub.add_parser("apply", help="自动写入高置信待确认项（金额±2%唯一匹配/在途到货唯一匹配）")
+    p.add_argument("--dry", action="store_true", help="只打印将写什么，不落库")
     a = ap.parse_args()
     if a.cmd == "scan":
         cmd_scan(a.days, a.pdf_days, write=not a.no_write)
@@ -549,6 +734,8 @@ def main():
         cmd_done(a.no, a.note)
     elif a.cmd == "intent":
         cmd_export_intent(a.no)
+    elif a.cmd == "apply":
+        cmd_apply(a.dry)
 
 
 if __name__ == "__main__":

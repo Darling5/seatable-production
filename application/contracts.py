@@ -9,6 +9,7 @@ workflows 与 CLI 都以此为准；在 runner 落地前，本文件被 import �
 from __future__ import annotations
 
 import datetime as _dt
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -207,6 +208,42 @@ def new_object_id(kind: str, seq: int = 0, now: Optional[_dt.datetime] = None) -
     return "%s-%s-%s" % (prefix, now.strftime("%Y%m%d"), tail)
 
 
+def validate_object_id(kind: str, value: str) -> bool:
+    """校验业务 ID 是否匹配对象类型及 ``PREFIX-YYYYMMDD-XXXX`` 格式。"""
+    prefix = _ID_PREFIX.get(str(kind).lower())
+    if not prefix or not isinstance(value, str):
+        return False
+    return bool(re.fullmatch(r"%s-\d{8}-[0-9A-Za-z]{4}" % re.escape(prefix), value))
+
+
+@dataclass(frozen=True)
+class EvidenceLink:
+    event_id: str
+    intent_id: str = ""
+    candidate_id: str = ""
+    write_id: str = ""
+    related_object_type: str = ""
+    related_object_id: str = ""
+    source: str = ""
+    source_ref: str = ""
+
+
+@dataclass(frozen=True)
+class StateTransition:
+    object_type: str
+    object_id: str
+    from_state: str
+    to_state: str
+    trigger_event_id: str = ""
+    actor: str = ""
+    reason: str = ""
+    created_at: str = ""
+
+    @property
+    def severity(self) -> str:
+        return transition_severity(self.from_state, self.to_state)
+
+
 # 项目主线状态机（§2；与 生产计划.工序 的映射归 domain/stage_policy）
 PROJECT_STATES = (
     "lead", "opportunity", "requirement_confirming", "solution_confirming",
@@ -280,5 +317,6 @@ __all__ = [
     "WRITE_APPROVAL_REQUIRED", "WRITE_AUTO_WITH_LEDGER", "ROUTE_POLICIES",
     "STATUS_SUCCESS", "STATUS_SKIPPED", "STATUS_FAILED", "STATUS_BLOCKED",
     "new_run_id", "RunContext", "StepResult", "StepSpec", "ApprovalRequest", "RunResult",
-    "new_object_id", "PROJECT_STATES", "can_transition", "transition_severity",
+    "new_object_id", "validate_object_id", "EvidenceLink", "StateTransition",
+    "PROJECT_STATES", "can_transition", "transition_severity",
 ]

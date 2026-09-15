@@ -472,7 +472,7 @@ def cmd_pull():
     cfg = _wechat_cfg()
     if str(cfg.get("enabled", True)).lower() in ("false", "0", "no"):
         print("[skip] config.yaml wechat.enabled=false，微信情报未启用")
-        return
+        raise SystemExit(3)   # 3 = skipped：runner 映射为 skipped 而非 success
     watch = cfg.get("watch_groups") or []
     max_hours = float(cfg.get("max_hours") or 48)
     bm = _bookmarks()
@@ -491,14 +491,14 @@ def cmd_pull():
         if not dbs:
             print("[skip] 微信数据源均不可用（引擎A需微信4.x登录中；引擎B需 merge_all.db）"
                   "——不影响其余步骤")
-            return
+            raise SystemExit(3)   # skipped ≠ success：产物不刷新时不冒充成功
         db = dbs[0]
         con, tmp = _open_ro(db)
         try:
             t, cl = _find_msg_table(con)
             if not t:
                 print("[skip] 库里没有消息表，请在 win-wechat-summary 里点「同步」")
-                return
+                raise SystemExit(3)   # skipped：数据源在但没内容，不冒充成功
             contact = _find_contact_map(con)
             talker_c, content_c = cl["strtalker"], cl["strcontent"]
             time_c = cl.get("createtime") or cl.get("createtime")
@@ -938,11 +938,11 @@ def cmd_summary(group=None, hours=24, limit=2000, all_groups=False,
     if not wdb:
         print("[!] 引擎A不可用：保持微信 PC 版登录后重试；"
               "若报缺 cryptography，请给当前解释器 pip install cryptography pyyaml")
-        return
+        raise SystemExit(3)   # skipped：微信未登录时摘要产物不刷新，不冒充成功
     groups, err = _summary_targets(wdb, group, all_groups)
     if err:
         print("[!] " + err)
-        return
+        raise SystemExit(3)
 
     members = _wx4_member_names(wdb)
     nick_cache = {}                         # wxid -> 昵称，按本次运行缓存

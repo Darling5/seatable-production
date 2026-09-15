@@ -32,6 +32,11 @@ TABLES = [
     # ── 记忆域（「第二大脑」的本体：原话 + 决策 + 阶段轨迹）────────
     "工作日志",   # 你说的每句话原文 + 提取结果，纯追加不修改
     "阶段轨迹",   # 谁在哪天把哪个项目推进到哪个阶段，用于算阶段停留时长
+    # ── 客户到售后控制平面（本地 CSV；正式 production 写入仍走候选/交接）──
+    "业务对象台账",
+    "状态轨迹",
+    "证据链",
+    "审批记录",
 ]
 
 # 资源域列定义（本地模式建表用；SeaTable 模式以 Base metadata 为准）
@@ -52,6 +57,23 @@ LOG_COLUMNS = [
 # 阶段轨迹：每次阶段变更追加一条，用于算「卡在打样 47 天」
 STAGE_LOG_COLUMNS = [
     "轨迹编号", "日期", "项目", "原阶段", "新阶段", "停留天数", "说明", "异常",
+]
+BUSINESS_OBJECT_COLUMNS = [
+    "object_id", "object_type", "root_id", "parent_id", "customer_id", "project_id",
+    "version", "state", "owner", "next_action", "due_date", "summary", "evidence_ids",
+    "idempotency_key", "created_at", "updated_at",
+]
+STATE_TRANSITION_COLUMNS = [
+    "transition_id", "root_id", "object_id", "from_state", "to_state", "severity",
+    "trigger_event_id", "actor", "reason", "approval_id", "created_at",
+]
+EVIDENCE_CHAIN_COLUMNS = [
+    "event_id", "intent_id", "candidate_id", "write_id", "related_object_type",
+    "related_object_id", "source", "source_ref", "summary", "created_at",
+]
+APPROVAL_RECORD_COLUMNS = [
+    "approval_id", "action", "object_id", "before_json", "after_json", "reason",
+    "approver", "status", "source_event_ids", "created_at",
 ]
 
 LOG_TYPES = ["进度", "决策", "问题", "变更", "其他"]
@@ -229,6 +251,10 @@ def columns_of(table: str):
         "资源分配": ALLOCATION_COLUMNS,
         "工作日志": LOG_COLUMNS,
         "阶段轨迹": STAGE_LOG_COLUMNS,
+        "业务对象台账": BUSINESS_OBJECT_COLUMNS,
+        "状态轨迹": STATE_TRANSITION_COLUMNS,
+        "证据链": EVIDENCE_CHAIN_COLUMNS,
+        "审批记录": APPROVAL_RECORD_COLUMNS,
     }.get(table)
 
 
