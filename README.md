@@ -305,6 +305,10 @@ python notify.py mark-sent --ids 1,2 # 发送后标记
 
 ## 物料行情监控
 
+> **v1.8.3 起**：查价三件套（market/suppliers/commodities）的触发与命令卡已拆至独立子技能
+> **price-sensor**（`C:/Users/11430/.workbuddy/skills/price-sensor/`）。脚本与数据仍在本目录
+> **单份维护**（cockpit 行情区块、deploy 依赖此路径），子技能只是薄指针，不要复制脚本过去。
+
 从 IC、组装料、成品、外壳和 PCBA 采购记录提取型号与历史采购价，生成监控清单：
 
 ```bash
