@@ -127,6 +127,99 @@ def _is_malformed(exc) -> bool:
     return isinstance(exc, sqlite3.DatabaseError) and "malformed" in str(exc).lower()
 
 
+def _replace_with_retry(src: str, dst: str, attempts: int = 10) -> None:
+    """原子替换 src -> dst（同卷 rename），失败则抛异常，绝不非原子覆盖。
+
+    Windows 上若目标文件正被其它进程以只读方式打开（SQLite 打开库时不带
+    FILE_SHARE_DELETE），os.replace 会抛 PermissionError。这里多级退避重试；
+    仍失败则直接报错让上层重试，**不能**退化成 shutil.copy2 覆盖——那会让
+    并发读者读到写了一半的库，这正是 "database disk image is malformed" 的来源。
+    """
+    delay = 0.1
+    for i in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                break
+            time.sleep(delay)
+            delay = min(delay * 2, 1.0)
+    # 退而求其次：先移除目标再改名（对部分共享模式有效）
+    for _ in range(3):
+        try:
+            if os.path.exists(dst):
+                os.remove(dst)
+            os.rename(src, dst)
+            return
+        except OSError:
+            time.sleep(0.4)
+    try:
+        if os.path.exists(src):
+            os.remove(src)
+    except OSError:
+        pass
+    raise PermissionError("目标文件被占用，无法原子替换: %s" % dst)
+
+
+class _RebuildLock:
+    """缓存重建的跨进程互斥锁（Windows 文件锁）。
+
+    多个进程共用同一 workdir 时（如同时跑 pull / summary / wxmatch），若同时
+    重建同一份解密缓存，会互相覆盖并让读者读到半截文件，表现为
+    "database disk image is malformed"。用 msvcrt 独占锁串行化重建；
+    进程退出（含崩溃）时 OS 自动释放，不会留死锁。
+    非 Windows 或加锁不可用时降级为不锁——单靠原子写也能保证读者不看到半截文件。
+    """
+
+    def __init__(self, path: str, timeout: float = 180.0):
+        self.path = path
+        self.timeout = timeout
+        self._fh = None
+        self._locked = False
+
+    def __enter__(self):
+        try:
+            import msvcrt  # noqa: F401
+        except Exception:
+            return self
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            self._fh = open(self.path, "a+b")
+        except OSError:
+            self._fh = None
+            return self
+        deadline = time.time() + self.timeout
+        while True:
+            try:
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+                self._locked = True
+                return self
+            except OSError:
+                if time.time() > deadline:
+                    sys.stderr.write(
+                        "[wechatauto] 等待缓存重建锁超时，继续（原子写兜底）\n")
+                    return self
+                time.sleep(0.2)
+
+    def __exit__(self, *exc):
+        if self._fh is None:
+            return False
+        try:
+            if self._locked:
+                import msvcrt
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        try:
+            self._fh.close()
+        except Exception:
+            pass
+        return False
+
+
 def _pbkdf2(passwd: bytes, salt: bytes, iters: int) -> bytes:
     return hashlib.pbkdf2_hmac("sha512", passwd, salt, iters, dklen=32)
 
@@ -904,6 +997,10 @@ class WeChatDB:
         解密结果缓存到 workdir；主库或 WAL 有变化时：
         - 主库被 checkpoint 改写（mtime/size 变化）或 WAL 被重置 → 全量重建；
         - 仅 WAL 追加了新帧 → 增量合并新帧（秒级）。
+
+        重建走跨进程锁 + 原子落盘：多进程共用同一 workdir（pull/summary/wxmatch
+        同时跑）时，若并发重建同一份缓存，读者会看到半截文件并报
+        "database disk image is malformed"。锁保证同一时刻只有一个进程在重建。
         """
         if rel not in self._keys:
             self._auto_diagnose_key_failure(rel)
@@ -916,18 +1013,24 @@ class WeChatDB:
         src = self._db_path(rel)
         dst = os.path.join(self.workdir, rel.replace(os.sep, "__"))
         key = self._keys[rel]
-        src_mtime = os.path.getmtime(src)
-        src_size = os.path.getsize(src)
-        wal_path = self._wal_path(rel)
-        wal_mtime = os.path.getmtime(wal_path) if wal_path else 0.0
-        wal_size = os.path.getsize(wal_path) if wal_path else 0
         stamp = dst + ".stamp"
-        old = None
-        if os.path.exists(stamp):
+
+        def snapshot() -> tuple:
+            """源库 + WAL 当前指纹（重建耗时较长，期间源库可能被微信改写）。"""
+            sm = os.path.getmtime(src)
+            ss = os.path.getsize(src)
+            wp = self._wal_path(rel)
+            wm = os.path.getmtime(wp) if wp else 0.0
+            ws = os.path.getsize(wp) if wp else 0
+            return sm, ss, wp, wm, ws
+
+        def read_stamp():
+            if not os.path.exists(stamp):
+                return None
             try:
                 with open(stamp, "r") as f:
                     parts = f.read().split(",")
-                old = {
+                o = {
                     "ver": int(parts[0]),
                     "mtime": float(parts[1]),
                     "size": int(parts[2]),
@@ -935,36 +1038,62 @@ class WeChatDB:
                     "wal_size": int(parts[4]),
                     "applied": int(parts[5]),
                 }
-                if old["ver"] != STAMP_VERSION:
-                    old = None
+                return None if o["ver"] != STAMP_VERSION else o
             except (ValueError, OSError, IndexError):
-                old = None
-        build = (not old or old["mtime"] != src_mtime or old["size"] != src_size
-                 or old["wal_mtime"] != wal_mtime or old["wal_size"] != wal_size)
-        attempt = 0
-        while build:
-            attempt += 1
-            full = (not old or old["mtime"] != src_mtime or old["size"] != src_size
-                    or wal_size < old["wal_size"] or wal_size == 0)
-            if full:
-                self._decrypt_file(src, dst, key)
-                applied = 0
-            else:
-                applied = old["applied"]
-            if wal_path and wal_size > self.WAL_HEADER_SZ:
-                applied = self._merge_wal(dst, wal_path, key, applied)
-            else:
-                applied = 0
-            if self._check_merged(dst):
-                build = False
-                os.makedirs(os.path.dirname(stamp), exist_ok=True)
-                with open(stamp, "w") as f:
-                    f.write("%d,%f,%d,%f,%d,%d"
-                            % (STAMP_VERSION, src_mtime, src_size, wal_mtime, wal_size, applied))
-            elif attempt >= 3:
-                raise RuntimeError("数据库合并失败(文件被微信并发改写): %s" % rel)
-            else:
-                old = None  # 合并结果损坏 → 全量重建重试
+                return None
+
+        def need_build(o) -> bool:
+            """stamp 与实际指纹不符（含 stamp 缺失）→ 需要重建。"""
+            return (not o or o["mtime"] != src_mtime or o["size"] != src_size
+                    or o["wal_mtime"] != wal_mtime or o["wal_size"] != wal_size)
+
+        src_mtime, src_size, wal_path, wal_mtime, wal_size = snapshot()
+        if not need_build(read_stamp()):
+            return self._connect_ro(dst)          # 缓存新鲜，直接读
+
+        # 需要重建：持锁串行化，锁内重读指纹与 stamp（别的进程可能刚建好）
+        with _RebuildLock(os.path.join(self.workdir, ".rebuild.lock")):
+            src_mtime, src_size, wal_path, wal_mtime, wal_size = snapshot()
+            old = read_stamp()
+            build = need_build(old)
+            attempt = 0
+            while build:
+                attempt += 1
+                full = (not old or old["mtime"] != src_mtime or old["size"] != src_size
+                        or wal_size < old["wal_size"] or wal_size == 0)
+                try:
+                    if full:
+                        self._decrypt_file(src, dst, key)
+                        applied = 0
+                    else:
+                        applied = old["applied"]
+                    if wal_path and wal_size > self.WAL_HEADER_SZ:
+                        applied = self._merge_wal(dst, wal_path, key, applied)
+                    else:
+                        applied = 0
+                    ok = self._check_merged(dst)
+                except (sqlite3.DatabaseError, OSError) as exc:
+                    # 校验未通过（源库正被微信改写）或落盘被占用 → 整轮重试，
+                    # 坏产物/临时文件均已被丢弃，读者不会看到半截库
+                    ok = False
+                    sys.stderr.write("[wechatauto] %s 重建第 %d 轮未通过：%s\n"
+                                     % (rel, attempt, exc))
+                if ok:
+                    build = False
+                    os.makedirs(os.path.dirname(stamp), exist_ok=True)
+                    with open(stamp, "w") as f:
+                        f.write("%d,%f,%d,%f,%d,%d"
+                                % (STAMP_VERSION, src_mtime, src_size, wal_mtime, wal_size, applied))
+                elif attempt >= 3:
+                    raise RuntimeError("数据库合并失败(文件被微信并发改写): %s" % rel)
+                else:
+                    # 源库可能已被改写 → 重读指纹后全量重建重试
+                    old = None
+                    src_mtime, src_size, wal_path, wal_mtime, wal_size = snapshot()
+        return self._connect_ro(dst)
+
+    @staticmethod
+    def _connect_ro(dst: str) -> sqlite3.Connection:
         conn = sqlite3.connect(f"file:{dst}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         conn.text_factory = _sqlite_text_factory
@@ -994,6 +1123,32 @@ class WeChatDB:
         return wal if os.path.exists(wal) else None
 
     def _merge_wal(self, dst: str, wal_path: str, key: bytes, from_frame: int) -> int:
+        """原子合并 -wal 增量帧到 dst；返回已应用帧数。
+
+        先复制临时副本、在副本上合并、完成后整体替换 dst，避免并发读者
+        读到合并中途的中间态（半截库 → "database disk image is malformed"）。
+        """
+        if not os.path.exists(dst):
+            return 0
+        tmp = "%s.part.%d.%d" % (dst, os.getpid(), threading.get_ident())
+        try:
+            shutil.copy2(dst, tmp)
+            last = self._merge_wal_inplace(tmp, wal_path, key, from_frame)
+            if not self._check_merged(tmp):
+                os.remove(tmp)
+                raise sqlite3.DatabaseError(
+                    "WAL 合并产物未通过 quick_check（微信可能正在 checkpoint）")
+            _replace_with_retry(tmp, dst)
+            return last
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _merge_wal_inplace(self, dst: str, wal_path: str, key: bytes, from_frame: int) -> int:
         """把 -wal 中的加密帧按页号覆盖进已解密的主库文件，返回已应用帧数。
 
         帧结构（WCDB，全部大端）：[0:4] 页号, [4:8] 提交标记, [8:16] salt, [16:24] 校验。
@@ -1058,14 +1213,35 @@ class WeChatDB:
         size = os.path.getsize(src)
         pages = size // PAGE_SZ + (1 if size % PAGE_SZ else 0)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        with open(src, "rb") as fin, open(dst, "wb") as fout:
-            for pgno in range(1, pages + 1):
-                page = fin.read(PAGE_SZ)
-                if not page:
-                    break
-                if len(page) < PAGE_SZ:
-                    page = page + b"\x00" * (PAGE_SZ - len(page))
-                fout.write(_decrypt_page(key, page, pgno))
+        # 先在临时文件上解密并校验，通过后才原子落盘。
+        # 直接覆盖 dst 有两个风险：1) 并发读者读到只写了一半的库；
+        # 2) 微信正在改写源库时读到的页不一致，解出的库本身是坏的——
+        #    这类产物绝不能让读者看到（校验失败即丢弃重试）。
+        tmp = "%s.part.%d.%d" % (dst, os.getpid(), threading.get_ident())
+        try:
+            with open(src, "rb") as fin, open(tmp, "wb") as fout:
+                for pgno in range(1, pages + 1):
+                    page = fin.read(PAGE_SZ)
+                    if not page:
+                        break
+                    if len(page) < PAGE_SZ:
+                        page = page + b"\x00" * (PAGE_SZ - len(page))
+                    fout.write(_decrypt_page(key, page, pgno))
+                fout.flush()
+                os.fsync(fout.fileno())
+            if not self._check_merged(tmp):
+                os.remove(tmp)
+                raise sqlite3.DatabaseError(
+                    "解密产物未通过 quick_check（源库可能正被微信改写）: %s"
+                    % os.path.basename(src))
+            _replace_with_retry(tmp, dst)
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
     def _message_dbs(self) -> List[str]:
         """返回当前所有消息分片库。微信运行中可能新建分片（如 message_5.db），
