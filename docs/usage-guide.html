@@ -99,7 +99,7 @@
     <h2><span class="num">★</span>零基础也能用（不需要任何账号）</h2>
     <p>没有 SeaTable、PartDB 或现成 ERP？<b>照样能用</b>。业务台账默认使用本地 CSV；采购库存可从 Excel/CSV 起步，之后再切换 PartDB、ERP API 或 MCP，采购审核逻辑无需重写。</p>
     <div class="step"><b>最省事：用 WorkBuddy 对话</b><br>把本仓库链接 <code>https://github.com/Darling5/seatable-production</code> 粘贴到 WorkBuddy「我的项目 → 新建项目」，项目会自动带上技能与「生产驾驶舱」专家。然后直接对专家说：<br>「<b>生成演示版驾驶舱</b>」→ 它用内置示例数据给你一张完整网页；<br>「<b>帮我建个生产计划：产品 4G 小卡，数量 100，交期 30 个工作日</b>」→ 它自动填表，你不用懂那 14 张表。</div>
-    <div class="step"><b>想自己跑（会一点命令行）</b><br><code>git clone 本仓库</code> → <code>python setup.py --local</code> → <code>python seed_demo.py</code> → <code>python cockpit.py</code> → 打开生成的 <code>项目管理驾驶舱.html</code>。要启用采购流水线，再运行 <code>python pipeline/run.py init</code>，填写本地客户规则并运行 <code>python pipeline/run.py preflight</code>。</div>
+    <div class="step"><b>想自己跑（会一点命令行）</b><br><code>git clone 本仓库</code> → <code>python tools/setup.py --local</code> → <code>python tools/seed_demo.py</code> → <code>python cockpit/cockpit.py</code> → 打开生成的 <code>项目管理驾驶舱.html</code>。要启用采购流水线，再运行 <code>python pipeline/run.py init</code>，填写本地客户规则并运行 <code>python pipeline/run.py preflight</code>。</div>
     <div class="step"><b>已有 ERP 的客户</b><br>库存源优先选 <code>api</code> 或 <code>mcp</code>；配置登录鉴权、分页、响应路径和字段映射。没有在线接口时，先导出 Excel/CSV 选择 <code>file</code>，后续切换数据源不影响人工审核和采购订单流程。</div>
     <div class="okbox">✅ 公共仓库只保存通用代码、规则模板和示例配置。公司抬头、联系人、BOM、库存、流程文件、ERP 地址与凭证都放在本地 Git 忽略配置中。</div>
     <div class="okbox">🌙 <b>夜间模式（三态）</b>：默认跟随你系统的深色 / 浅色设置自动切换（macOS / Windows / 手机都支持）。如果自动没生效，或想单独让驾驶舱变暗而系统仍是亮色——点顶部工具栏的 <b>「主题」按钮</b> 即可在「自动 → 暗色 → 亮色」之间循环切换，选择会记在浏览器本地（localStorage），下次打开自动生效。</div>
@@ -146,7 +146,7 @@
     </div>
     <div class="flow-summary">
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 12l3 3 5-6"/></svg>
-      <span><b>第三条路 · 消息核对：</b>微信保持 PC 版登录，跑一次 <code>python wxmatch.py scan</code>，群里的收款、新下单、合同 PDF 就会与业务表<b>逐条对账</b>——专抓「群里说了但表里没有」的缺口。核对引擎<b>只读</b>，高置信项只生成预填意图，你确认后才写库。</span>
+      <span><b>第三条路 · 消息核对：</b>微信保持 PC 版登录，跑一次 <code>python wx/wxmatch.py scan</code>，群里的收款、新下单、合同 PDF 就会与业务表<b>逐条对账</b>——专抓「群里说了但表里没有」的缺口。核对引擎<b>只读</b>，高置信项只生成预填意图，你确认后才写库。</span>
     </div>
   </section>
 
@@ -156,8 +156,8 @@
     <div class="step"><b>第 1 步 · 建项目</b><br>在 WorkBuddy 里从本仓库的 GitHub 链接创建项目；项目会带上 <code>seatable-production</code> 技能和「生产驾驶舱」专家。</div>
     <div class="step"><b>第 2 步 · 接数据</b><br>业务台账选择本地 CSV 或 SeaTable；采购库存选择 PartDB、ERP API、MCP 或 Excel/CSV。全部客户字段和凭证只填本地配置，不进入公开仓库。</div>
     <div class="step"><b>第 3 步 · 生成与采购</b><br>可以生成生产驾驶舱并分享；也可以只上传采购合同，自动匹配标准 BOM、生成库存审核表，人工批准后输出按供应商分组的正式采购订单 PDF。</div>
-    <div class="step"><b>可选 · 开微信情报</b><br>微信 4.x 保持 PC 版登录即可（<code>pip install cryptography</code>），AI 自动从本地加密库拉监控群消息；用 <code>python wechat_intake.py doctor</code> 体检、<code>groups</code> 挑监控群。</div>
-    <div class="step"><b>可选 · 开消息核对（v1.6.2）</b><br>同一批群消息换个用法：<code>python wxmatch.py scan</code> 把收款 / 下单 / 合同 PDF 与业务表<b>逐条对账</b>，结果进驾驶舱「消息↔SeaTable 核对台」。<b>只读核对</b>——高置信收款生成预填意图，你在对话里说出核对编号确认后才写库。</div>
+    <div class="step"><b>可选 · 开微信情报</b><br>微信 4.x 保持 PC 版登录即可（<code>pip install cryptography</code>），AI 自动从本地加密库拉监控群消息；用 <code>python wx/wechat_intake.py doctor</code> 体检、<code>groups</code> 挑监控群。</div>
+    <div class="step"><b>可选 · 开消息核对（v1.6.2）</b><br>同一批群消息换个用法：<code>python wx/wxmatch.py scan</code> 把收款 / 下单 / 合同 PDF 与业务表<b>逐条对账</b>，结果进驾驶舱「消息↔SeaTable 核对台」。<b>只读核对</b>——高置信收款生成预填意图，你在对话里说出核对编号确认后才写库。</div>
     <div class="okbox">✅ 驾驶舱可按需设置自动更新；采购链路始终保留人工库存审核，SeaTable 写入也必须显式确认。</div>
   </section>
 
@@ -258,10 +258,10 @@
 
     <h3>常用命令</h3>
     <div class="card">
-      <code>python wxmatch.py scan</code> &nbsp;扫描群消息 + 合同 PDF，写核对台账<br>
-      <code>python wxmatch.py list</code> &nbsp;查看待核对项（按置信度排序）<br>
-      <code>python wxmatch.py done WX-M-...001</code> &nbsp;处置留痕<br>
-      <code>python wxmatch.py intent</code> &nbsp;导出高置信项预填意图
+      <code>python wx/wxmatch.py scan</code> &nbsp;扫描群消息 + 合同 PDF，写核对台账<br>
+      <code>python wx/wxmatch.py list</code> &nbsp;查看待核对项（按置信度排序）<br>
+      <code>python wx/wxmatch.py done WX-M-...001</code> &nbsp;处置留痕<br>
+      <code>python wx/wxmatch.py intent</code> &nbsp;导出高置信项预填意图
     </div>
 
     <h3>输出长什么样</h3>
@@ -307,12 +307,12 @@
 
     <h3>常用命令</h3>
     <div class="card">
-      <code>python market.py raw list</code> &nbsp;看有哪些品种、各自的数据源<br>
-      <code>python market.py raw fetch</code> &nbsp;拉一次实时价并写库（每天跑一次即可积累走势）<br>
-      <code>python market.py raw show --days 30</code> &nbsp;走势表（sparkline + 区间涨跌）<br>
-      <code>python market.py raw trend --days 30</code> &nbsp;波动超阈值告警（默认 ±3%）<br>
-      <code>python market.py raw add ABS --price 11800</code> &nbsp;人工录入现货价<br>
-      <code>python market.py raw backfill AU --contract au2612 --days 60</code> &nbsp;一次性补历史
+      <code>python domain/market.py raw list</code> &nbsp;看有哪些品种、各自的数据源<br>
+      <code>python domain/market.py raw fetch</code> &nbsp;拉一次实时价并写库（每天跑一次即可积累走势）<br>
+      <code>python domain/market.py raw show --days 30</code> &nbsp;走势表（sparkline + 区间涨跌）<br>
+      <code>python domain/market.py raw trend --days 30</code> &nbsp;波动超阈值告警（默认 ±3%）<br>
+      <code>python domain/market.py raw add ABS --price 11800</code> &nbsp;人工录入现货价<br>
+      <code>python domain/market.py raw backfill AU --contract au2612 --days 60</code> &nbsp;一次性补历史
     </div>
 
     <h3>输出长什么样</h3>
