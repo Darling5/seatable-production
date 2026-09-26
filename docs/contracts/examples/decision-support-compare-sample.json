@@ -1,0 +1,1348 @@
+{
+  "contract_version": "decision-support-v1",
+  "rules_version": "ds-rules-1.0.0",
+  "generated_at": "2026-09-26T11:16:28",
+  "project_id": "PRJ-20260928-0001",
+  "snapshot_id": "SNP-20260928-0830",
+  "as_of": "2026-09-28T08:30:00",
+  "baseline_id": "S0",
+  "scenarios": [
+    {
+      "scenario_id": "S0",
+      "name": "保持条件（基准）",
+      "kind": "baseline",
+      "is_baseline": true,
+      "mutations": [],
+      "assumptions": [
+        "不做任何变更，按当前条件排程"
+      ],
+      "completion": [
+        {
+          "plan_id": "PLN-20260928-A",
+          "name": "A 批",
+          "forecast_date": "2026-10-01",
+          "forecast_status": "determined",
+          "baseline_forecast_date": "2026-10-01",
+          "delta_days": 0,
+          "contract_date": "2026-10-09",
+          "internal_plan_date": "2026-10-02",
+          "vs_contract_days": -8
+        },
+        {
+          "plan_id": "PLN-20260928-B",
+          "name": "B 批",
+          "forecast_date": "2026-09-29",
+          "forecast_status": "determined",
+          "baseline_forecast_date": "2026-09-29",
+          "delta_days": 0,
+          "contract_date": "2026-10-09",
+          "internal_plan_date": "2026-09-30",
+          "vs_contract_days": -10
+        },
+        {
+          "plan_id": "PLN-20260928-C",
+          "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
+          "forecast_date": null,
+          "forecast_status": "undetermined",
+          "baseline_forecast_date": null,
+          "delta_days": null,
+          "contract_date": "2026-10-16",
+          "internal_plan_date": "",
+          "vs_contract_days": null
+        }
+      ],
+      "completion_text": "A 批 2026-10-01（周四）；B 批 2026-09-29（周二）；C 批（用于演示「不可确定」：未收款 + 工期未知） 不可确定",
+      "delta_cost": {
+        "items": [],
+        "amount": 0.0,
+        "currency": "元",
+        "complete": true,
+        "is_synthetic": true,
+        "note": "费用与加急可行性均为合成假设，不是真实报价。",
+        "basis": "无成本项"
+      },
+      "affected_projects": [],
+      "open_conditions": [
+        {
+          "code": "condition_unverified",
+          "step_id": "STP-C-ASM",
+          "kind": "payment",
+          "kind_cn": "收款条件",
+          "status": "unknown",
+          "status_cn": "未知",
+          "available_at": "",
+          "message": "工序 C 批 组装 的「收款条件」为未知，方案结论建立在未核实的前提上",
+          "ref": "SO-2026-0777"
+        },
+        {
+          "code": "unconfirmed_precondition",
+          "step_id": "STP-C-ASM",
+          "message": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+          "ref": "STP-C-ASM"
+        },
+        {
+          "code": "unknown_duration",
+          "step_id": "STP-C-TEST",
+          "message": "工期未知，无法推算日期",
+          "ref": "STP-C-TEST"
+        }
+      ],
+      "required_approvals": [
+        {
+          "what": "数据修正",
+          "ref": "STP-C-ASM",
+          "who": "计划员",
+          "why": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+          "note": "批准 ≠ 执行授权；执行仍须持 WriteGrant 走第一期闸门"
+        },
+        {
+          "what": "数据修正",
+          "ref": "STP-C-TEST",
+          "who": "计划员",
+          "why": "工期未知，无法推算日期",
+          "note": "批准 ≠ 执行授权；执行仍须持 WriteGrant 走第一期闸门"
+        }
+      ],
+      "basis": {
+        "snapshot_id": "SNP-20260928-0830",
+        "as_of": "2026-09-28T08:30:00",
+        "calendar": {
+          "name": "样例日历：周一至周五 09:00—17:00，无额外节假日",
+          "workdays": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "start_hour": 9.0,
+          "end_hour": 17.0,
+          "hours_per_day": 8.0,
+          "holidays": [],
+          "extra_workdays": [],
+          "note": "工作日 = 周一至周五（减去节假日、加上调休）"
+        },
+        "rules_version": "ds-rules-1.0.0",
+        "schedule_method": "heuristic_earliest_start_first",
+        "schedule_disclaimer": "本排程为可解释启发式规则结果，非资源约束下的最优排程（RCPSP 属 NP-hard，本期不做最优求解）。关键路径按「仅前置关系」口径计算，不包含资源约束。",
+        "write_intents": []
+      },
+      "schedule": {
+        "cpm_critical_path": [
+          "STP-A-ASM",
+          "STP-A-TEST"
+        ],
+        "plans": [
+          {
+            "plan_id": "PLN-20260928-A",
+            "name": "A 批",
+            "forecast_date": "2026-10-01",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "contract_date": "2026-10-09",
+            "internal_plan_date": "2026-10-02",
+            "step_ids": [
+              "STP-A-ASM",
+              "STP-A-TEST"
+            ]
+          },
+          {
+            "plan_id": "PLN-20260928-B",
+            "name": "B 批",
+            "forecast_date": "2026-09-29",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "contract_date": "2026-10-09",
+            "internal_plan_date": "2026-09-30",
+            "step_ids": [
+              "STP-B-ASM",
+              "STP-B-TEST"
+            ]
+          },
+          {
+            "plan_id": "PLN-20260928-C",
+            "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
+            "forecast_date": null,
+            "forecast_status": "undetermined",
+            "depends_on_unverified": false,
+            "contract_date": "2026-10-16",
+            "internal_plan_date": "",
+            "step_ids": [
+              "STP-C-ASM",
+              "STP-C-TEST"
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "step_id": "STP-A-ASM",
+            "plan_id": "PLN-20260928-A",
+            "name": "A 批 组装",
+            "process": "组装",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "RES-ASM-A"
+            ],
+            "resolved_resources": {
+              "RES-ASM-A": "RES-ASM-A"
+            },
+            "start": "2026-09-30T09:00",
+            "finish": "2026-09-30T17:00",
+            "forecast_date": "2026-09-30",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": []
+          },
+          {
+            "step_id": "STP-A-TEST",
+            "plan_id": "PLN-20260928-A",
+            "name": "A 批 测试",
+            "process": "测试",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "GRP-TEST"
+            ],
+            "resolved_resources": {
+              "GRP-TEST": "RES-TEST-1"
+            },
+            "start": "2026-10-01T09:00",
+            "finish": "2026-10-01T17:00",
+            "forecast_date": "2026-10-01",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": []
+          },
+          {
+            "step_id": "STP-B-ASM",
+            "plan_id": "PLN-20260928-B",
+            "name": "B 批 组装",
+            "process": "组装",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "RES-ASM-B"
+            ],
+            "resolved_resources": {
+              "RES-ASM-B": "RES-ASM-B"
+            },
+            "start": "2026-09-28T09:00",
+            "finish": "2026-09-28T17:00",
+            "forecast_date": "2026-09-28",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": []
+          },
+          {
+            "step_id": "STP-B-TEST",
+            "plan_id": "PLN-20260928-B",
+            "name": "B 批 测试",
+            "process": "测试",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "GRP-TEST"
+            ],
+            "resolved_resources": {
+              "GRP-TEST": "RES-TEST-1"
+            },
+            "start": "2026-09-29T09:00",
+            "finish": "2026-09-29T17:00",
+            "forecast_date": "2026-09-29",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": []
+          },
+          {
+            "step_id": "STP-C-ASM",
+            "plan_id": "PLN-20260928-C",
+            "name": "C 批 组装",
+            "process": "组装",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "RES-ASM-A"
+            ],
+            "resolved_resources": {},
+            "start": null,
+            "finish": null,
+            "forecast_date": null,
+            "forecast_status": "undetermined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": [
+              {
+                "code": "unconfirmed_precondition",
+                "message": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+                "ref": "STP-C-ASM"
+              }
+            ]
+          },
+          {
+            "step_id": "STP-C-TEST",
+            "plan_id": "PLN-20260928-C",
+            "name": "C 批 测试",
+            "process": "测试",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "GRP-TEST"
+            ],
+            "resolved_resources": {},
+            "start": null,
+            "finish": null,
+            "forecast_date": null,
+            "forecast_status": "undetermined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": [
+              {
+                "code": "unknown_duration",
+                "message": "工期未知，无法推算日期",
+                "ref": "STP-C-TEST"
+              }
+            ]
+          }
+        ],
+        "resources": [
+          {
+            "resource_id": "RES-ASM-A",
+            "name": "A 批组装工位",
+            "type": "设备",
+            "daily_capacity_hours": 8.0,
+            "in_service": true,
+            "days": [
+              {
+                "date": "2026-09-30",
+                "used_hours": 8.0,
+                "capacity_hours": 8.0,
+                "overload": false,
+                "steps": [
+                  "STP-A-ASM"
+                ]
+              }
+            ],
+            "total_hours": 8.0
+          },
+          {
+            "resource_id": "RES-ASM-B",
+            "name": "B 批组装工位",
+            "type": "设备",
+            "daily_capacity_hours": 8.0,
+            "in_service": true,
+            "days": [
+              {
+                "date": "2026-09-28",
+                "used_hours": 8.0,
+                "capacity_hours": 8.0,
+                "overload": false,
+                "steps": [
+                  "STP-B-ASM"
+                ]
+              }
+            ],
+            "total_hours": 8.0
+          },
+          {
+            "resource_id": "RES-TEST-1",
+            "name": "测试台 1",
+            "type": "设备",
+            "daily_capacity_hours": 8.0,
+            "in_service": true,
+            "days": [
+              {
+                "date": "2026-09-29",
+                "used_hours": 8.0,
+                "capacity_hours": 8.0,
+                "overload": false,
+                "steps": [
+                  "STP-B-TEST"
+                ]
+              },
+              {
+                "date": "2026-10-01",
+                "used_hours": 8.0,
+                "capacity_hours": 8.0,
+                "overload": false,
+                "steps": [
+                  "STP-A-TEST"
+                ]
+              }
+            ],
+            "total_hours": 16.0
+          }
+        ],
+        "conflicts_resolved": [],
+        "unresolved": [
+          {
+            "step_id": "STP-C-ASM",
+            "plan_id": "PLN-20260928-C",
+            "reason": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+            "reason_code": "unconfirmed_precondition"
+          },
+          {
+            "step_id": "STP-C-TEST",
+            "plan_id": "PLN-20260928-C",
+            "reason": "工期未知，无法推算日期",
+            "reason_code": "unknown_duration"
+          }
+        ],
+        "issues": [],
+        "protected_steps": [],
+        "method": "heuristic_earliest_start_first",
+        "method_cn": "就绪优先启发式（最早可开始优先，资源冲突顺延）",
+        "disclaimer": "本排程为可解释启发式规则结果，非资源约束下的最优排程（RCPSP 属 NP-hard，本期不做最优求解）。关键路径按「仅前置关系」口径计算，不包含资源约束。"
+      }
+    },
+    {
+      "scenario_id": "S1",
+      "name": "假设 A 材料提前一个工作日到",
+      "kind": "candidate",
+      "is_baseline": false,
+      "mutations": [
+        {
+          "op": "set_condition",
+          "step_id": "STP-A-ASM",
+          "kind": "material",
+          "status": "assumed",
+          "available_at": "2026-09-29",
+          "applied_to": 1,
+          "say": "假设 A 物料 2026-09-29 到货（**情景假设**，需采购核实；核实不了则本方案不成立）"
+        }
+      ],
+      "assumptions": [
+        "A 物料提前到货是**假设**，需要采购核实；核实不了则本方案不成立"
+      ],
+      "completion": [
+        {
+          "plan_id": "PLN-20260928-A",
+          "name": "A 批",
+          "forecast_date": "2026-09-30",
+          "forecast_status": "conditional",
+          "baseline_forecast_date": "2026-10-01",
+          "delta_days": -1,
+          "contract_date": "2026-10-09",
+          "internal_plan_date": "2026-10-02",
+          "vs_contract_days": -9
+        },
+        {
+          "plan_id": "PLN-20260928-B",
+          "name": "B 批",
+          "forecast_date": "2026-09-29",
+          "forecast_status": "determined",
+          "baseline_forecast_date": "2026-09-29",
+          "delta_days": 0,
+          "contract_date": "2026-10-09",
+          "internal_plan_date": "2026-09-30",
+          "vs_contract_days": -10
+        },
+        {
+          "plan_id": "PLN-20260928-C",
+          "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
+          "forecast_date": null,
+          "forecast_status": "undetermined",
+          "baseline_forecast_date": null,
+          "delta_days": null,
+          "contract_date": "2026-10-16",
+          "internal_plan_date": "",
+          "vs_contract_days": null
+        }
+      ],
+      "completion_text": "A 批 2026-09-30（周三），较基准 -1 天；B 批 2026-09-29（周二）；C 批（用于演示「不可确定」：未收款 + 工期未知） 不可确定",
+      "delta_cost": {
+        "items": [
+          {
+            "item": "加急/催料费（合成）",
+            "amount": 1200.0,
+            "currency": "元",
+            "basis": "成本模型 expedite_fee"
+          }
+        ],
+        "amount": 1200.0,
+        "currency": "元",
+        "complete": true,
+        "is_synthetic": true,
+        "note": "费用与加急可行性均为合成假设，不是真实报价。",
+        "basis": "成本模型 expedite_fee"
+      },
+      "affected_projects": [
+        {
+          "plan_id": "PLN-20260928-A",
+          "name": "A 批",
+          "delta_days": -1,
+          "from": "2026-10-01",
+          "to": "2026-09-30"
+        }
+      ],
+      "open_conditions": [
+        {
+          "code": "condition_unverified",
+          "step_id": "STP-A-ASM",
+          "kind": "material",
+          "kind_cn": "物料到货",
+          "status": "assumed",
+          "status_cn": "情景假设",
+          "available_at": "2026-09-29",
+          "message": "工序 A 批 组装 的「物料到货」为情景假设，方案结论建立在未核实的前提上",
+          "ref": "IC-2026-0912"
+        },
+        {
+          "code": "condition_unverified",
+          "step_id": "STP-C-ASM",
+          "kind": "payment",
+          "kind_cn": "收款条件",
+          "status": "unknown",
+          "status_cn": "未知",
+          "available_at": "",
+          "message": "工序 C 批 组装 的「收款条件」为未知，方案结论建立在未核实的前提上",
+          "ref": "SO-2026-0777"
+        },
+        {
+          "code": "unconfirmed_precondition",
+          "step_id": "STP-C-ASM",
+          "message": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+          "ref": "STP-C-ASM"
+        },
+        {
+          "code": "unknown_duration",
+          "step_id": "STP-C-TEST",
+          "message": "工期未知，无法推算日期",
+          "ref": "STP-C-TEST"
+        }
+      ],
+      "required_approvals": [
+        {
+          "what": "核实前置条件",
+          "ref": "STP-A-ASM",
+          "who": "采购/跟单",
+          "why": "方案把「物料到货」当成 2026-09-29，必须先核实，否则结论不成立",
+          "note": "批准 ≠ 执行授权；执行仍须持 WriteGrant 走第一期闸门"
+        },
+        {
+          "what": "数据修正",
+          "ref": "STP-C-ASM",
+          "who": "计划员",
+          "why": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+          "note": "批准 ≠ 执行授权；执行仍须持 WriteGrant 走第一期闸门"
+        },
+        {
+          "what": "数据修正",
+          "ref": "STP-C-TEST",
+          "who": "计划员",
+          "why": "工期未知，无法推算日期",
+          "note": "批准 ≠ 执行授权；执行仍须持 WriteGrant 走第一期闸门"
+        }
+      ],
+      "basis": {
+        "snapshot_id": "SNP-20260928-0830",
+        "as_of": "2026-09-28T08:30:00",
+        "calendar": {
+          "name": "样例日历：周一至周五 09:00—17:00，无额外节假日",
+          "workdays": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "start_hour": 9.0,
+          "end_hour": 17.0,
+          "hours_per_day": 8.0,
+          "holidays": [],
+          "extra_workdays": [],
+          "note": "工作日 = 周一至周五（减去节假日、加上调休）"
+        },
+        "rules_version": "ds-rules-1.0.0",
+        "schedule_method": "heuristic_earliest_start_first",
+        "schedule_disclaimer": "本排程为可解释启发式规则结果，非资源约束下的最优排程（RCPSP 属 NP-hard，本期不做最优求解）。关键路径按「仅前置关系」口径计算，不包含资源约束。",
+        "write_intents": []
+      },
+      "schedule": {
+        "cpm_critical_path": [
+          "STP-A-ASM",
+          "STP-A-TEST"
+        ],
+        "plans": [
+          {
+            "plan_id": "PLN-20260928-A",
+            "name": "A 批",
+            "forecast_date": "2026-09-30",
+            "forecast_status": "conditional",
+            "depends_on_unverified": true,
+            "contract_date": "2026-10-09",
+            "internal_plan_date": "2026-10-02",
+            "step_ids": [
+              "STP-A-ASM",
+              "STP-A-TEST"
+            ]
+          },
+          {
+            "plan_id": "PLN-20260928-B",
+            "name": "B 批",
+            "forecast_date": "2026-09-29",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "contract_date": "2026-10-09",
+            "internal_plan_date": "2026-09-30",
+            "step_ids": [
+              "STP-B-ASM",
+              "STP-B-TEST"
+            ]
+          },
+          {
+            "plan_id": "PLN-20260928-C",
+            "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
+            "forecast_date": null,
+            "forecast_status": "undetermined",
+            "depends_on_unverified": false,
+            "contract_date": "2026-10-16",
+            "internal_plan_date": "",
+            "step_ids": [
+              "STP-C-ASM",
+              "STP-C-TEST"
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "step_id": "STP-A-ASM",
+            "plan_id": "PLN-20260928-A",
+            "name": "A 批 组装",
+            "process": "组装",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "RES-ASM-A"
+            ],
+            "resolved_resources": {
+              "RES-ASM-A": "RES-ASM-A"
+            },
+            "start": "2026-09-29T09:00",
+            "finish": "2026-09-29T17:00",
+            "forecast_date": "2026-09-29",
+            "forecast_status": "conditional",
+            "depends_on_unverified": true,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": []
+          },
+          {
+            "step_id": "STP-A-TEST",
+            "plan_id": "PLN-20260928-A",
+            "name": "A 批 测试",
+            "process": "测试",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "GRP-TEST"
+            ],
+            "resolved_resources": {
+              "GRP-TEST": "RES-TEST-1"
+            },
+            "start": "2026-09-30T09:00",
+            "finish": "2026-09-30T17:00",
+            "forecast_date": "2026-09-30",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": []
+          },
+          {
+            "step_id": "STP-B-ASM",
+            "plan_id": "PLN-20260928-B",
+            "name": "B 批 组装",
+            "process": "组装",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "RES-ASM-B"
+            ],
+            "resolved_resources": {
+              "RES-ASM-B": "RES-ASM-B"
+            },
+            "start": "2026-09-28T09:00",
+            "finish": "2026-09-28T17:00",
+            "forecast_date": "2026-09-28",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": []
+          },
+          {
+            "step_id": "STP-B-TEST",
+            "plan_id": "PLN-20260928-B",
+            "name": "B 批 测试",
+            "process": "测试",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "GRP-TEST"
+            ],
+            "resolved_resources": {
+              "GRP-TEST": "RES-TEST-1"
+            },
+            "start": "2026-09-29T09:00",
+            "finish": "2026-09-29T17:00",
+            "forecast_date": "2026-09-29",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": []
+          },
+          {
+            "step_id": "STP-C-ASM",
+            "plan_id": "PLN-20260928-C",
+            "name": "C 批 组装",
+            "process": "组装",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "RES-ASM-A"
+            ],
+            "resolved_resources": {},
+            "start": null,
+            "finish": null,
+            "forecast_date": null,
+            "forecast_status": "undetermined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": [
+              {
+                "code": "unconfirmed_precondition",
+                "message": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+                "ref": "STP-C-ASM"
+              }
+            ]
+          },
+          {
+            "step_id": "STP-C-TEST",
+            "plan_id": "PLN-20260928-C",
+            "name": "C 批 测试",
+            "process": "测试",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "GRP-TEST"
+            ],
+            "resolved_resources": {},
+            "start": null,
+            "finish": null,
+            "forecast_date": null,
+            "forecast_status": "undetermined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": [
+              {
+                "code": "unknown_duration",
+                "message": "工期未知，无法推算日期",
+                "ref": "STP-C-TEST"
+              }
+            ]
+          }
+        ],
+        "resources": [
+          {
+            "resource_id": "RES-ASM-A",
+            "name": "A 批组装工位",
+            "type": "设备",
+            "daily_capacity_hours": 8.0,
+            "in_service": true,
+            "days": [
+              {
+                "date": "2026-09-29",
+                "used_hours": 8.0,
+                "capacity_hours": 8.0,
+                "overload": false,
+                "steps": [
+                  "STP-A-ASM"
+                ]
+              }
+            ],
+            "total_hours": 8.0
+          },
+          {
+            "resource_id": "RES-ASM-B",
+            "name": "B 批组装工位",
+            "type": "设备",
+            "daily_capacity_hours": 8.0,
+            "in_service": true,
+            "days": [
+              {
+                "date": "2026-09-28",
+                "used_hours": 8.0,
+                "capacity_hours": 8.0,
+                "overload": false,
+                "steps": [
+                  "STP-B-ASM"
+                ]
+              }
+            ],
+            "total_hours": 8.0
+          },
+          {
+            "resource_id": "RES-TEST-1",
+            "name": "测试台 1",
+            "type": "设备",
+            "daily_capacity_hours": 8.0,
+            "in_service": true,
+            "days": [
+              {
+                "date": "2026-09-29",
+                "used_hours": 8.0,
+                "capacity_hours": 8.0,
+                "overload": false,
+                "steps": [
+                  "STP-B-TEST"
+                ]
+              },
+              {
+                "date": "2026-09-30",
+                "used_hours": 8.0,
+                "capacity_hours": 8.0,
+                "overload": false,
+                "steps": [
+                  "STP-A-TEST"
+                ]
+              }
+            ],
+            "total_hours": 16.0
+          }
+        ],
+        "conflicts_resolved": [],
+        "unresolved": [
+          {
+            "step_id": "STP-C-ASM",
+            "plan_id": "PLN-20260928-C",
+            "reason": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+            "reason_code": "unconfirmed_precondition"
+          },
+          {
+            "step_id": "STP-C-TEST",
+            "plan_id": "PLN-20260928-C",
+            "reason": "工期未知，无法推算日期",
+            "reason_code": "unknown_duration"
+          }
+        ],
+        "issues": [],
+        "protected_steps": [],
+        "method": "heuristic_earliest_start_first",
+        "method_cn": "就绪优先启发式（最早可开始优先，资源冲突顺延）",
+        "disclaimer": "本排程为可解释启发式规则结果，非资源约束下的最优排程（RCPSP 属 NP-hard，本期不做最优求解）。关键路径按「仅前置关系」口径计算，不包含资源约束。"
+      }
+    },
+    {
+      "scenario_id": "S2",
+      "name": "仅增加一台测试设备",
+      "kind": "candidate",
+      "is_baseline": false,
+      "mutations": [
+        {
+          "op": "add_resource",
+          "resource_id": "RES-TEST-2",
+          "to_group": "GRP-TEST",
+          "say": "新增一台测试设备并加入测试资源池（合成假设，非真实采购）"
+        }
+      ],
+      "assumptions": [
+        "新增测试设备是**假设**，费用与交期未核实"
+      ],
+      "completion": [
+        {
+          "plan_id": "PLN-20260928-A",
+          "name": "A 批",
+          "forecast_date": "2026-10-01",
+          "forecast_status": "determined",
+          "baseline_forecast_date": "2026-10-01",
+          "delta_days": 0,
+          "contract_date": "2026-10-09",
+          "internal_plan_date": "2026-10-02",
+          "vs_contract_days": -8
+        },
+        {
+          "plan_id": "PLN-20260928-B",
+          "name": "B 批",
+          "forecast_date": "2026-09-29",
+          "forecast_status": "determined",
+          "baseline_forecast_date": "2026-09-29",
+          "delta_days": 0,
+          "contract_date": "2026-10-09",
+          "internal_plan_date": "2026-09-30",
+          "vs_contract_days": -10
+        },
+        {
+          "plan_id": "PLN-20260928-C",
+          "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
+          "forecast_date": null,
+          "forecast_status": "undetermined",
+          "baseline_forecast_date": null,
+          "delta_days": null,
+          "contract_date": "2026-10-16",
+          "internal_plan_date": "",
+          "vs_contract_days": null
+        }
+      ],
+      "completion_text": "A 批 2026-10-01（周四）；B 批 2026-09-29（周二）；C 批（用于演示「不可确定」：未收款 + 工期未知） 不可确定",
+      "delta_cost": {
+        "items": [],
+        "amount": 0.0,
+        "currency": "元",
+        "complete": false,
+        "is_synthetic": true,
+        "note": "费用与加急可行性均为合成假设，不是真实报价。",
+        "basis": "无成本项"
+      },
+      "affected_projects": [],
+      "open_conditions": [
+        {
+          "code": "condition_unverified",
+          "step_id": "STP-C-ASM",
+          "kind": "payment",
+          "kind_cn": "收款条件",
+          "status": "unknown",
+          "status_cn": "未知",
+          "available_at": "",
+          "message": "工序 C 批 组装 的「收款条件」为未知，方案结论建立在未核实的前提上",
+          "ref": "SO-2026-0777"
+        },
+        {
+          "code": "unconfirmed_precondition",
+          "step_id": "STP-C-ASM",
+          "message": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+          "ref": "STP-C-ASM"
+        },
+        {
+          "code": "unknown_duration",
+          "step_id": "STP-C-TEST",
+          "message": "工期未知，无法推算日期",
+          "ref": "STP-C-TEST"
+        },
+        {
+          "code": "resource_never_used",
+          "message": "新增资源 RES-TEST-2 在本次排程中**未被用到**（瓶颈不在这里），采购它不会改善交期；增量成本按 0 计，但真实采购支出仍是 900.0 元/天",
+          "ref": "RES-TEST-2"
+        }
+      ],
+      "required_approvals": [
+        {
+          "what": "新增资源",
+          "ref": "RES-TEST-2",
+          "who": "生产/设备负责人",
+          "why": "新增人/设备涉及成本与排产占用，需业务批准",
+          "note": "批准 ≠ 执行授权；执行仍须持 WriteGrant 走第一期闸门"
+        },
+        {
+          "what": "数据修正",
+          "ref": "STP-C-ASM",
+          "who": "计划员",
+          "why": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+          "note": "批准 ≠ 执行授权；执行仍须持 WriteGrant 走第一期闸门"
+        },
+        {
+          "what": "数据修正",
+          "ref": "STP-C-TEST",
+          "who": "计划员",
+          "why": "工期未知，无法推算日期",
+          "note": "批准 ≠ 执行授权；执行仍须持 WriteGrant 走第一期闸门"
+        }
+      ],
+      "basis": {
+        "snapshot_id": "SNP-20260928-0830",
+        "as_of": "2026-09-28T08:30:00",
+        "calendar": {
+          "name": "样例日历：周一至周五 09:00—17:00，无额外节假日",
+          "workdays": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "start_hour": 9.0,
+          "end_hour": 17.0,
+          "hours_per_day": 8.0,
+          "holidays": [],
+          "extra_workdays": [],
+          "note": "工作日 = 周一至周五（减去节假日、加上调休）"
+        },
+        "rules_version": "ds-rules-1.0.0",
+        "schedule_method": "heuristic_earliest_start_first",
+        "schedule_disclaimer": "本排程为可解释启发式规则结果，非资源约束下的最优排程（RCPSP 属 NP-hard，本期不做最优求解）。关键路径按「仅前置关系」口径计算，不包含资源约束。",
+        "write_intents": [
+          {
+            "table": "资源",
+            "action": "append",
+            "row": {
+              "资源编号": "RES-TEST-2",
+              "姓名": "测试台2",
+              "类型": "设备"
+            },
+            "why": "方案 S2 需要新增资源",
+            "source": "S2",
+            "gate": "application.authorization",
+            "requires_authorization": true,
+            "authorized": false,
+            "gate_reason": "写库需要显式授权（高置信度不构成授权）：请走人工确认，或用 --grant-file 提供授权文件",
+            "executed": false
+          }
+        ]
+      },
+      "schedule": {
+        "cpm_critical_path": [
+          "STP-A-ASM",
+          "STP-A-TEST"
+        ],
+        "plans": [
+          {
+            "plan_id": "PLN-20260928-A",
+            "name": "A 批",
+            "forecast_date": "2026-10-01",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "contract_date": "2026-10-09",
+            "internal_plan_date": "2026-10-02",
+            "step_ids": [
+              "STP-A-ASM",
+              "STP-A-TEST"
+            ]
+          },
+          {
+            "plan_id": "PLN-20260928-B",
+            "name": "B 批",
+            "forecast_date": "2026-09-29",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "contract_date": "2026-10-09",
+            "internal_plan_date": "2026-09-30",
+            "step_ids": [
+              "STP-B-ASM",
+              "STP-B-TEST"
+            ]
+          },
+          {
+            "plan_id": "PLN-20260928-C",
+            "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
+            "forecast_date": null,
+            "forecast_status": "undetermined",
+            "depends_on_unverified": false,
+            "contract_date": "2026-10-16",
+            "internal_plan_date": "",
+            "step_ids": [
+              "STP-C-ASM",
+              "STP-C-TEST"
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "step_id": "STP-A-ASM",
+            "plan_id": "PLN-20260928-A",
+            "name": "A 批 组装",
+            "process": "组装",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "RES-ASM-A"
+            ],
+            "resolved_resources": {
+              "RES-ASM-A": "RES-ASM-A"
+            },
+            "start": "2026-09-30T09:00",
+            "finish": "2026-09-30T17:00",
+            "forecast_date": "2026-09-30",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": []
+          },
+          {
+            "step_id": "STP-A-TEST",
+            "plan_id": "PLN-20260928-A",
+            "name": "A 批 测试",
+            "process": "测试",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "GRP-TEST"
+            ],
+            "resolved_resources": {
+              "GRP-TEST": "RES-TEST-1"
+            },
+            "start": "2026-10-01T09:00",
+            "finish": "2026-10-01T17:00",
+            "forecast_date": "2026-10-01",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": []
+          },
+          {
+            "step_id": "STP-B-ASM",
+            "plan_id": "PLN-20260928-B",
+            "name": "B 批 组装",
+            "process": "组装",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "RES-ASM-B"
+            ],
+            "resolved_resources": {
+              "RES-ASM-B": "RES-ASM-B"
+            },
+            "start": "2026-09-28T09:00",
+            "finish": "2026-09-28T17:00",
+            "forecast_date": "2026-09-28",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": []
+          },
+          {
+            "step_id": "STP-B-TEST",
+            "plan_id": "PLN-20260928-B",
+            "name": "B 批 测试",
+            "process": "测试",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "GRP-TEST"
+            ],
+            "resolved_resources": {
+              "GRP-TEST": "RES-TEST-1"
+            },
+            "start": "2026-09-29T09:00",
+            "finish": "2026-09-29T17:00",
+            "forecast_date": "2026-09-29",
+            "forecast_status": "determined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": []
+          },
+          {
+            "step_id": "STP-C-ASM",
+            "plan_id": "PLN-20260928-C",
+            "name": "C 批 组装",
+            "process": "组装",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "RES-ASM-A"
+            ],
+            "resolved_resources": {},
+            "start": null,
+            "finish": null,
+            "forecast_date": null,
+            "forecast_status": "undetermined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": [
+              {
+                "code": "unconfirmed_precondition",
+                "message": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+                "ref": "STP-C-ASM"
+              }
+            ]
+          },
+          {
+            "step_id": "STP-C-TEST",
+            "plan_id": "PLN-20260928-C",
+            "name": "C 批 测试",
+            "process": "测试",
+            "status": "not_started",
+            "frozen": false,
+            "resources": [
+              "GRP-TEST"
+            ],
+            "resolved_resources": {},
+            "start": null,
+            "finish": null,
+            "forecast_date": null,
+            "forecast_status": "undetermined",
+            "depends_on_unverified": false,
+            "shifted_by_resource": false,
+            "shifted_from": "",
+            "shift_reason": "",
+            "undetermined_reasons": [
+              {
+                "code": "unknown_duration",
+                "message": "工期未知，无法推算日期",
+                "ref": "STP-C-TEST"
+              }
+            ]
+          }
+        ],
+        "resources": [
+          {
+            "resource_id": "RES-ASM-A",
+            "name": "A 批组装工位",
+            "type": "设备",
+            "daily_capacity_hours": 8.0,
+            "in_service": true,
+            "days": [
+              {
+                "date": "2026-09-30",
+                "used_hours": 8.0,
+                "capacity_hours": 8.0,
+                "overload": false,
+                "steps": [
+                  "STP-A-ASM"
+                ]
+              }
+            ],
+            "total_hours": 8.0
+          },
+          {
+            "resource_id": "RES-ASM-B",
+            "name": "B 批组装工位",
+            "type": "设备",
+            "daily_capacity_hours": 8.0,
+            "in_service": true,
+            "days": [
+              {
+                "date": "2026-09-28",
+                "used_hours": 8.0,
+                "capacity_hours": 8.0,
+                "overload": false,
+                "steps": [
+                  "STP-B-ASM"
+                ]
+              }
+            ],
+            "total_hours": 8.0
+          },
+          {
+            "resource_id": "RES-TEST-1",
+            "name": "测试台 1",
+            "type": "设备",
+            "daily_capacity_hours": 8.0,
+            "in_service": true,
+            "days": [
+              {
+                "date": "2026-09-29",
+                "used_hours": 8.0,
+                "capacity_hours": 8.0,
+                "overload": false,
+                "steps": [
+                  "STP-B-TEST"
+                ]
+              },
+              {
+                "date": "2026-10-01",
+                "used_hours": 8.0,
+                "capacity_hours": 8.0,
+                "overload": false,
+                "steps": [
+                  "STP-A-TEST"
+                ]
+              }
+            ],
+            "total_hours": 16.0
+          },
+          {
+            "resource_id": "RES-TEST-2",
+            "name": "测试台2",
+            "type": "设备",
+            "daily_capacity_hours": 8.0,
+            "in_service": true,
+            "days": [],
+            "total_hours": 0
+          }
+        ],
+        "conflicts_resolved": [],
+        "unresolved": [
+          {
+            "step_id": "STP-C-ASM",
+            "plan_id": "PLN-20260928-C",
+            "reason": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+            "reason_code": "unconfirmed_precondition"
+          },
+          {
+            "step_id": "STP-C-TEST",
+            "plan_id": "PLN-20260928-C",
+            "reason": "工期未知，无法推算日期",
+            "reason_code": "unknown_duration"
+          }
+        ],
+        "issues": [],
+        "protected_steps": [],
+        "method": "heuristic_earliest_start_first",
+        "method_cn": "就绪优先启发式（最早可开始优先，资源冲突顺延）",
+        "disclaimer": "本排程为可解释启发式规则结果，非资源约束下的最优排程（RCPSP 属 NP-hard，本期不做最优求解）。关键路径按「仅前置关系」口径计算，不包含资源约束。"
+      }
+    }
+  ],
+  "simulation_ledger": {
+    "intents": [
+      {
+        "table": "资源",
+        "action": "append",
+        "row": {
+          "资源编号": "RES-TEST-2",
+          "姓名": "测试台2",
+          "类型": "设备"
+        },
+        "why": "方案 S2 需要新增资源",
+        "source": "S2",
+        "gate": "application.authorization",
+        "requires_authorization": true,
+        "authorized": false,
+        "gate_reason": "写库需要显式授权（高置信度不构成授权）：请走人工确认，或用 --grant-file 提供授权文件",
+        "executed": false
+      }
+    ],
+    "intents_total": 1,
+    "rejected_total": 1,
+    "executed_total": 0,
+    "writer_calls": 0,
+    "note": "所有执行意图均未经授权、未执行；方案选择不等于执行授权。本模块只产出建议，任何落库/下单/对外承诺都必须携带 approve 的 WriteGrant 走 application.authorization 闸门。"
+  },
+  "cost_model": {
+    "is_synthetic": true,
+    "note": "费用与加急可行性均为合成假设，不是真实报价。",
+    "resource_day_cost": {
+      "RES-TEST-2": 900
+    },
+    "expedite_fee": 1200,
+    "overtime_hour_cost": 150
+  },
+  "authorization_note": "方案选择不等于执行授权。本模块只产出建议，任何落库/下单/对外承诺都必须携带 approve 的 WriteGrant 走 application.authorization 闸门。",
+  "schedule_disclaimer": "本排程为可解释启发式规则结果，非资源约束下的最优排程（RCPSP 属 NP-hard，本期不做最优求解）。关键路径按「仅前置关系」口径计算，不包含资源约束。",
+  "_sample_note": "合成样例：S0/S1/S2 方案比较实时产出。费用与加急可行性均为合成假设，不是真实报价。simulation_ledger 中所有执行意图 authorized=false、executed=false，写入端调用 0 次。"
+}
