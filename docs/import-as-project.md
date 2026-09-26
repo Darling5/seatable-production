@@ -1,6 +1,6 @@
 # 作为 WorkBuddy 项目导入
 
-本仓库 = `seatable-production` 技能 + `cockpit.py` 驾驶舱生成器。
+本仓库 = `seatable-production` 技能 + `cockpit/cockpit.py` 驾驶舱生成器。
 按以下步骤即可在 WorkBuddy「我的项目」中获得一个完整的「生产交付协同」项目
 （含 SeaTable / PartDB 技能 + 项目管理驾驶舱工作台）。
 
@@ -10,7 +10,7 @@
 2. 在 WorkBuddy「我的项目」中粘贴链接 → 新建项目。
 3. 项目创建后自动识别并可选挂载本仓库的 `seatable-production` 技能（根 `SKILL.md`）
    与 `production-cockpit` 专家（`expert/production-cockpit/plugin.json`）。
-4. 首次运行前可先 `python setup.py` 选择后端 / 填写 token；随后运行 `python cockpit.py`
+4. 首次运行前可先 `python tools/setup.py` 选择后端 / 填写 token；随后运行 `python cockpit/cockpit.py`
    （或专家对话框说「生成最新的生产项目管理驾驶舱」），生成 `项目管理驾驶舱.html` 工作台。
 5. 项目创建者在 UI 中设置管理员 / 成员；把不同 `#role` 分享链接发给对应成员。
 
@@ -21,16 +21,16 @@
 ## 方式二：手动搭建
 
 1. 安装技能：把本仓库放到 `~/.workbuddy/skills/seatable-production/`。
-2. 初始化配置：运行 `python setup.py`（引导式问后端与 token，写入 `config.yaml`）；
+2. 初始化配置：运行 `python tools/setup.py`（引导式问后端与 token，写入 `config.yaml`）；
    或手动复制 `config.yaml.example` 为 `config.yaml` 改（local / seatable / partdb 三种后端，详见 `SKILL.md`）。
-3. 生成驾驶舱：`python cockpit.py` → 产出 `项目管理驾驶舱.html`。
+3. 生成驾驶舱：`python cockpit/cockpit.py` → 产出 `项目管理驾驶舱.html`。
 4. 部署：`workbuddy_cloudstudio_deploy` 部署为在线工作台，
    或把 HTML 作为项目工作台资源直接打开。
 
 ## 工作台与技能的「联动」说明
 
-- 驾驶舱由技能内的 `cockpit.py` 生成，读取与技能**同一份** `data/` 与 `config.yaml`，
-  因此**技能数据一旦更新**（`op.py` / `seatable_sync.py` / 每日 9 点自动任务），
+- 驾驶舱由技能内的 `cockpit/cockpit.py` 生成，读取与技能**同一份** `data/` 与 `config.yaml`，
+  因此**技能数据一旦更新**（`domain/op.py` / `sync/seatable_sync.py` / 每日 9 点自动任务），
   重新生成驾驶舱即同步，无需手动搬数据。
 - 5 个角色视图（老板 / 仓库 / 采购 / 生产经理 / 销售）各自独立口令，
   分享链接带 `#role` 锚点，对方打开直接落在自己视角。

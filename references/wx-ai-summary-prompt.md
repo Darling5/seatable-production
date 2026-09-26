@@ -1,6 +1,6 @@
 # 群聊 AI 总结提示词模板
 
-配合 `wechat_intake.py summary` 使用：脚本负责**取数和结构化**，AI（你）负责**理解和提炼**。
+配合 `wx/wechat_intake.py summary` 使用：脚本负责**取数和结构化**，AI（你）负责**理解和提炼**。
 
 > 设计要点来自对 [win-wechat-summary](https://github.com/yanyan1115/win-wechat-summary) 的逆向分析。
 > 该工具因硬编码 `WeChat.exe` 进程名、依赖已下架的 PyWxDump，在微信 4.x 上完全不可用；
@@ -11,8 +11,8 @@
 ## 输入
 
 ```bash
-python wechat_intake.py summary --hours 24 --out data/wechat_intake/summary_24h.md
-python wechat_intake.py summary --group "群名" --hours 168 --json --out sum.json
+python wx/wechat_intake.py summary --hours 24 --out data/wechat_intake/summary_24h.md
+python wx/wechat_intake.py summary --group "群名" --hours 168 --json --out sum.json
 ```
 
 Markdown 适合人读，JSON 适合程序消费（含 `stats` 发言分布、`focus` 需关注、`messages` 全量）。
@@ -131,9 +131,9 @@ AI 总结可以产出候选，但**不得在总结步骤直接写库**。每条�
 离线清理命令：
 
 ```bash
-python evidence.py scan --root data/wechat_intake --days 90 --json
-python evidence.py prune --root data/wechat_intake --days 90       # 仍只预览
-python evidence.py prune --root data/wechat_intake --days 90 --yes # 人工批准后才删除
+python domain/evidence.py scan --root data/wechat_intake --days 90 --json
+python domain/evidence.py prune --root data/wechat_intake --days 90       # 仍只预览
+python domain/evidence.py prune --root data/wechat_intake --days 90 --yes # 人工批准后才删除
 ```
 
 ---

@@ -11,7 +11,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
 from domain.order_to_cash import Service
-import loop_sync
+from workflows import loop_sync
 
 
 class FakeAdapter:

@@ -53,20 +53,20 @@ class TestRefreshSwitch(unittest.TestCase):
 
     # ── 开关判定 ──────────────────────────────────────────
     def test_default_off(self):
-        import op
+        from domain import op
         self.assertFalse(op._should_refresh_cockpit(_Args()))
 
     def test_flag_on(self):
-        import op
+        from domain import op
         self.assertTrue(op._should_refresh_cockpit(_Args(refresh=True)))
 
     def test_env_on(self):
-        import op
+        from domain import op
         os.environ["SEATABLE_AUTO_REFRESH_COCKPIT"] = "1"
         self.assertTrue(op._should_refresh_cockpit(_Args()))
 
     def test_env_variants(self):
-        import op
+        from domain import op
         for v in ("true", "YES", "on", " 1 "):
             os.environ["SEATABLE_AUTO_REFRESH_COCKPIT"] = v
             self.assertTrue(op._should_refresh_cockpit(_Args()), msg=v)
@@ -78,7 +78,7 @@ class TestRefreshSwitch(unittest.TestCase):
     # ── 行为判定 ──────────────────────────────────────────
     def test_write_succeeds_without_refresh(self):
         """默认：写入成功、提示解耦说明、不调子进程。"""
-        import op
+        from domain import op
         a = _StubAdapter()
         with mock.patch("subprocess.run") as run:
             with mock.patch("builtins.print"):
@@ -88,7 +88,7 @@ class TestRefreshSwitch(unittest.TestCase):
 
     def test_refresh_invoked_when_flag(self):
         """--refresh：写入后调用 cockpit 子进程。"""
-        import op
+        from domain import op
         a = _StubAdapter()
         with mock.patch("subprocess.run") as run:
             with mock.patch("builtins.print"):
@@ -101,7 +101,7 @@ class TestRefreshSwitch(unittest.TestCase):
 
     def test_refresh_failure_does_not_fail_write(self):
         """刷新子进程抛异常：写入结果保留，只输出 warn。"""
-        import op
+        from domain import op
         a = _StubAdapter()
         with self._no_subprocess():
             with mock.patch("builtins.print") as pr:
@@ -113,7 +113,7 @@ class TestRefreshSwitch(unittest.TestCase):
 
     def test_intake_refresh_gate(self):
         """_refresh_cockpit（intake 路径）：默认直接 return，不碰子进程。"""
-        import op
+        from domain import op
         with mock.patch("subprocess.run") as run:
             with mock.patch("builtins.print"):
                 op._refresh_cockpit(_Args())
@@ -125,7 +125,7 @@ class TestRefreshSwitch(unittest.TestCase):
 
     def test_env_overrides_in_intake_path(self):
         """环境变量对 intake 路径同样生效。"""
-        import op
+        from domain import op
         os.environ["SEATABLE_AUTO_REFRESH_COCKPIT"] = "1"
         with mock.patch("subprocess.run") as run:
             with mock.patch("builtins.print"):

@@ -56,7 +56,7 @@ class TestIdempotencyKeys(unittest.TestCase):
         self.addCleanup(self._cleanup)
 
     def _patch_ledger(self):
-        import crm_dispatch as cd
+        from domain import crm_dispatch as cd
         self.cd = cd
         self._orig = cd.LEDGER_FILE
         cd.LEDGER_FILE = os.path.join(self.tmp, "crm_dispatch_ledger.csv")
@@ -143,7 +143,7 @@ class TestReadbackVerification(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="crm_ledger_")
-        import crm_dispatch as cd
+        from domain import crm_dispatch as cd
         self.cd = cd
         self._orig = cd.LEDGER_FILE
         cd.LEDGER_FILE = os.path.join(self.tmp, "crm_dispatch_ledger.csv")

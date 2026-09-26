@@ -104,9 +104,9 @@ related_object: (对象类型, 对象ID)   # 可空，未关联=待处理
 | 阶段 | 内容 | 不做什么 | 状态 |
 |---|---|---|---|
 | P0 | contracts.py 契约 + crm Base 示例补齐 + 本设计文档 | 不动任何现有脚本行为 | ✅ 426f9eb |
-| P1 | workflow runner（subprocess 包装旧脚本）+ 每日自动化改走 `workflow.py daily` | 不重写业务逻辑 | ✅ 5c43d51 |
+| P1 | workflow runner（subprocess 包装旧脚本）+ 每日自动化改走 `workflows/workflow.py daily` | 不重写业务逻辑 | ✅ 5c43d51 |
 | P1.5 | 四项架构收口：写入渲染解耦 / 口令私有化 / 统一幂等键 / DataService | 旧 CLI 行为不变 | ✅ 340f603 |
-| P2 | 写链迁移 DataService（crm_dispatch 读回验证）+ `workflow.py verify` 验收命令 + 本文档定稿 | 不迁移 data/ 目录 | ✅ 2026-09-12 |
+| P2 | 写链迁移 DataService（crm_dispatch 读回验证）+ `workflows/workflow.py verify` 验收命令 + 本文档定稿 | 不迁移 data/ 目录 | ✅ 2026-09-12 |
 | P3 | 根脚本变薄壳；补报价/方案版本对象（最大新功能增量） | 不动 SeaTable adapter 语义 | 待启动 |
 | P4 | 拆 cockpit/wechat_intake/market；SKILL.md 缩到 ~250 行 | 不上微服务/消息队列 | 待启动 |
 
@@ -124,7 +124,7 @@ related_object: (对象类型, 对象ID)   # 可空，未关联=待处理
 │    只做三件事：启动工作流 / AI 语义步骤（事件登记·CRM 识别·群聊总结）
 │    / 发布通知播报（读 final.json，禁止凭记忆；禁止播报口令）
 │
-├─ workflow.py（统一入口）
+├─ workflows/workflow.py（统一入口）
 │    run daily --mode apply        10 步 DAG 真实执行
 │    run daily --mode preview      演练（写入类步骤全拦截）
 │    run daily --resume <run_id>   断点续跑（成功步骤跳过）
@@ -146,18 +146,18 @@ related_object: (对象类型, 对象ID)   # 可空，未关联=待处理
 │    AI 语义步骤（分流/AI 总结/CRM 识别/播报）留在 Prompt 层
 │
 ├─ 写入链（已收口 DataService）
-│    crm_dispatch.py  lead/follow：查重 → 幂等键 → write_verified()
+│    domain/crm_dispatch.py  lead/follow：查重 → 幂等键 → write_verified()
 │                     （读回验证）→ 单向关联 → crm_dispatch_ledger.csv
-│    won_deal.py      plan 只读 → 人核对 → apply --yes 三表写入+读回+台账
-│    op.py            数据写入与驾驶舱刷新解耦（--refresh 或环境变量显式开）
+│    domain/won_deal.py      plan 只读 → 人核对 → apply --yes 三表写入+读回+台账
+│    domain/op.py            数据写入与驾驶舱刷新解耦（--refresh 或环境变量显式开）
 │
 └─ 安全边界
-     口令：passwords.py（show/check/rotate）手动专用，自动播报零口令
+     口令：tools/passwords.py（show/check/rotate）手动专用，自动播报零口令
      台账：crm_dispatch_ledger / won_deal_ledger / write_ledger 三账并行可核对
      幂等：同键重写 → idempotent_reuse，自动化重跑不重复写
 ```
 
-**`workflow.py verify` 验收逻辑**（退出码 0=通过，可接 CI）：
+**`workflows/workflow.py verify` 验收逻辑**（退出码 0=通过，可接 CI）：
 1. 步骤状态：failed/blocked 任何一步 → 不通过；
 2. 产物核对：声称成功的步骤必须在 data/ 留下新鲜产物（mtime ≥ 运行日期-1 天，
    防止拿旧文件充数——这正是 9-12 晨「微信 summary 静默跳过」事故的检测器）；
@@ -169,17 +169,17 @@ related_object: (对象类型, 对象ID)   # 可空，未关联=待处理
 
 ```
 # ① 核心验收：工作流自身声称的 vs 磁盘真实存在的
-python workflow.py verify latest
+python workflows/workflow.py verify latest
 
 # ② 播报一致性：抽 2-3 个数字（异常数/待确认事件数/CRM 写入数）
 #    对照 final.json 与收到的播报文本，不一致 = 播报凭记忆（违规）
-python workflow.py status <当日 run_id>
+python workflows/workflow.py status <当日 run_id>
 
 # ③ 口令零泄露：搜当日播报全文（含企微/邮件正文）中不得出现任何口令
-python passwords.py check          # 确认口令体系完整
+python tools/passwords.py check          # 确认口令体系完整
 
 # ④ CRM 幂等实测：人为触发一次重跑（同一条来单消息再写一次）
-python crm_dispatch.py follow --customer "<测试客户>" --data '{"跟进状态":"初步沟通","本次跟进内容":"<当日已有内容>"}'
+python domain/crm_dispatch.py follow --customer "<测试客户>" --data '{"跟进状态":"初步沟通","本次跟进内容":"<当日已有内容>"}'
 #    预期：返回 idempotent_reuse，台账不新增行；若 created = 幂等失效
 
 # ⑤ 驾驶舱新鲜度：打开「项目管理驾驶舱.html」确认数据是当日（对照①的产物核对）
@@ -193,7 +193,7 @@ python crm_dispatch.py follow --customer "<测试客户>" --data '{"跟进状态
 
 ## 10. P3 起步清单（验收通过后）
 
-1. 根脚本薄壳化：op.py 的 apply-wizard/apply-text 内部切 DataService；
+1. 根脚本薄壳化：domain/op.py 的 apply-wizard/apply-text 内部切 DataService；
 2. 报价对象落地：报价表（新）+ QUO-xxx ID + 版本快照，接 pipeline BOM 成本；
 3. ID 生成器：12 类对象 ID 的统一发放与查重（contracts.new_object_id 已有雏形）；
 4. 状态轨迹表扩展：把阶段轨迹泛化为 (对象类型, 对象ID, 原状态, 新状态, …)。

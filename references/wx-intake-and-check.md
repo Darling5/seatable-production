@@ -3,34 +3,34 @@
 > 从 SKILL.md §11.1~11.5 下沉。涉及拉群消息、物料/原料查价、消息↔SeaTable
 > 核对（wxmatch）、风险预测（foresee）时阅读本文件。
 
-### 11.1 微信情报命令速查（`wechat_intake.py`）
+### 11.1 微信情报命令速查（`wx/wechat_intake.py`）
 
 先跑 `doctor` 自检（**用装了 cryptography 的那个解释器**，缺包会报误导性的「引擎A不可用」）。
 自检通过的标准是出现 `数据库：19 个，已解密 19 个`，而不是任何 `[!]`。
 
 ```bash
-python wechat_intake.py doctor      # 体检：找库 / 提密钥 / 给指引
-python wechat_intake.py groups      # 列全部群聊（挑监控对象）
-python wechat_intake.py pull        # 增量事件流：书签续读 -> 微信事件.csv 待确认
-python wechat_intake.py summary     # 群聊摘要：按时间窗口回溯对话（见下）
-python wechat_intake.py list --status 待确认
-python wechat_intake.py approve <编号>   # 确认事件并写 SeaTable 云端
+python wx/wechat_intake.py doctor      # 体检：找库 / 提密钥 / 给指引
+python wx/wechat_intake.py groups      # 列全部群聊（挑监控对象）
+python wx/wechat_intake.py pull        # 增量事件流：书签续读 -> 微信事件.csv 待确认
+python wx/wechat_intake.py summary     # 群聊摘要：按时间窗口回溯对话（见下）
+python wx/wechat_intake.py list --status 待确认
+python wx/wechat_intake.py approve <编号>   # 确认事件并写 SeaTable 云端
 ```
 
 **`summary` 群聊摘要**（替代已失效的 WeChat-Summary 类 GUI 工具）：
 
 ```bash
 # 单个/多个群，72 小时窗口
-python wechat_intake.py summary --group "生产协调群" --hours 72
-python wechat_intake.py summary --group "采购群A,生产群B" --hours 168
+python wx/wechat_intake.py summary --group "生产协调群" --hours 72
+python wx/wechat_intake.py summary --group "采购群A,生产群B" --hours 168
 
 # 不指定 --group = config.yaml 的 watch_groups；--all = 全部群
-python wechat_intake.py summary --hours 24
-python wechat_intake.py summary --all --hours 24 --limit 5000
+python wx/wechat_intake.py summary --hours 24
+python wx/wechat_intake.py summary --all --hours 24 --limit 5000
 
 # 写文件 / 输出 JSON（供 AI 直接消费）
-python wechat_intake.py summary --hours 24 --out data/wechat_intake/summary_24h.md
-python wechat_intake.py summary --group "群名" --hours 72 --json --out sum.json
+python wx/wechat_intake.py summary --hours 24 --out data/wechat_intake/summary_24h.md
+python wx/wechat_intake.py summary --group "群名" --hours 72 --json --out sum.json
 ```
 
 参数：`--group` 可多次指定也可逗号分隔、**支持部分匹配**；`--hours` 时间窗口（默认 24）；
@@ -70,13 +70,13 @@ python wechat_intake.py summary --group "群名" --hours 72 --json --out sum.jso
 
 参考耗时：全量监控群（31 群）扫 24 小时窗口约 **3 分 20 秒**，每日任务可接受。
 
-长中文正文入队一律用 `notify.py send --body-file <文件>`，**不要用 `--body` 命令行传参**
+长中文正文入队一律用 `workflows/notify.py send --body-file <文件>`，**不要用 `--body` 命令行传参**
 （Windows 命令行有长度上限，且引号转义会毁掉内容）。
 
 ```bash
-python wechat_intake.py summary --hours 24 --out data/wechat_intake/summary_24h.md
+python wx/wechat_intake.py summary --hours 24 --out data/wechat_intake/summary_24h.md
 # → AI 读文件生成 data/wechat_intake/ai_summary_24h.md
-python notify.py send --subject "💬 群聊总结 <日期>" \
+python workflows/notify.py send --subject "💬 群聊总结 <日期>" \
     --body-file data/wechat_intake/ai_summary_24h.md --level info
 ```
 
@@ -90,25 +90,25 @@ python notify.py send --subject "💬 群聊总结 <日期>" \
 - `tasks`：负责人、截止日期、提醒、催办、追问、未闭环问题等执行事项。
 - 一条消息同时含业务事实和行动要求时拆成两条候选；写入前分别读取目标 Base metadata，
   完整展示目标 Base、目标表和字段，等用户确认。CLI 显式选择方式为
-  `python op.py --base production ...` / `python op.py --base tasks ...`。
+  `python domain/op.py --base production ...` / `python domain/op.py --base tasks ...`。
 - 图片允许在确认后上传为证据；默认先登记本地路径、OCR/视觉摘要、来源、时间、哈希。
   普通文件先文本化，失败或必须看版式/签章时才考虑上传原件。
-- 季度运行 `python evidence.py scan --root data/wechat_intake --days 90 --json` 只列候选。
+- 季度运行 `python domain/evidence.py scan --root data/wechat_intake --days 90 --json` 只列候选。
   仅超过 90 天、已闭环、非长期保留的证据入选；明确批准后才运行
-  `python evidence.py prune --root data/wechat_intake --days 90 --yes`。没有 `--yes` 不得删除。
+  `python domain/evidence.py prune --root data/wechat_intake --days 90 --yes`。没有 `--yes` 不得删除。
 
-### 11.2 物料行情与代理商查价速查（`market.py` / `suppliers.py`)
+### 11.2 物料行情与代理商查价速查（`domain/market.py` / `domain/suppliers.py`)
 
 ```bash
-python market.py watchlist [--refresh]        # 生成/刷新监控清单
-python market.py report                       # 最新行情 vs 上次采购价
-python market.py alerts                       # 涨跌超阈值 / 停产·NRND 告警
+python domain/market.py watchlist [--refresh]        # 生成/刷新监控清单
+python domain/market.py report                       # 最新行情 vs 上次采购价
+python domain/market.py alerts                       # 涨跌超阈值 / 停产·NRND 告警
 
 # 代理商自动查价（得捷 DigiKey / 贸泽 Mouser）
-python suppliers.py doctor [--live]           # 凭证自检（脱敏）；--live 联网探测
-python market.py lookup <型号> [--qty 100]    # 只查不写
-python market.py compare <型号>               # 多源比价，标出最低/最高/差价
-python market.py sync [--dry-run] [--limit N] [--force]   # 按节奏批量拉价写快照
+python domain/suppliers.py doctor [--live]           # 凭证自检（脱敏）；--live 联网探测
+python domain/market.py lookup <型号> [--qty 100]    # 只查不写
+python domain/market.py compare <型号>               # 多源比价，标出最低/最高/差价
+python domain/market.py sync [--dry-run] [--limit N] [--force]   # 按节奏批量拉价写快照
 ```
 
 **执行顺序建议**：用户要行情/比价时，先 `doctor` 确认凭证在位 → `lookup` 或 `compare` 看即时价
@@ -156,18 +156,18 @@ ProductInformation V4（非 Search v3），调 v3 一律 401 "not subscribed"，
 **只读铁律**：这批凭证只用于查价与生命周期查询，**绝不调下单/报价/购物车接口**，
 下单必须人工在官网完成。
 
-### 11.3 原料行情速查（`commodities.py`，统一入口 `market.py raw`）
+### 11.3 原料行情速查（`domain/commodities.py`，统一入口 `domain/market.py raw`）
 
 跟**上游原料**价格，跟元器件行情是两条线：元器件看的是某个型号贵了还是停产了，
 原料看的是**金/银/铜/锡和石油衍生品的整体成本走向**——它决定一批料未来几个月的报价基调。
 
 ```bash
-python market.py raw list                      # 列出 12 个品种与各自数据源
-python market.py raw fetch [--dry-run] [--only AU,CU]   # 拉实时价写库（一次取全部品种）
-python market.py raw show  [--days 30]         # 走势表（含 sparkline 字符走势条）
-python market.py raw trend [--days 30]         # 波动告警，超阈值高亮
-python market.py raw add ABS --price 11800 --date 2026-09-03 --note "东莞现货含税"
-python market.py raw backfill AU --contract au2610 --days 40   # 补历史 K 线
+python domain/market.py raw list                      # 列出 12 个品种与各自数据源
+python domain/market.py raw fetch [--dry-run] [--only AU,CU]   # 拉实时价写库（一次取全部品种）
+python domain/market.py raw show  [--days 30]         # 走势表（含 sparkline 字符走势条）
+python domain/market.py raw trend [--days 30]         # 波动告警，超阈值高亮
+python domain/market.py raw add ABS --price 11800 --date 2026-09-03 --note "东莞现货含税"
+python domain/market.py raw backfill AU --contract au2610 --days 40   # 补历史 K 线
 ```
 
 **三层数据，别混为一谈**：
@@ -202,7 +202,7 @@ python market.py raw backfill AU --contract au2610 --days 40   # 补历史 K 线
 但 `add` 人工录的现货价是你的**采购成本**，CSV 落 `data/` 目录，已被 `.gitignore` 排除，
 **不进 GitHub**。写演示文档举例时一律用公开市场行情，并明确标注「示例数据，非公司数据」。
 
-**驾驶舱联动（`cockpit.py` `_load_commodities`）**：`data/原料行情记录.csv` 有数据时，
+**驾驶舱联动（`cockpit/cockpit.py` `_load_commodities`）**：`data/原料行情记录.csv` 有数据时，
 驾驶舱自动出「原料行情（上游成本）」模块（老板/采购页可见）——最新价、区间涨跌、SVG 走势、
 口径徽章。**阈值与回看天数从 `commodities` 段读，与 CLI 同一真源**；告警按波动幅度降序，
 前 2 条进「下一步行动建议」（中优，cat=market）。行动建议只带 2 条是有意的——原料波动
@@ -214,18 +214,18 @@ python market.py raw backfill AU --contract au2610 --days 40   # 补历史 K 线
 `config.yaml` 填 `commodities.spot_source` 即可自动补录，CSV 结构与展示层不用动。
 **注意**：只填 config 不注册实现，fetch 会明确报「尚未实现该适配器」，绝不假装查过。
 
-### 11.4 消息↔SeaTable 核对速查（`wxmatch.py`，v1.9）
+### 11.4 消息↔SeaTable 核对速查（`wx/wxmatch.py`，v1.9）
 
 微信情报（11.1）是「**提取事件**」，核对引擎是「**逐条对账**」：把群消息里的收款、
 新下单、合同 PDF、到货/发货信号与 SeaTable 业务表**逐条匹配**，发现「群里说了但表里没有」的缺口。
 
 ```bash
-python wxmatch.py scan [--days 3] [--pdf-days 60] [--no-write]   # 四类扫描，写本地核对台账
-python wxmatch.py list [--status 待确认]                          # 查看核对台账
-python wxmatch.py apply --dry                                     # 预览可自动闭环的高置信项
-python wxmatch.py apply                                           # 显式写入高置信项并留痕
-python wxmatch.py done WX-M-20260903-001 [--note "已登记"]        # 标记人工处置（留痕）
-python wxmatch.py intent WX-M-20260903-001                        # 导出某项预填意图
+python wx/wxmatch.py scan [--days 3] [--pdf-days 60] [--no-write]   # 四类扫描，写本地核对台账
+python wx/wxmatch.py list [--status 待确认]                          # 查看核对台账
+python wx/wxmatch.py apply --dry                                     # 预览可自动闭环的高置信项
+python wx/wxmatch.py apply                                           # 显式写入高置信项并留痕
+python wx/wxmatch.py done WX-M-20260903-001 [--note "已登记"]        # 标记人工处置（留痕）
+python wx/wxmatch.py intent WX-M-20260903-001                        # 导出某项预填意图
 ```
 
 **五类核对与匹配规则**：
@@ -250,11 +250,11 @@ python wxmatch.py intent WX-M-20260903-001                        # 导出某项
 「状态=待确认、置信度=高、有预填意图」的记录——高置信（金额 ±2% 唯一收款匹配 /
 供应商名唯一的在途到货）自动写，中低置信保持待确认只在复盘播报里列清单。
 写入成功台账回填「已自动写入」，失败回退「待确认」（幂等：已处置行永不重写）；
-`apply --dry` 只预览不落库。写库复用 `wechat_intake.py` 的 Intent + adapter 链路。
+`apply --dry` 只预览不落库。写库复用 `wx/wechat_intake.py` 的 Intent + adapter 链路。
 **每晚 19:00「当日复盘」自动化**（A 风险雷达 / B 群聊日报 / C 四类交叉核对+高置信 apply /
 D 合并推送企微 / E 播报）消费本命令。
 
-**驾驶舱联动（`cockpit.py` `_load_wxmatch`）**：`data/核对结果.csv` 有数据时，驾驶舱
+**驾驶舱联动（`cockpit/cockpit.py` `_load_wxmatch`）**：`data/核对结果.csv` 有数据时，驾驶舱
 自动出「消息↔SeaTable 核对台」模块（老板/生产/销售页可见）——待核对表（类型/置信度
 徽章、匹配项目、建议动作）、分类与置信度分布、处置指引。高置信收款进「下一步行动
 建议」红字置顶（cat=wechat），中置信有匹配项目的项带 3 条登记建议。
@@ -267,8 +267,8 @@ D 合并推送企微 / E 播报）消费本命令。
 | 层 | 检查什么 | 陷阱 |
 |---|---|---|
 | ① 群在监控范围吗 | `config.yaml` → `wechat.watch_groups` **＋** 自动词表 `data/wechat_intake/watch_auto.json` 是否覆盖该群 | 白名单是「精确名 / 群ID / **子串**」三选一（见 §11.4.2 关键认知 2）。群在微信库里存在 ≠ 会被采集。查库内全部群名：`data/wechat_intake/groups.json` |
-| ② 消息是文本吗 | `pull` **只收文本**（`wechat_intake.py` 中 `if m.get("type") != "文本": continue`） | **图片/截图不进事件流**也算老答案 —— 现在图片单独走 `wxmedia.py` 这条链路（见下方「图片专线」），**不再需要它进事件流** |
-| ③ 登记成事件了吗 | `data/微信事件.csv` 是否已有该条 | `wxmatch.py` 扫的是 **`微信事件.csv`，不是原始群消息**。无事件 = 收款分支永不触发 |
+| ② 消息是文本吗 | `pull` **只收文本**（`wx/wechat_intake.py` 中 `if m.get("type") != "文本": continue`） | **图片/截图不进事件流**也算老答案 —— 现在图片单独走 `wx/wxmedia.py` 这条链路（见下方「图片专线」），**不再需要它进事件流** |
+| ③ 登记成事件了吗 | `data/微信事件.csv` 是否已有该条 | `wx/wxmatch.py` 扫的是 **`微信事件.csv`，不是原始群消息**。无事件 = 收款分支永不触发 |
 
 **佐证命令**（两条就能定性）：
 
@@ -278,7 +278,7 @@ python -c "import json;print([g['name'] for g in json.load(open('data/wechat_int
 python -c "import yaml;print(yaml.safe_load(open('config.yaml',encoding='utf-8'))['wechat']['watch_groups'])"
 
 # ③ 核对台账里有没有出现过「收款」类信号
-python wxmatch.py scan        # 结果落 data/核对结果.csv
+python wx/wxmatch.py scan        # 结果落 data/核对结果.csv
 # 「类型」列若只有 合同PDF / 供应商合同 → 收款分支从未触发过
 ```
 
@@ -286,7 +286,7 @@ python wxmatch.py scan        # 结果落 data/核对结果.csv
 2026-09 实测 371 个），**不经过群消息、因此不受 `watch_groups` 影响**——未监控群里的合同 PDF 照样能匹配上。
 **文字消息才受白名单约束**（图片走下面的专线，同样不受）。
 
-#### 11.4.1.1 图片专线：`wxmedia.py`（★ 2026-09-15 推翻旧结论）
+#### 11.4.1.1 图片专线：`wx/wxmedia.py`（★ 2026-09-15 推翻旧结论）
 
 > **旧文档此处原本写「图片拿不到字节 —— `msg\attach\<hash>\2026-09\` 实测 0 个文件，付款截图无法 OCR」。
 > 这条是错的，已作废。** 根因是**看错了路径层级**：真实层级是
@@ -298,11 +298,11 @@ python wxmatch.py scan        # 结果落 data/核对结果.csv
 
 ```bash
 # 自检（应报：数据根对、code 找到、抽样解密 5/5、OCR 引擎可用）
-C:\Python311\python.exe wxmedia.py doctor
+C:\Python311\python.exe wx/wxmedia.py doctor
 # 解密 + OCR（默认只处理监控群在时间窗内的图）
-C:\Python311\python.exe wxmedia.py scan --hours 26 --max 500 --ocr
+C:\Python311\python.exe wx/wxmedia.py scan --hours 26 --max 500 --ocr
 # 看索引统计
-C:\Python311\python.exe wxmedia.py index
+C:\Python311\python.exe wx/wxmedia.py index
 ```
 
 - 产物：`data/wechat_media/<YYYY-MM>/<md5>.jpg|png`；索引 `data/wechat_media/index.json`（含 OCR 全文与关键词命中）。
@@ -318,8 +318,8 @@ C:\Python311\python.exe wxmedia.py index
 
 **结论口径**（已更新）：三层闸门里 ①② 现在都能补：
 ① 群不在白名单 → 加 `watch_groups`，**或**把供应商登记进 SeaTable 让自动词表兜住（见 §11.4.3）；
-② 付款截图这类**非文本**信号 → 不再需要 OCR 之外的额外条件，直接 `wxmedia.py scan --ocr` 就能读出金额；
-③ 想让图里的付款自动进核对链，仍需把 OCR 结果人工/脚本登记成事件后跑 `wxmatch.py scan`。
+② 付款截图这类**非文本**信号 → 不再需要 OCR 之外的额外条件，直接 `wx/wxmedia.py scan --ocr` 就能读出金额；
+③ 想让图里的付款自动进核对链，仍需把 OCR 结果人工/脚本登记成事件后跑 `wx/wxmatch.py scan`。
 
 把图片变成金额文本信号。
 
@@ -344,13 +344,13 @@ C:\Python311\python.exe wxmedia.py index
 脚本用 `cust_core()` 清洗 + `CUST_ALIAS` 人工别名表匹配（项目表写「客户I」，群名只写「客户I」）。
 
 ```bash
-python audit_wx_coverage.py                     # 直连 SeaTable，三类全查
-python audit_wx_coverage.py --csv               # 用本地 data/*.csv（离线，可能落后云端）
-python audit_wx_coverage.py --only customer     # 只查一类：supplier | customer | service
-python audit_wx_coverage.py --min-records 3     # 供应商侧只看记录数 >= 3 的
-python audit_wx_coverage.py --buckets           # 386 群按下述五桶分类打印
-python audit_wx_coverage.py --groups            # 额外列出「实际会被监控的全部群」
-python audit_wx_coverage.py --json out.json     # 结构化落盘
+python tools/audit_wx_coverage.py                     # 直连 SeaTable，三类全查
+python tools/audit_wx_coverage.py --csv               # 用本地 data/*.csv（离线，可能落后云端）
+python tools/audit_wx_coverage.py --only customer     # 只查一类：supplier | customer | service
+python tools/audit_wx_coverage.py --min-records 3     # 供应商侧只看记录数 >= 3 的
+python tools/audit_wx_coverage.py --buckets           # 386 群按下述五桶分类打印
+python tools/audit_wx_coverage.py --groups            # 额外列出「实际会被监控的全部群」
+python tools/audit_wx_coverage.py --json out.json     # 结构化落盘
 ```
 
 **类 1 实体来源**：`贴片生产记录.贴片厂`、`组装记录.组装厂`、以及 6 张采购表（PCB / 外壳 / IC / PCBA半成品 / 组装料 / 成品）的
@@ -373,7 +373,7 @@ python audit_wx_coverage.py --json out.json     # 结构化落盘
 三处代码用**同一个谓词**，`any(w in g["name"] ...)` 就是子串：
 
 ```python
-# wechat_intake.py  _wx4_pull:267 · 引擎B pull:517 · summary:850
+# wx/wechat_intake.py  _wx4_pull:267 · 引擎B pull:517 · summary:850
 if not watch or g["name"] in watch or g["username"] in watch \
         or any(w in g["name"] for w in watch if isinstance(w, str)):
 ```
@@ -431,7 +431,7 @@ if not watch or g["name"] in watch or g["username"] in watch \
 | ④ | 群库里 **name 就是 ID** 的无名群（`12307067401@chatroom` 这种） | 72 | ❌ 排除 —— 业主：「**出现这种情况，都是临时拉的群聊**」 |
 | | **合计** | **131** | |
 
-**落地**：这三类主体 + 无名群已写进 `audit_wx_coverage.py` 的 `EXCLUDED_GROUPS_EXACT` /
+**落地**：这三类主体 + 无名群已写进 `tools/audit_wx_coverage.py` 的 `EXCLUDED_GROUPS_EXACT` /
 `EXCLUDED_GROUPS_SUBSTR`（理由见 `excluded_reason()`），**不进 `to_add`、不进表外主体反向检测**，
 报告末尾单列一段 `🔒 业主已裁定排除的群`。`--excluded` 可全列。
 
@@ -445,7 +445,7 @@ if not watch or g["name"] in watch or g["username"] in watch \
 
 > 💡 ④ 的补充数据：72 个无名群成员数多为 0~7 人，但其中 6 个 ≥10 人（最大 23 人）。
 > 成员数大**不等于**有业务价值（也可能是老板在的闲聊大群），按业主裁定一并排除；
-> 若哪天想回看，`python audit_wx_coverage.py --excluded` 能把 ID 全列出来。
+> 若哪天想回看，`python tools/audit_wx_coverage.py --excluded` 能把 ID 全列出来。
 
 ##### 2026-09-15 实测（白名单 54 条 / 实覆 136 群 / 群库 386 群）
 
@@ -516,7 +516,7 @@ C 类 10 家：示例供应商Q(防水膜/导电布) · 示例供应商B(数据�
 脚本末尾会核对每个白名单条目能否在群库里命中，输出 `✅ 全部有效` 或逐个列出失效条目。
 手工改完 `watch_groups` **务必跑一次**。
 
-### 11.4.3 新供应商群自动纳入监控（`wx_watchlist.py`）
+### 11.4.3 新供应商群自动纳入监控（`wx/wx_watchlist.py`）
 
 **业主 2026-09-15 需求**：
 > 如果我后面新加了供应商的群，它会自动识别吗？比如说我在群名称上加上公司的名字，
@@ -537,10 +537,10 @@ SeaTable「供应商」列
 ⚠️ `audit_wx_coverage.load_watch_groups()` **必须同步并表**，否则审计会把「已靠自动词表纳入」的群误报成缺口。
 
 ```bash
-python wx_watchlist.py refresh              # 从 SeaTable 抽词并落盘（每晚 19:00 全量任务已挂）
-python wx_watchlist.py refresh --with-customers   # 连项目表客户名一起注入（默认只做供应商侧）
-python wx_watchlist.py show                 # 看当前词表
-python wx_watchlist.py check                # 每个词命中几个群 —— 找出过宽/落空的词
+python wx/wx_watchlist.py refresh              # 从 SeaTable 抽词并落盘（每晚 19:00 全量任务已挂）
+python wx/wx_watchlist.py refresh --with-customers   # 连项目表客户名一起注入（默认只做供应商侧）
+python wx/wx_watchlist.py show                 # 看当前词表
+python wx/wx_watchlist.py check                # 每个词命中几个群 —— 找出过宽/落空的词
 ```
 
 **自动识别的三个前提**（缺一不可，对业主务必讲清）：
@@ -565,18 +565,18 @@ python wx_watchlist.py check                # 每个词命中几个群 —— �
 ⚠️ 想降噪**不要删 `技术`**（见 §11.4.2 开头业主口径）。
 `config.yaml → wechat.watch_groups` 本身**没有排除语法**（只有「精确名 / 群ID / 子串」三选一的**纳入**），
 要「留关键词但排掉某几个群」只能改成逐群点名。
-**但审计侧已有排除机制**：业主裁定的 131 个群写在 `audit_wx_coverage.py` 的 `EXCLUDED_GROUPS_*` 里
+**但审计侧已有排除机制**：业主裁定的 131 个群写在 `tools/audit_wx_coverage.py` 的 `EXCLUDED_GROUPS_*` 里
 （见 §11.4.2 关键认知 3），作用是**让审计不再把它们当缺口反复报出来** —— 不等于不采集。
 （这些群当前本来就没被监控，所以两者结果一致。）
 
-### 11.5 风险预测速查（`foresee.py`）
+### 11.5 风险预测速查（`domain/foresee.py`）
 
 ```bash
-python foresee.py                     # 三路预测重算 + 写 data/foresee.json + 落预测台账 + 终端摘要
-python foresee.py --json              # 只输出 JSON（调试用）
-python foresee.py review              # 预测复盘：台账预测 vs 实际交货 → 准度报告（预警准确率/误报/漏报）
-python foresee.py ask <编号|产品|供应商|类别>   # 对话式追问：某计划的风险细节/环节最晚开始日/供应商画像
-python foresee.py log                 # 只更新预测台账（不重算）
+python domain/foresee.py                     # 三路预测重算 + 写 data/foresee.json + 落预测台账 + 终端摘要
+python domain/foresee.py --json              # 只输出 JSON（调试用）
+python domain/foresee.py review              # 预测复盘：台账预测 vs 实际交货 → 准度报告（预警准确率/误报/漏报）
+python domain/foresee.py ask <编号|产品|供应商|类别>   # 对话式追问：某计划的风险细节/环节最晚开始日/供应商画像
+python domain/foresee.py log                 # 只更新预测台账（不重算）
 ```
 
 **三个计算模块**（全部只读，数据源均为 data/ 本地快照）：
@@ -594,10 +594,10 @@ python foresee.py log                 # 只更新预测台账（不重算）
 对照——预警且真晚了=预警正确、预警但没晚=误报（可容忍）、判「正常」却晚了=
 **漏报**（最伤，逐条点名）。预警准确率随台账积累逐月可信。
 
-**刷新链路**：`seatable_sync.py`（业务表）→ `partdb_sync.py`（BOM/库存）→
-`foresee.py`（预测+台账）→ `cockpit.py`（驾驶舱）。驾驶舱「风险雷达」section
+**刷新链路**：`sync/seatable_sync.py`（业务表）→ `sync/partdb_sync.py`（BOM/库存）→
+`domain/foresee.py`（预测+台账）→ `cockpit/cockpit.py`（驾驶舱）。驾驶舱「风险雷达」section
 （sec-FC，老板/生产/采购页）消费 `data/foresee.json`；已逾期/高风险项自动进
-「下一步行动建议」。每日 9 点自动化跑 `foresee.py` + `foresee.py review`。
+「下一步行动建议」。每日 9 点自动化跑 `domain/foresee.py` + `domain/foresee.py review`。
 
 ---
 

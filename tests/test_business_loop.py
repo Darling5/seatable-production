@@ -125,7 +125,7 @@ class TestBusinessLoop(unittest.TestCase):
 
 class TestBusinessLoopCli(unittest.TestCase):
     def run_cli(self, *args):
-        return subprocess.run([sys.executable, str(HERE / "business_loop.py"), *args], capture_output=True, text=True, encoding="utf-8")
+        return subprocess.run([sys.executable, str(HERE / "workflows" / "business_loop.py"), *args], capture_output=True, text=True, encoding="utf-8")
 
     def test_doctor_and_scenario(self):
         with tempfile.TemporaryDirectory() as tmp:

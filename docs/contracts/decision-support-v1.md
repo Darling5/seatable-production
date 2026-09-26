@@ -269,7 +269,7 @@ assert all(not i["authorized"] for i in ledger.intents)   # 所有执行意图�
 ### 4.3 对照基线
 
 - **历史中位工期基线**：不做任何推理的笨办法。排程若跑不赢它，就没有价值；
-- **与既有 `foresee.py` 口径对齐**：复用 `VERDICT_REVIEW`
+- **与既有 `domain/foresee.py` 口径对齐**：复用 `VERDICT_REVIEW`
   （`预警正确 / 误报 / 漏报 / 正确`）。取不到时降级为等价副本并在
   `verdict_source` 里标明，**不假装是同一把尺子**。
 

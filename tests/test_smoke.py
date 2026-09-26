@@ -47,7 +47,7 @@ def main():
         real = F.get_adapter
         F.get_adapter = lambda config=None: LocalAdapter(data)
         try:
-            import seed_demo
+            from tools import seed_demo
             seed_demo.get_adapter = F.get_adapter
             seed_demo.main()
 
@@ -66,6 +66,7 @@ def main():
             check(len(schema.validate_enum("资源", {"类型": "人员"})) == 0, "合法枚举被误报")
 
             print("[2] 资源域计算")
+            sys.path.insert(0, os.path.join(_HERE, "cockpit"))
             import cockpit
             res = cockpit.compute_resources(ad, today, plans)
             check(res is not None, "compute_resources 返回 None（演示资源数据未被读到）")
@@ -132,7 +133,7 @@ def main():
             check(a1 == a2 and r1 == r2, "两次读取口令不一致（每次生成会导致分享出去的口令失效）")
 
             print("[7] 录入分级（第二大脑的安全底线）")
-            import intake
+            from domain import intake
 
             def mk(op, table, data, row_id=None):
                 return intake.assess(intake.Intent(op, table, data, row_id), ad)
@@ -182,7 +183,7 @@ def main():
             plan = intake.render_plan(batch)
             check("需要你确认" in plan and "合同交期" in plan, "确认清单未列出关键改动")
             print("[9] 可移植性：不得写死任何一家公司的供应商")
-            import doctor as _doc
+            from tools import doctor as _doc
             for _t, _d in schema.TABLE_DEFAULTS.items():
                 for _c in ("供应商", "组装厂", "贴片厂"):
                     check(not _d.get(_c),

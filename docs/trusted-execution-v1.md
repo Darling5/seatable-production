@@ -7,7 +7,7 @@
 
 ## 1. 为什么改（一句话）
 
-旧链路里有一条**绕过所有人**的写库通道：`wxmatch.py apply` 把「高置信」
+旧链路里有一条**绕过所有人**的写库通道：`wx/wxmatch.py apply` 把「高置信」
 直接当成写入许可 —— 匹配算法一命中就改真实业务表，而且那条路径连读回
 验证都没有（旧注释以为「列名写错会抛异常」，但 SeaTable 实际是
 **HTTP 200 静默丢列**，见 SKILL.md §12）。
@@ -38,7 +38,7 @@
 
 - `application/dataservice.py`：production/tasks 路由在 `apply` 模式下
   无授权 → `blocked`（旧行为是返回 `candidate`，语义上仍暗示「等 approve 就能写」）；
-- `wxmatch.py cmd_apply`：不带 `--grant-file` 时**只列待授权清单，一行都不写**；
+- `wx/wxmatch.py cmd_apply`：不带 `--grant-file` 时**只列待授权清单，一行都不写**；
   带授权文件时逐条经 `DataService` 写入（幂等 + 读回验证 + 台账）。
 
 ### 2.2 晚间链路：采集 → OCR → 核对 → 授权写入及读回 → 快照 → 风险 → 生成发布
@@ -71,7 +71,7 @@ publish          发布（带门禁；无 token 则 skipped）
 
 - **账本**：`data/runs/<run_id>/final.json`（每步 status / counts / artifacts）。
   OCR、核对、发布都在 DAG 内自动记账；AI 语义步骤（群聊总结、事件登记）
-  跑在 DAG 之外，用 `workflow.py note` 补记 —— 「跑了没有」不能只留在 AI 的记忆里。
+  跑在 DAG 之外，用 `workflows/workflow.py note` 补记 —— 「跑了没有」不能只留在 AI 的记忆里。
 - **门禁**：`application/gates.py`。一条原则：**账本里没证明过的，不许对外发布。**
 
   发布前判定三件事：
@@ -99,7 +99,7 @@ publish          发布（带门禁；无 token 则 skipped）
 ## 3. 授权文件怎么写
 
 放在 `data/approvals/<grant_id>.json`（该目录已被 `.gitignore` 忽略）。
-`evening_write.py` 只在**存在有效授权**时才执行写入。
+`workflows/evening_write.py` 只在**存在有效授权**时才执行写入。
 
 ```json
 {
@@ -124,27 +124,27 @@ publish          发布（带门禁；无 token 则 skipped）
 
 ```bash
 # 19:00 全量（演练 / 真实执行 / 断点续跑）
-python workflow.py run evening --mode preview
-python workflow.py run evening --mode apply
-python workflow.py run evening --mode apply --resume <run_id>
+python workflows/workflow.py run evening --mode preview
+python workflows/workflow.py run evening --mode apply
+python workflows/workflow.py run evening --mode apply --resume <run_id>
 
 # 09:00 轻同步（未改动）
-python workflow.py run daily --mode apply
+python workflows/workflow.py run daily --mode apply
 
 # 授权写入：先看清单，再给人批，再执行
-python wxmatch.py apply                        # 只列待授权清单，不写
-python wxmatch.py apply --grant-file data/approvals/GRT-xxx.json
+python wx/wxmatch.py apply                        # 只列待授权清单，不写
+python wx/wxmatch.py apply --grant-file data/approvals/GRT-xxx.json
 
 # 发布门禁
-python workflow.py gate latest                 # 判定是否允许发布
-python publish.py --gate latest                # 门禁通过才真正上传
+python workflows/workflow.py gate latest                 # 判定是否允许发布
+python cockpit/publish.py --gate latest                # 门禁通过才真正上传
 
 # 给 AI 语义步骤补记账本（AI 步骤跑在 DAG 之外）
-python workflow.py note <run_id> --step ai_summary --status success \
+python workflows/workflow.py note <run_id> --step ai_summary --status success \
     --detail "12 个群 / 38 条待办" --artifact data/wechat_intake/ai_summary_24h.md
 ```
 
-**退出码约定**（`publish.py` / `evening_write.py`）：
+**退出码约定**（`cockpit/publish.py` / `workflows/evening_write.py`）：
 
 | 码 | 含义 |
 |---|---|
@@ -159,10 +159,10 @@ python workflow.py note <run_id> --step ai_summary --status success \
 
 | 位置 | 旧行为 | 新行为 |
 |---|---|---|
-| `wxmatch.py apply` | 高置信项**自动写库** | 无 `--grant-file` → **只列清单**；有授权才写 |
-| `wxmatch.py apply` 回填状态 | `已自动写入` | `已授权写入` |
+| `wx/wxmatch.py apply` | 高置信项**自动写库** | 无 `--grant-file` → **只列清单**；有授权才写 |
+| `wx/wxmatch.py apply` 回填状态 | `已自动写入` | `已授权写入` |
 | `DataService.write(production/tasks, apply)` | 返回 `candidate` | 无授权 → **`blocked`** |
-| `publish.py` 缺 token / 缺 lib | 退出码 2 | 退出码 **3（skipped）** |
+| `cockpit/publish.py` 缺 token / 缺 lib | 退出码 2 | 退出码 **3（skipped）** |
 | `StepSpec.allowed_in` | 不拦 `publish` | preview 模式拦 `publish` |
 | `make_step(cmd)` | 不支持占位符 | 支持 `{run_id}` / `{skill_dir}` |
 

@@ -1,6 +1,6 @@
 # SeaTable 云端「生产」库接入要点（cloud.seatable.cn）
 
-`seatable_sync.py` 把云端真实业务表拉到本地 `data/*.csv`，供 `cockpit.py` 直接渲染。
+`sync/seatable_sync.py` 把云端真实业务表拉到本地 `data/*.csv`，供 `cockpit/cockpit.py` 直接渲染。
 下面是踩坑后确认的 API 调用方式（官方 `seatable-api-python` 源码核对）。
 
 ## 凭证（来自用户 config-example.env，存于本技能 config.yaml 的 [seatable] 段）
@@ -32,12 +32,12 @@
 ## 状态词差异（真实库 vs demo）
 - 真实库项目/计划状态用：`计划中 / 已交付 / 已超期 / 可能延迟 / 待客户下单`
 - demo 用：`计划中 / 进行中 / 已完成`
-- `cockpit.py` 用 `STATUS_DONE={已完成,已交付}`、`STATUS_ACTIVE={进行中,可能延迟,已超期,待客户下单}` 归一化。
+- `cockpit/cockpit.py` 用 `STATUS_DONE={已完成,已交付}`、`STATUS_ACTIVE={进行中,可能延迟,已超期,待客户下单}` 归一化。
 - `完货日期` 在真实库普遍为空 → 交期达成率算不出，显示 `—`（N/A）而非 0%。
 
 ## 重跑
 ```
-python seatable_sync.py        # 全量同步（写 data/*.csv + data/_sync_meta.json）
-python cockpit.py              # 重生成 项目管理驾驶舱.html
+python sync/seatable_sync.py        # 全量同步（写 data/*.csv + data/_sync_meta.json）
+python cockpit/cockpit.py              # 重生成 项目管理驾驶舱.html
 ```
 cockpit 检测到 `data/_sync_meta.json` 即把标识切到「真实数据 · SeaTable云」。

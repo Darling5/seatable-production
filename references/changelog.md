@@ -24,11 +24,11 @@
 - 🔴 推算交期**只读展示**，绝不写回 SeaTable（理由同 v1.8.9 ①）。
 - 验收（无头 Chrome 真渲染断言）：**33 行 / 21 个合同交期实心菱形 / 33 个推算交期空心菱形 / 33 条进度条**；
   内联 JS `node --check` cockpit 2 段 + share 1 段全部通过；静态断言 9/9 ✅。
-- 📌 共享页（`build_share.py`）**甘特是自有 `renderGantt()`**（与 cockpit 不共用），故两边同改：
+- 📌 共享页（`cockpit/build_share.py`）**甘特是自有 `renderGantt()`**（与 cockpit 不共用），故两边同改：
   `plans`/`gantt` 均加 `due_est`；生产进度表新增「**推算交期**」列（`≈` 前缀 `.appx`，未填合同交期显示 `.dash`「未填」）；
   `.gtrack` 高 26px、`.gbar{top:10px}`；新增 `.gms`/`.gms-due`/`.gms-est` 与图例；`#ganttBasis` 说明改写。
 
-**② 微信图片离线解密 + OCR —— `wxmedia.py`（新建）**
+**② 微信图片离线解密 + OCR —— `wx/wxmedia.py`（新建）**
 > ⚠️ **本条推翻了本技能此前写入文档的结论**：「图片拿不到字节 / 付款截图无法 OCR」**作废**。
 > 根因：旧排查**看错了路径层级**（把 `xwechat_files` 父目录当账号目录，自然一个 `.dat` 都找不到）。
 - 实测数据（2026-09-15）：`msg/attach/<md5(会话username)>/<YYYY-MM>/Img/` 下 **57,606 个 `.dat`、9.4 GB**，
@@ -58,13 +58,13 @@
   `doctor` 全绿：数据根 ✓ / 账号 ✓ / code ✓ / `aes_key=XXXXXXXXXXXXXXXX` / `xor_key=0xXX` / 抽样解密 **5/5** / OCR 引擎可用。
 - OCR 引擎：`rapidocr_onnxruntime`（**`C:\Python311` 有，managed 3.13 缺** → 跑微信命令一律用 `C:\Python311\python.exe`）。
 
-**③ 新供应商群自动纳入监控 —— `wx_watchlist.py`（新建）**
+**③ 新供应商群自动纳入监控 —— `wx/wx_watchlist.py`（新建）**
 - 业主问：「如果我后面新加了供应商的群，它会自动识别吗？比如说我在群名称上加上公司的名字，
   或者是说供应商的名字什么的，然后在 seatable 表格上也加入对应的供应商名字。」
 - 答：**会** —— 只要**同时满足三个前提**：① SeaTable 里登记了该供应商名；② 群名里含这个名（
   `watch_groups` 是**子串匹配**）；③ 跑过词表刷新。
 - 机制（三步）：
-  1. `wx_watchlist.py refresh [--with-customers]` 从 SeaTable **供应商/客户实体**（复用
+  1. `wx/wx_watchlist.py refresh [--with-customers]` 从 SeaTable **供应商/客户实体**（复用
      `audit_wx_coverage.load_live()` + `collect_suppliers()`）取全量名字；
   2. `normalize()` **三层剥离**：城市前缀（`CITY_PREFIX`）→ 公司后缀（`COMP_SUFFIX`）→ 行业通用词
      （`INDUSTRY_WORDS`），再被 `STOPWORDS` 过滤、`MIN_LEN=2` 卡长度 → 产出 `entities` + `keywords`；
@@ -93,7 +93,7 @@
   输出用 `sys.stdout.reconfigure(encoding='utf-8')`。
 - **PowerShell 静默截断**：删 11 个临时文件只删掉 1 个（`exit 1` 无 stderr）→ 改用 Python `os.remove` 循环，11/11 成功。
 - `pycryptodome` 未装 → 改用 `cryptography` 的 `Cipher/algorithms/modes`。
-- **先跑 `py_compile` 不够**：改完 `cockpit.py` 必须**真跑一次** `python cockpit.py` 才能发现 `NameError`。
+- **先跑 `py_compile` 不够**：改完 `cockpit/cockpit.py` 必须**真跑一次** `python cockpit/cockpit.py` 才能发现 `NameError`。
 
 
 - ★★ **业主定下看板三条口径**（原话：「生产进度看板的数据。交期如果没有填的，以历史数据推算，
@@ -107,7 +107,7 @@
   **虚线边框 + 名称后 `≈` 号 + tooltip 写明推算依据**与真实交期区分（`est=True`）。
   - 历史基线 = **已交付计划（状态∈`STATUS_DONE`）的 `花费天数`** 分位。
     2026-09-15 实测 **n=27 · 中位 28 · p75 37 · p90 49 · min 3 · max 94 天**
-    （与 `foresee.py` 的「立项→`交货时间（自动记录）`」口径**逐值吻合** 28/37/49，互为印证）。
+    （与 `domain/foresee.py` 的「立项→`交货时间（自动记录）`」口径**逐值吻合** 28/37/49，互为印证）。
   - 取**中位**而非 p75：交期是「典型多久能做完」，中位最无偏；p75/p90 作为保守上界写进 tooltip。
   - `hist_cycle()` 在 `compute()` 开头算一次，**全页共用**（甘特图与生产计划全表不会再各算一个数）。
   - 🔴 **推算值只读展示，绝不写回 SeaTable** —— 这些计划恰恰是因为「交期待收款后回填」的规则才留空
@@ -136,11 +136,11 @@
   生产计划表的「**交货时间（自动记录）**」就是一条 **mtime 列**、`创建时间` 是 **ctime 列**。
   `adapters/seatable.py::list_rows` 早先 `if k in ("_id","_ctime","_mtime"): continue` 无条件跳过，
   于是**直连路径永远读不到这两列**（CSV 路径有，因为导出接口带真实列名）
-  → `foresee.py` 用 `交货时间（自动记录）` 算历史工期分位，在直连下会**静默全空**、风险雷达失效。
+  → `domain/foresee.py` 用 `交货时间（自动记录）` 算历史工期分位，在直连下会**静默全空**、风险雷达失效。
   修法：只要该 key 在列定义里对应一个业务列，就照常 `key2name` 映射回列名；没定义才当纯内部时间戳丢弃。
   （`_flat_cell` 本就支持 `ctime/mtime` 类型的 ISO→`YYYY-MM-DD` 转换，无需改动。）
 
-- 📌 共享页（`build_share.py`）同步：KPI「待补交期」→「**交期推算**」，
+- 📌 共享页（`cockpit/build_share.py`）同步：KPI「待补交期」→「**交期推算**」，
   甘特新增 `est` 虚线样式与说明段 `#ganttBasis`（写出样本数/中位/p75/p90 与算式），
   生产计划表交期列显示 `≈ 2026-09-28`，筛选档同步。
 - 📌 验收（无头 Chrome 注入解锁后断言真实 DOM）：甘特 33 行、`data-est=1` 12 行、
@@ -185,7 +185,7 @@
 ### v1.8.7（2026-09-15）
 - ★★ **新认知（业主指出）：供应商名匹配不到群 ≠ 该供应商没群 —— 群可能是以「所采购的产品」命名的。**
   业主原话：「搜不到的那些可能是以所采购的产品命名的，比如示例供应商E是喇叭，示例供应商N那个是基站的外壳，
-  示例供应商D是磁铁。」→ `audit_wx_coverage.py` 的 `resolve()` 从两层扩到**三层**：
+  示例供应商D是磁铁。」→ `tools/audit_wx_coverage.py` 的 `resolve()` 从两层扩到**三层**：
   ① 供应商名 → ② 前缀退化 → **③ 产品名（`PRODUCT_ALIAS`）**。
   实测印证：示例供应商D→`示例科技-磁铁`、示例供应商E→`示例科技-喇叭`、示例供应商N/示例供应商O→`防爆窄带基站外壳`、示例供应商P→`示例科技-充电线`。
 - 🔴 **产品名是弱证据，必须过「独家性」关**（业主当场纠正一处）：
@@ -227,7 +227,7 @@
   `发票抬头测试`）。**真实客户在 `项目.项目` 列**，格式 `客户（渠道）` 或 `客户-产品说明`，
   常与产品描述粘成长串，需 `cust_core()` 清洗 + `CUST_ALIAS` 人工别名表
   （项目表写「客户I」，群名只写「客户I」）。
-- 🆕 `audit_wx_coverage.py` 升级为**三类审计**：新增 `--only supplier|customer|service`、
+- 🆕 `tools/audit_wx_coverage.py` 升级为**三类审计**：新增 `--only supplier|customer|service`、
   `--buckets`（五桶分类 S 供应商 / C 客户 / A 客户售后技术 / I 内部 / O 其他 / N 噪音）、
   `CUST_ALIAS`、`SVC_KW`、`counterparties()` + `unknown_partners()`（**反向检测**：
   从群名拆对方主体，凡客户/供应商都认不出的列为「表外主体」）。
@@ -248,15 +248,15 @@
 
 ### v1.8.5（2026-09-15）
 - ★ **关键认知：`watch_groups` 是「子串匹配」而不只是精确群名。** 三处代码用同一谓词 ——
-  `wechat_intake.py` 的 `_wx4_pull:267`、引擎B `pull:517`、`summary:850`：
+  `wx/wechat_intake.py` 的 `_wx4_pull:267`、引擎B `pull:517`、`summary:850`：
   `g["name"] in watch or g["username"] in watch or any(w in g["name"] for w in watch)`。
   **所以白名单里可以直接写关键词**（写「示例集团」＝监控所有含「示例集团」的群，且新群自动纳入），
   不必维护上百个群名。代价：词越短越易误伤（`技术` 会带进外部培训群）。
-- 🆕 **重写 `audit_wx_coverage.py`**：改为**直连 SeaTable**（`--csv` 可离线回退）+ 四类判定
+- 🆕 **重写 `tools/audit_wx_coverage.py`**：改为**直连 SeaTable**（`--csv` 可离线回退）+ 四类判定
   `A 有群·已监控 / B 有群·未监控 / C 无任何群 / D 购买平台·非物料`；新增
   `PLATFORM`（淘宝/天猫/京东/拼多多/1688/立创/示例采购平台A/得捷/顺丰/财税…）、`ALIAS`（全称→简称人工别名）、
   前缀回退匹配（`示例供应商D`→群`示例供应商D-…`）、`--groups`（列出实际监控的全部群）、
-  `is_watched()`（与 `wechat_intake.py` 谓词对齐，含关键词）、白名单条目有效性校验。
+  `is_watched()`（与 `wx/wechat_intake.py` 谓词对齐，含关键词）、白名单条目有效性校验。
 - ⚠️ **踩坑修正**：首版把 `发货清单.快递单号` 当成供应商列 → 抽出 150 个「供应商」、
   C 类塞满 `JDVC…/SF…/KY…` 运单号。**该表整表排除**；供应商来源收窄为 8 张表。
 - 📌 **实测（供应商侧）**：8 张表 45 个取值 / 43 家主体 → **25 家有对应群**（此前只监控 5 家）、
@@ -271,7 +271,7 @@
 - 📄 文档：`references/wx-intake-and-check.md` §11.4.2 全面重写（含子串匹配认知、`--groups`、加群后必做的校验）。
 
 ### v1.8.4（2026-09-15）
-- 🆕 **白名单覆盖自查** `audit_wx_coverage.py`：把「贴片厂 / 组装厂 / 物料供应商」这些业务实体
+- 🆕 **白名单覆盖自查** `tools/audit_wx_coverage.py`：把「贴片厂 / 组装厂 / 物料供应商」这些业务实体
   逐个拿去比对微信监控白名单，输出 **已监控 / 有群未监控 / 无群** 三态矩阵。实体来源＝
   `贴片生产记录.贴片厂`、`组装记录.组装厂`、5 张采购表的 `供应商` 列；匹配＝名称去后缀后取
   `{全名,前3字,前2字}` 关键词命中群名；`GENERIC`（深圳/上海/科技…）与噪声群（淘宝/顺丰/福利…）已排除。
@@ -285,19 +285,19 @@
   该厂的活儿在驾驶舱里完全不可见。文档见 `references/wx-intake-and-check.md` §11.4.2。
 - 🔎 **顺带发现的数据漂移**：本地 `data/生产计划.csv`（09:03 快照，34 行）与云端实时（33 行）不一致——
   `20260716-001` 已转已交付、`20260706-001`（客户A UWB信标 24 个）**云端已删除**。驾驶舱直连云端不受影响，
-  但走 CSV 的脚本（`foresee.py` 等）会用旧数，需 `python seatable_sync.py` 校准。
+  但走 CSV 的脚本（`domain/foresee.py` 等）会用旧数，需 `python sync/seatable_sync.py` 校准。
 
 ### v1.8.1（2026-09-14）
-- 🆕 **项目矩阵板块**（见 §9.5）：项目全表 `sec-PT`（36 行全字段）+ 生产计划全表 `sec-PL`（34 行）+ 流程思维导图 `sec-MM`（7 张 XMind / 531 节点，可折叠 SVG 水平树）。注册到 `production`（项目经理）与 `boss` 角色，默认进首屏。新增 `extract_mindmaps.py`（XMind → `data/思维导图.json`）。
+- 🆕 **项目矩阵板块**（见 §9.5）：项目全表 `sec-PT`（36 行全字段）+ 生产计划全表 `sec-PL`（34 行）+ 流程思维导图 `sec-MM`（7 张 XMind / 531 节点，可折叠 SVG 水平树）。注册到 `production`（项目经理）与 `boss` 角色，默认进首屏。新增 `tools/extract_mindmaps.py`（XMind → `data/思维导图.json`）。
 - 🐛 **修直连路径两处静默错误**（见 §9.6，此前导致驾驶舱大面积数字失真）：
   - `adapters/seatable.py` 新增 `_cell_meta()` / `_flat_cell()`：`GET /rows/` 返回的 **select 选项 id** 翻译为选项名（此前状态显示 `58668`、KPI 在产/计划/已交付恒为 0）、**ISO 日期**截为 `YYYY-MM-DD`。
-  - `cockpit.py::_date()` 支持 ISO 带时分秒/时区（此前 strptime 全部失败 → **甘特图为空**、剩余天数为 null、交期达成率 N/A、现金流全 0）。
+  - `cockpit/cockpit.py::_date()` 支持 ISO 带时分秒/时区（此前 strptime 全部失败 → **甘特图为空**、剩余天数为 null、交期达成率 N/A、现金流全 0）。
 - 🐛 `receivable_list.sort(key=...)` 对空合同交期抛 `TypeError: '<' not supported between 'NoneType' and 'str'` → 排序键改 `str(x.get("due") or "")`；`proj_overview`/`wip` 的 `due` 改 `or ""`。
 - 🆕 **甘特图「待补交期」**：13/34 条计划无合同交期（且无其它可用日期字段）。业主口径＝「暂时还没，后期手补」→ **不推算、不猜日期**，沉到底部单列灰色虚线「待补交期」条（`pending=True`），图注写明条数；补录后自动落到时间轴。`model["gantt_pending"]` = 条数。甘特覆盖 0 → 34 条（21 条真实排期 + 13 条待补）。
 - 🧪 无头 Chrome 实测：7 图切换 / 折叠（root 85→1→85）/ 搜索命中 / 缩放 全部正常，**0 JS 报错**。
 - 🔢 **KPI 口径修正**：`p_planned` 现含 `"暂放"`（业主口径归入「计划中」），修掉 1+10+22=33 ≠ 36 的凭空消失。
 - 🆕 **应收口径对照** `model["recv_check"]`（见 §9.7）：把「表内待收」(SeaTable 公式列) 与「应收」(看板现算＝合同总价−实收) **两个数并列**摆出，并逐项列出差在哪、差多少、成因。实测差 ¥150,043，**全部来自 3 个项目**（2 个待收列为空实际仍有未收 + 1 个 ¥2 舍入）。
-- 🆕 **对内共享页** `build_share.py`（见 §9.8）：生成**只含项目进度 / 生产进度 / 甘特图**的独立单页 HTML（35 KB，无口令、无任何金额/成本/供应商/微信数据），用于发给公司内部同事。已发布为在线链接。
+- 🆕 **对内共享页** `cockpit/build_share.py`（见 §9.8）：生成**只含项目进度 / 生产进度 / 甘特图**的独立单页 HTML（35 KB，无口令、无任何金额/成本/供应商/微信数据），用于发给公司内部同事。已发布为在线链接。
 - 🐛 `main()` 开头把 stdout 切 UTF-8 —— Windows 控制台默认 GBK，末行 `print` 里的 `¥` 抛 `UnicodeEncodeError` 会让生成器**退出码=1**（HTML 其实已写好），自动化会误判成失败。
 
 ### v1.8.2（2026-09-15）
@@ -311,11 +311,11 @@
   测试 8（apply 边界：仅高置信待确认、中置信不写、已处置不重写）。
 
 ### v1.7.0（2026-09-03）
-- 🆕 **风险预测引擎**：新增 `foresee.py`，从「事后告警」升级为「事前预测」——
+- 🆕 **风险预测引擎**：新增 `domain/foresee.py`，从「事后告警」升级为「事前预测」——
   - **合同倒排**：以 24 个已交付计划的**真实工期**（立项→交货，中位 24 / p75 33 / p90 49 天）为基准，对每个在制计划算剩余天数 vs 历史分位，输出 已逾期/高风险/偏紧/正常 四档判定 + 各环节（BOM核对→IC/PCB采购→组装料采购→贴片组装→测试发货）最晚开始日，「必须立刻执行」清单。
   - **供应商交期画像**：5 张采购表 承诺交期 vs 实际交期 按类别/供应商统计偏差（样本 86 条：组装料平均 +29 天是最不稳环节，IC 最准 +0.2 天），自动生成采购 buffer 建议；缺料 ETA 计算时按类别自动加 buffer。
   - **缺料预警**：PartDB BOM 缺口 × 在途采购（状态∈已下单/已付款-未到货/未下单，ETA=下单日+承诺+buffer），按产品名/编号关联生产计划，输出 必须立刻下单/在途来不及/在途可覆盖 三档结论。PartDB 项目名与生产计划产品名非同一体系，精确→前 6 字模糊匹配，匹配不上诚实标注「未关联生产计划」。
-  - 产出 `data/foresee.json`，`python foresee.py` 一键重算，终端打印三段风险摘要。
+  - 产出 `data/foresee.json`，`python domain/foresee.py` 一键重算，终端打印三段风险摘要。
 - 🖥 **驾驶舱「风险雷达」section**：老板/生产/采购页接入（`sec-FC`）——合同倒排表（环节最晚开始日红标）、供应商画像表（类别 buffer + 风险供应商徽章）、缺料预警表（缺口×在途×结论）；已逾期/高风险/必须立刻下单自动进「下一步行动建议」（`cat: "risk"` → 跳转 FC section，CAT_SEC 已登记）。
 - 🧪 `test_smoke.py` 187 项断言全过（KNOWN 集合同步补 `risk` 类别）。
 
@@ -323,21 +323,21 @@
 - 🆕 **预测自我学习闭环**：
   - **预测台账** `data/预测台账.csv`：每次计算自动落当日预测快照（同日同计划同类型去重覆盖），跨天留痕。
   - **`review` 复盘**：预测 vs 实际交货对照——预警(高风险/偏紧)+晚了=预警正确；预警+没晚=误报（可容忍）；**正常+却晚了=漏报（逐条点名）**。预警准确率随台账积累成为硬数字，环节提前量可据此校准。
-  - **`ask` 对话追问**：`python foresee.py ask <计划编号|产品|供应商|类别>` 一问即答——计划判定+五环节最晚开始日+缺料在途 / 供应商画像 / 类别 buffer。
+  - **`ask` 对话追问**：`python domain/foresee.py ask <计划编号|产品|供应商|类别>` 一问即答——计划判定+五环节最晚开始日+缺料在途 / 供应商画像 / 类别 buffer。
   - 已挂每日 9 点自动化（步骤 2.6），漏报>0 早报点名。
 
 ### v1.6.2（2026-09-03）
-- 🆕 **消息↔SeaTable 核对引擎**：新增 `wxmatch.py`，把微信情报从「归纳总结」升级为「结构化对账」——群消息里的**收款**（已打款/到账 20+ 词 + 金额 ↔ 项目「待收」±2% 容差）、**新下单**（↔ 项目表客户名，匹配不到提示漏立项）、**客户合同 PDF**（磁盘明文文件名 ↔ 项目表合同列，客户名+产品词双维度 ≥2 词重叠）、**供应商合同**（↔ 5 张采购记录表，`SUPPLIER_ALIASES` 别名归一字之差）四类逐条核对，台账落 `data/核对结果.csv`。
+- 🆕 **消息↔SeaTable 核对引擎**：新增 `wx/wxmatch.py`，把微信情报从「归纳总结」升级为「结构化对账」——群消息里的**收款**（已打款/到账 20+ 词 + 金额 ↔ 项目「待收」±2% 容差）、**新下单**（↔ 项目表客户名，匹配不到提示漏立项）、**客户合同 PDF**（磁盘明文文件名 ↔ 项目表合同列，客户名+产品词双维度 ≥2 词重叠）、**供应商合同**（↔ 5 张采购记录表，`SUPPLIER_ALIASES` 别名归一字之差）四类逐条核对，台账落 `data/核对结果.csv`。
 - 🔍 **微信 4.x 文件消息数据源破案**：type=49 数据库 content 是加密容器解不出 XML、compress_content 为空，但磁盘 `msg/file/月份/` 下**文件名是明文**（近 60 天 472 个 PDF）——核对引擎走磁盘扫描。附件（`附件二…`）排除、重传 `(1)(2)` 后缀 canon 去重，65 → 36 条噪声清干净。
 - 🏷 **我方主体识别**：文件名含自家公司名义的销售合同（客户名在 PDF 内文）→ 低置信待人工，不刷「漏立项」误报；「蓝牙信标」单产品词几乎全项目命中 → ≥2 词重叠门槛 + 项目名含原词优先排序。
-- 🐞 **引擎 A 探测 bug 修复**（`wxengine/wa_db.py`）：受限执行环境 `APPDATA` 环境变量为空导致漏扫 Roaming 配置 → 误报「未找到微信数据库目录」。补 USERPROFILE 兜底后 19 库 380 群恢复可读。
+- 🐞 **引擎 A 探测 bug 修复**（`wx/wa_db.py`）：受限执行环境 `APPDATA` 环境变量为空导致漏扫 Roaming 配置 → 误报「未找到微信数据库目录」。补 USERPROFILE 兜底后 19 库 380 群恢复可读。
 - 🔒 **铁律：只读核对绝不自动写库**——高置信收款生成预填意图 JSON（复用 wechat_intake approve 链路），人确认后才写项目「实收」。
 - 🧪 新增 `test_wxmatch.py`，33 项离线断言全过（金额提取含万元换算/千分位/年份过滤、双维度客户匹配、容差、事件扫描、合同正则、供应商别名），测试数据落临时目录不污染真实台账。
 - 🖥 **驾驶舱接入**：新增「消息↔SeaTable 核对台」模块（老板/生产/销售页）——待核对表（类型/置信度徽章）、分布统计、处置指引；高置信收款进「下一步行动建议」红字置顶。
-- 📦 `sync_expert.py` 清单补 `wechat_intake.py`/`wxmatch.py`/`test_wxmatch.py`/`wxengine/wa_db.py`（此前专家副本一直缺微信引擎，装了专家拿不到该能力）。
+- 📦 `sync/sync_expert.py` 清单补 `wx/wechat_intake.py`/`wx/wxmatch.py`/`test_wxmatch.py`/`wx/wa_db.py`（此前专家副本一直缺微信引擎，装了专家拿不到该能力）。
 
 ### v1.6.0（2026-09-03）
-- 🆕 **原料行情监控**：新增 `commodities.py`，跟电子产品生产常用的**上游原料**价格——金/银/铜/锡/铝/镍 6 种金属 + PP/LLDPE/PVC 3 种石化代理指标，全自动；ABS/PC/PS 3 种塑料现货走人工录入。统一入口 `python market.py raw <子命令>`。
+- 🆕 **原料行情监控**：新增 `domain/commodities.py`，跟电子产品生产常用的**上游原料**价格——金/银/铜/锡/铝/镍 6 种金属 + PP/LLDPE/PVC 3 种石化代理指标，全自动；ABS/PC/PS 3 种塑料现货走人工录入。统一入口 `python domain/market.py raw <子命令>`。
 - 📡 **零凭证数据源**：实时行情走新浪期货 `hq.sinajs.cn`（**无需 API key**，GBK 编码，需带 `Referer` 头，一次请求取回全部品种）；历史 K 线走东方财富 `push2his`（新浪日 K 线接口已下线，返回 `Service not found`）。模块内**不存任何 key**。
 - ⚖️ **同口径环比（核心设计，易踩）**：期货「连续合约」与「具体合约」（如 `au2612`）是**两个口径**，环比时只跟**同口径的上一条**比。若混着比会算出假涨跌——和元器件「串渠道假涨跌」是同一个坑。`_recalc_pct()` 补历史后按日期重算，口径字段写入 CSV 便于追溯。
 - 🧩 **塑料数据如实交代**：ABS/PC/PS 是石化下游**现货**，无公开免费 API（生意社/卓创/中塑在线都是付费墙）。本版不编造数据，改用 PP/LLDPE/PVC 期货作**上游石化链代理指标**，并在 CSV 里标注口径为「代理」。架构预留 `source` 适配器位，日后接同花顺 iFinD 不用返工。
@@ -349,7 +349,7 @@
 
 ### v1.5.2（2026-09-02）
 - 🔍 **得捷 401 破案**：用户贴开发者后台截图（App 状态 Approved、五个 API 全 Enabled）质疑「不是显示正常吗」。真相是 **App Approved ≠ 端点能调** —— 要看订阅列表里有没有你调的那个产品。用户订的是 **ProductInformation V4**，代码却在调 Search v3，一律 401。→ **改代码调 V4**，不要求用户改订阅。
-- 🔀 **`suppliers.py` 重写为 V4/v3 双实现**：`lookup()` 分发到 `_lookup_v4()` / `_lookup_v3()`，config 加 `api_version: v4`（默认）。**用 V4 keyword 端点**（价/库存/中文生命周期全有），**弃用 productdetails**（2-legged 下库存恒 0，US/CN 站都试过）。V4 语言码是 `zhs` 不是 `zh`，config 写 `zh` 自动映射。
+- 🔀 **`domain/suppliers.py` 重写为 V4/v3 双实现**：`lookup()` 分发到 `_lookup_v4()` / `_lookup_v3()`，config 加 `api_version: v4`（默认）。**用 V4 keyword 端点**（价/库存/中文生命周期全有），**弃用 productdetails**（2-legged 下库存恒 0，US/CN 站都试过）。V4 语言码是 `zhs` 不是 `zh`，config 写 `zh` 自动映射。
 - 🎯 **前缀变体命中**：查 `2SK3541` 命中 `2SK3541T2L`（T2L 是包装编码），desc 加 `[近似命中→...]` 前缀，不误报精确匹配。
 - 🏭 **两渠道交叉验证首次兑现价值**：`2SK3541T2L` 得捷标 EOL 停产、贸泽「无报价不备货」，两边对得上；`sync` 端到端**自动触发首个停产预警**。
 
@@ -359,21 +359,21 @@
 - 🧹 错误信息去重汇总（同一句订阅指引此前刷 78 遍）、`_brief_err()` 压短长错误、`lookup` 库存 `None` 显示 `—`。
 
 ### v1.5.0（2026-09-02）
-- 🆕 **代理商 API 自动查价**：新增 `suppliers.py`，接入得捷（DigiKey API v3，OAuth2 client_credentials + `Search/v3/Products/{mpn}`，locale 头指定 CNY/CN）与贸泽（Mouser Search API v1，`/search/partnumber`，**一次最多 10 个型号**，代码自动分批省配额）。统一吐出 `{price, currency, price_cny, stock, lifecycle, url}`，生命周期文案归一到「在产/NRND/EOL停产/未知」。
+- 🆕 **代理商 API 自动查价**：新增 `domain/suppliers.py`，接入得捷（DigiKey API v3，OAuth2 client_credentials + `Search/v3/Products/{mpn}`，locale 头指定 CNY/CN）与贸泽（Mouser Search API v1，`/search/partnumber`，**一次最多 10 个型号**，代码自动分批省配额）。统一吐出 `{price, currency, price_cny, stock, lifecycle, url}`，生命周期文案归一到「在产/NRND/EOL停产/未知」。
 - 💱 **默认人民币 ¥**：返回原始币种 + 折算 `price_cny`；汇率优先当日缓存 → 免费汇率接口 → `market.fx.static` 静态兜底，来源写进备注列便于追溯。
 - 🔑 **凭证纪律**：只从本地 `config.yaml` 的 `market.api_keys` 读取（已 gitignore），仓库只有 `config.yaml.example` 空占位符，clone 的人自己申请。日志/报错一律脱敏（前 4 位）。**只读**，绝不调下单接口。
 - ⏱ **自适应节奏**：按「库存电子料数量」（`partdb_snapshot.json` 的 `part_count`，当前 369）自动选复查间隔——≤100 种每 7 天 / 101~300 种每 15 天 / >300 种每 30 天；逐型号比对上次快照日期，未到期跳过。`market.cadence` 写死数字可关闭自适应，`cadence_tiers` 可自定义阈值。
-- 🆕 `market.py` 三命令：`lookup`（只查不写）、`compare`（多源比价，标最低/最高/差价）、`sync`（批量拉价写快照，支持 `--dry-run/--limit/--force`）。
+- 🆕 `domain/market.py` 三命令：`lookup`（只查不写）、`compare`（多源比价，标最低/最高/差价）、`sync`（批量拉价写快照，支持 `--dry-run/--limit/--force`）。
 - 🐞 **修掉串渠道假涨跌**：多渠道各写一条快照时，涨跌幅原本拿「同型号上一条」比，会把得捷价跟贸泽价对比，渠道差价轻易超 10% 阈值刷出假告警。改为**有渠道时只跟同渠道的上一条比**。
 - 🧪 新增 `test_market_sync.py` 离线回归测试（假数据跑通写库/跳过/强制重查，不联网不污染真实 CSV）。
 
 ### v1.4.5（2026-09-01）
-- 🎯 **监控群选择工作流固化**：监控范围属于用户偏好配置，**必须先列候选让用户勾选，禁止默认替用户决定**。标准流程：`python wechat_intake.py groups` 列出全部群（380 个，缓存到 `groups.json`）→ 按业务关键词（生产/贴片/组装/供应商/客户）筛出候选 → 用户确认后写入 `config.yaml` 的 `wechat.watch_groups` → `python wxwatch.py once` 验证。
+- 🎯 **监控群选择工作流固化**：监控范围属于用户偏好配置，**必须先列候选让用户勾选，禁止默认替用户决定**。标准流程：`python wx/wechat_intake.py groups` 列出全部群（380 个，缓存到 `groups.json`）→ 按业务关键词（生产/贴片/组装/供应商/客户）筛出候选 → 用户确认后写入 `config.yaml` 的 `wechat.watch_groups` → `python wx/wxwatch.py once` 验证。
 - 📈 **监控范围 11 → 31 群**（用户确认后扩容）：按业务关键词分四类——生产/组装/贴片、IC/物料/供应商、客户/项目等共 31 个群（具体名单在本地 `config.yaml` 的 `wechat.watch_groups`，不写入本文档）。客户群入列后，超期项目（A2 规则）与群聊催货情报（高危关键词）形成交叉印证。
 - 📌 群名含空格/特殊字符（如含公司名与项目号混排的群名）直接原样写入 YAML 列表即可，匹配逻辑同时支持群名精确匹配、群 ID 匹配和子串包含。
 
 ### v1.4.4（2026-09-01）
-- 📝 **新增 `wechat_intake.py summary` 群聊摘要**：按时间窗口（默认 24h）回溯任意群的完整对话，输出统计 → 发言分布 → **需关注**（交期/价格/供应/决策/风险五类关键词自动标注）→ 正序对话记录（含图片/文件等非文本标注）。支持 `--group`（部分匹配、可多次/逗号分隔）、`--hours`、`--limit`、`--all`、`--json`、`--out`。这是 4.x 上替代已失效的 WeChat-Summary 类 GUI 工具的能力。
+- 📝 **新增 `wx/wechat_intake.py summary` 群聊摘要**：按时间窗口（默认 24h）回溯任意群的完整对话，输出统计 → 发言分布 → **需关注**（交期/价格/供应/决策/风险五类关键词自动标注）→ 正序对话记录（含图片/文件等非文本标注）。支持 `--group`（部分匹配、可多次/逗号分隔）、`--hours`、`--limit`、`--all`、`--json`、`--out`。这是 4.x 上替代已失效的 WeChat-Summary 类 GUI 工具的能力。
 - 🐞 摘要人名解析补兜底：只用 `member_names.json` 会漏掉非好友/不活跃成员（显示成 `wxid_xxx`），改为「群成员表 → `wdb.get_nickname()`」两级解析（实测把 `wxid_xxxxxxxxxxx` 解成 `示例昵称`）。
 - 🐞 剥掉微信正文里冗余的发送者账号前缀。分隔符是**换行不是空格**（`wxid_xxx:\n正文`），全角冒号也兼容。
 - 🐞 过滤 `type=="系统消息"` 与 content 为 `[文本]` 的解析失败空占位（此前会把撤回提示当消息输出）。
@@ -390,17 +390,17 @@
 - 🧭 新增 §12「在自定义脚本里调 adapter」踩坑记录（auth 时机、选项 ID 读取、long-text 列解析）。
 
 ### v1.4.0（2026-09-01）
-- 🌉 **`wxwatch.py` 实时哨兵（耳朵）**：基于 wxengine Listener（1 秒轮询 + WAL 增量 + 自动发现新会话）监听 11 个监控群；关键词两级——高危（交期/延期/涨价/停产/缺货/催货等 24 个，命中即写通知发件箱）与一般（价格/库存/到货/进度等，仅登记事件）；`watch` 常驻 / `once --minutes N` 低频扫描 / `status` 状态。事件自动进「微信事件.csv」待确认，不自动写业务表。
-- 🧠 **`alerts.py` 异常检测引擎（神经）**：A1 交期逼近（≤7天未完货）/ A2 项目已超期 / A3 逾期应收 / A4 采购在途 / A5 计划停滞（超2周）/ A6 行情异动（±10%）与 NRND/EOL / A7 数据体检（空状态、#VALUE!）。输出 `data/alerts.json` 供摘要和自动化消费。首跑即挖出 13 个高危（5 个超期项目 + 8 笔逾期应收，最长 133 天）。
-- 📋 **`daily_brief.py` 站会摘要（嘴巴）**：合成异常+微信情报待确认+业务面（在产/待收/昨日发货）+行情异动，输出完整版 `daily_brief.md` 和 200 字精简版 `daily_brief_short.md`，`--push` 写发件箱。
-- 📬 **`notify.py` 发件箱（进程解耦触达）**：生产者只写 `data/wechat_intake/notify_outbox.json`；AI 会话 `dump` 取件 → agent-mail 发送 → `mark-sent`。实测全链路闭环（邮件已发出）。
+- 🌉 **`wx/wxwatch.py` 实时哨兵（耳朵）**：基于 wxengine Listener（1 秒轮询 + WAL 增量 + 自动发现新会话）监听 11 个监控群；关键词两级——高危（交期/延期/涨价/停产/缺货/催货等 24 个，命中即写通知发件箱）与一般（价格/库存/到货/进度等，仅登记事件）；`watch` 常驻 / `once --minutes N` 低频扫描 / `status` 状态。事件自动进「微信事件.csv」待确认，不自动写业务表。
+- 🧠 **`workflows/alerts.py` 异常检测引擎（神经）**：A1 交期逼近（≤7天未完货）/ A2 项目已超期 / A3 逾期应收 / A4 采购在途 / A5 计划停滞（超2周）/ A6 行情异动（±10%）与 NRND/EOL / A7 数据体检（空状态、#VALUE!）。输出 `data/alerts.json` 供摘要和自动化消费。首跑即挖出 13 个高危（5 个超期项目 + 8 笔逾期应收，最长 133 天）。
+- 📋 **`workflows/daily_brief.py` 站会摘要（嘴巴）**：合成异常+微信情报待确认+业务面（在产/待收/昨日发货）+行情异动，输出完整版 `daily_brief.md` 和 200 字精简版 `daily_brief_short.md`，`--push` 写发件箱。
+- 📬 **`workflows/notify.py` 发件箱（进程解耦触达）**：生产者只写 `data/wechat_intake/notify_outbox.json`；AI 会话 `dump` 取件 → agent-mail 发送 → `mark-sent`。实测全链路闭环（邮件已发出）。
 - 🤖 **每日 9 点自动化扩到 8 步**：同步 → 异常检测 → 站会摘要 → 驾驶舱 → 发布 → 邮件通知 → 播报（含高/中异常数）→ 口令清单。
-- 🚀 **微信情报引擎A：微信 4.x 直读**（`wxengine/wa_db.py`，vendored 自 PyPI `wechatauto-replica`）：直接解密 `xwechat_files/db_storage` 的 SQLCipher4 加密库，主密钥从运行中 Weixin.exe 进程内存提取（Config.Cipher 扫描 + cfg 派生 + HMAC 强校验），微信保持登录即可，彻底告别只支持 3.x 的 win-wechat-summary（PyWxDump 系已因律师函全面下架）。主密钥缓存到 `data/wechat_intake/master_key.json`（已 gitignore），解密库缓存 + WAL 增量合并，二次拉取仅 ~8 秒。
-- 🔄 **`wechat_intake.py` 双引擎 pull**：A（4.x 直读，主路径）失败自动回退 B（merge_all.db）；书签按 sort_seq 毫秒续读；群成员昵称解析（1 万人映射，非好友也显示昵称）；`config.yaml` 新增 `wechat.db_dir` 配置项。
+- 🚀 **微信情报引擎A：微信 4.x 直读**（`wx/wa_db.py`，vendored 自 PyPI `wechatauto-replica`）：直接解密 `xwechat_files/db_storage` 的 SQLCipher4 加密库，主密钥从运行中 Weixin.exe 进程内存提取（Config.Cipher 扫描 + cfg 派生 + HMAC 强校验），微信保持登录即可，彻底告别只支持 3.x 的 win-wechat-summary（PyWxDump 系已因律师函全面下架）。主密钥缓存到 `data/wechat_intake/master_key.json`（已 gitignore），解密库缓存 + WAL 增量合并，二次拉取仅 ~8 秒。
+- 🔄 **`wx/wechat_intake.py` 双引擎 pull**：A（4.x 直读，主路径）失败自动回退 B（merge_all.db）；书签按 sort_seq 毫秒续读；群成员昵称解析（1 万人映射，非好友也显示昵称）；`config.yaml` 新增 `wechat.db_dir` 配置项。
 - 🐎 **实测**：379 群首拉 860 条（28 分钟，含全量解密 855MB），配置 `watch_groups` 盯 11 个生产群后日常拉取秒级完成。
 
 ### v1.3.2（2026-08-31）
-- 🚀 **新增 `publish.py` 驾驶舱发布器**：把本地生成的驾驶舱 HTML 覆盖发布到 WorkBuddy 团队资料库，固定链接 + 服务端协作者权限（owner/editor/reader）+ 自动版本历史。首次 `--setup --space-id <空间ID>` 发布并回写 `config.yaml` 的 `publish` 段（space_id/node_id/url，已 gitignore），日常一条 `publish.py --token-stdin` 覆盖更新、链接不变；`--status` 查看目标；发布失败保留本地 HTML 兜底（退出码 2，自动化可识别为"仅发布失败"）。
+- 🚀 **新增 `cockpit/publish.py` 驾驶舱发布器**：把本地生成的驾驶舱 HTML 覆盖发布到 WorkBuddy 团队资料库，固定链接 + 服务端协作者权限（owner/editor/reader）+ 自动版本历史。首次 `--setup --space-id <空间ID>` 发布并回写 `config.yaml` 的 `publish` 段（space_id/node_id/url，已 gitignore），日常一条 `cockpit/publish.py --token-stdin` 覆盖更新、链接不变；`--status` 查看目标；发布失败保留本地 HTML 兜底（退出码 2，自动化可识别为"仅发布失败"）。
 - 🤖 **每日 9 点 / 每周一 9:20 两条自动化追加发布步骤**：驾驶舱重建后先取 open platform token（connect_open_platform, skill_id=library）再覆盖上传，播报含发布结果与固定链接。
 - 🏗️ **混合架构定型**：生成在本地（凭证/数据源都在本机，快、可离线重跑），分发在库内（一个 URL 永远最新）；本地 HTML 降级为构建产物 + 断网兜底。
 
@@ -410,15 +410,15 @@
 - 🐞 **工序列表勘误**：默认工序实为 `09测试`/`11 出货`（旧文档误写为 13/14），已在生产计划规则中修正。
 
 ### v1.3.0（2026-08-29）
-- 🚀 **新增 `deploy.py` 一键全自动部署**：用户资料给到任意一层（CLI 参数 / 环境变量 / `deploy.yaml` 资料文件 / 交互问答），自动完成装依赖 → 生成/更新配置 → 连通验证 → 云端数据同步 → 物料清单 → 驾驶舱 → 体检 → 部署报告。幂等可重跑，`--demo` 零资料 60 秒跑通全链路，`--dry-run` 只预览。
+- 🚀 **新增 `tools/deploy.py` 一键全自动部署**：用户资料给到任意一层（CLI 参数 / 环境变量 / `deploy.yaml` 资料文件 / 交互问答），自动完成装依赖 → 生成/更新配置 → 连通验证 → 云端数据同步 → 物料清单 → 驾驶舱 → 体检 → 部署报告。幂等可重跑，`--demo` 零资料 60 秒跑通全链路，`--dry-run` 只预览。
 - 🔒 **`deploy.yaml`（含凭证）加入 `.gitignore`**，只提交 `deploy.yaml.example` 模板。
-- 🐞 **修复云端直连驾驶舱崩溃**：SeaTable 链接/多选列返回 list/dict 导致 `unhashable type: 'list'`；`cockpit.py` 新增 `_NormAdapter` 归一化代理与 `_text()`/`_num()` 压平逻辑（backend=seatable 直连场景，本地 CSV 模式不受影响）。
-- 🐞 **修复 `seatable_sync.py` 配置解析**：`server: "https://..."` 带引号写法导致 `unknown url type`，解析时统一剥引号。
+- 🐞 **修复云端直连驾驶舱崩溃**：SeaTable 链接/多选列返回 list/dict 导致 `unhashable type: 'list'`；`cockpit/cockpit.py` 新增 `_NormAdapter` 归一化代理与 `_text()`/`_num()` 压平逻辑（backend=seatable 直连场景，本地 CSV 模式不受影响）。
+- 🐞 **修复 `sync/seatable_sync.py` 配置解析**：`server: "https://..."` 带引号写法导致 `unknown url type`，解析时统一剥引号。
 - 📦 新增 `requirements.txt`（requests / pyyaml）。
 
 ### v1.1.0（2026-08-08）
 - 🌙 **主题三态切换**：新增「主题」按钮（自动 / 暗色 / 亮色循环），覆盖系统设置，选择持久化到 localStorage，支持 `<head>` 无闪烁加载。
-- 🔒 **角色写入口按职责裁剪**：老板视图移除「新建 / 补录」（老板只看数据）；仓库 / 采购移除「新建」；销售新建落「项目」表，生产经理新建落「生产计划」表（`op.py` 新增 `_target` 分流，旧下载 JSON 向后兼容）。
+- 🔒 **角色写入口按职责裁剪**：老板视图移除「新建 / 补录」（老板只看数据）；仓库 / 采购移除「新建」；销售新建落「项目」表，生产经理新建落「生产计划」表（`domain/op.py` 新增 `_target` 分流，旧下载 JSON 向后兼容）。
 - 🐞 **修正「产线实时流转」数据口径**：原统计工序目录（每工序恒为 1），改为按在产计划的「阶段」聚合（状态≠已交付），产能瓶颈预警同步修正。
 - 🎨 **视觉设计系统重建**：板块强调条、字号阶梯、颜色对比、清单 / 表格斑马纹与间距、布局全面重做。
 - 🔗 **修复「一键发起」协议唤起**：隐藏 iframe 跳 `workbuddy://` 被 Chrome/Edge 静默拦截，改为真实 `<a>` 链接触发；指引在系统浏览器打开本页再点（应用内预览面板可能不触发系统协议）。

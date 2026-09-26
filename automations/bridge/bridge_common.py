@@ -39,9 +39,22 @@ def run_target():
         )
         sys.exit(2)
 
-    target = os.path.join(skill_dir, os.path.basename(sys.argv[0]))
-    if not os.path.isfile(target):
-        sys.stderr.write(f"目标脚本不存在: {target}\n")
+    # 2026-09-26 仓库结构整理后，顶层脚本按域归组：
+    #   cockpit.py → cockpit/ · seatable_sync.py / partdb_sync.py → sync/
+    # 这里按「wrapper 同名脚本」查映射表定位新位置；映射表里没有的兜底查根目录。
+    _SUBDIR = {
+        "cockpit.py": "cockpit",
+        "seatable_sync.py": "sync",
+        "partdb_sync.py": "sync",
+    }
+    name = os.path.basename(sys.argv[0])
+    candidates = [
+        os.path.join(skill_dir, _SUBDIR.get(name, ""), name),
+        os.path.join(skill_dir, name),  # 兼容整理前的老布局
+    ]
+    target = next((p for p in candidates if os.path.isfile(p)), None)
+    if not target:
+        sys.stderr.write(f"目标脚本不存在: {candidates[0]}\n")
         sys.exit(2)
 
     sys.exit(subprocess.call([sys.executable, target], cwd=skill_dir))

@@ -13,7 +13,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 模块在上一级
 sys.path.insert(0, HERE)
-import wxmatch as wm  # noqa: E402
+from wx import wxmatch as wm  # noqa: E402
 
 TMP = tempfile.gettempdir()
 FAILED = []

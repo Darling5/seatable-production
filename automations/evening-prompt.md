@@ -15,14 +15,14 @@
 ## 第二步：跑统一晚间工作流
 
 ```
-python workflow.py run evening --mode apply
+python workflows/workflow.py run evening --mode apply
 ```
 
 顺序（代码执行，不由你编排）：采集 → OCR/提取 → 核对 → 授权写入及读回
 → 快照 → 风险 → 生成 → 发布（带门禁）。每步结果落 `data/runs/<run_id>/final.json`。
 
 - 某步失败：工作流继续跑无依赖的步骤并记录错误；
-- 需要时：`python workflow.py run evening --mode apply --resume <run_id>` 断点续跑；
+- 需要时：`python workflows/workflow.py run evening --mode apply --resume <run_id>` 断点续跑；
 - **播报数据一律以 final.json 为准**，不要凭记忆报告步骤执行情况。
 
 **关于「授权写入」步骤**：它**不会自己造授权**。
@@ -36,21 +36,21 @@ python workflow.py run evening --mode apply
    分类为：交期变更/价格变动/停产通知/催货/进度/库存/其他，并为确定性事件生成意图 JSON
    （op=update/append/log；涉及交期、价格、数量、金额必须带 row_id，先读最新表格匹配，
    禁止凭印象猜 row_id）；每条调用
-   `python wechat_intake.py add-event --group ... --sender ... --category ... --text ... --intent ...`
+   `python wx/wechat_intake.py add-event --group ... --sender ... --category ... --text ... --intent ...`
    登记为**待确认**。不要自动 approve，不要未经确认改业务表。
 2. **群聊 AI 总结**：读 `data/wechat_intake/summary_24h.md`，先完整阅读
    `references/wx-ai-summary-prompt.md` 模板，再严格按模板生成总结，写入
    `data/wechat_intake/ai_summary_24h.md`。必须单独列出「提问后无人回复」和
    「被追问仍未闭环」的事项；单群超 300 条先分段摘要再合并；不臆造，每条可追溯原文。
-   生成后 `python notify.py send --subject "💬 群聊总结 <日期>" --body-file data/wechat_intake/ai_summary_24h.md --level info`。
+   生成后 `python workflows/notify.py send --subject "💬 群聊总结 <日期>" --body-file data/wechat_intake/ai_summary_24h.md --level info`。
 3. **CRM 自动录入**（只处理来单/商机类消息）：老客户基于已有合同的交期/价格变动走既有
-   update 流程，不进 CRM。新来单用 `python crm_dispatch.py lead --data '{...}'` 与
-   `python crm_dispatch.py follow ...` 写入；模糊来单**不要写**，列入待人工确认。
+   update 流程，不进 CRM。新来单用 `python domain/crm_dispatch.py lead --data '{...}'` 与
+   `python domain/crm_dispatch.py follow ...` 写入；模糊来单**不要写**，列入待人工确认。
 4. **给上面的 AI 步骤补记账本**（关键 —— 否则门禁与播报都只能靠复述）：
    ```
-   python workflow.py note <run_id> --step ai_event_register --status success --detail "登记 N 条待确认"
-   python workflow.py note <run_id> --step ai_summary --status success --detail "12 个群 / 38 条待办" --artifact data/wechat_intake/ai_summary_24h.md
-   python workflow.py note <run_id> --step ai_crm --status success --detail "新建线索 N / 跟进 M"
+   python workflows/workflow.py note <run_id> --step ai_event_register --status success --detail "登记 N 条待确认"
+   python workflows/workflow.py note <run_id> --step ai_summary --status success --detail "12 个群 / 38 条待办" --artifact data/wechat_intake/ai_summary_24h.md
+   python workflows/workflow.py note <run_id> --step ai_crm --status success --detail "新建线索 N / 跟进 M"
    ```
    AI 步骤失败时，用 `--status failed --detail "<原因>"` 记账 ——
    门禁会因此拦住发布，这是刻意的。
@@ -61,13 +61,13 @@ python workflow.py run evening --mode apply
    - 门禁通过 → 已自动发布到资料库固定链接；
    - 门禁未通过 → 该步退出码 1，**未上传任何内容**。此时**不要手动绕过**，
      而要在播报里说明被拦原因，并提示修完问题后：
-     `python workflow.py run evening --mode apply --resume <run_id>`。
-   - 如需单独确认：`python workflow.py gate <run_id>`。
+     `python workflows/workflow.py run evening --mode apply --resume <run_id>`。
+   - 如需单独确认：`python workflows/workflow.py gate <run_id>`。
 2. **发送通知**（企微优先，邮件兜底）：
-   a. `python wecom_push.py flush-outbox`；
-   b. 若企微失败或仍有未发送条目：`python notify.py dump` 取剩余项，逐条经
+   a. `python wx/wecom_push.py flush-outbox`；
+   b. 若企微失败或仍有未发送条目：`python workflows/notify.py dump` 取剩余项，逐条经
       agent-mail MCP（SendMessage，发件人 user@example.com，收件人同）发送；
-      发送成功后 `python notify.py mark-sent --ids <逗号分隔>`。
+      发送成功后 `python workflows/notify.py mark-sent --ids <逗号分隔>`。
 3. 本地 HTML 始终是兜底：发布失败不影响 `项目管理驾驶舱.html` 的生成。
 
 ## 第五步：生成播报（数据全部来自 final.json 与各产物文件，禁止凭记忆）
@@ -93,6 +93,6 @@ python workflow.py run evening --mode apply
   production/tasks 写入必须先有授权文件；只有 CRM 走自动写入 + 台账。
 - **严禁自行生成授权文件**，也不得修改/删除 `data/approvals/` 下的内容。
 - 门禁未通过时，**不得**用其它方式（手动上传、改链接、CloudStudio）绕过发布。
-- 不得运行 `evidence.py prune ... --yes`；证据清理先列候选、人工确认后单独执行。
+- 不得运行 `domain/evidence.py prune ... --yes`；证据清理先列候选、人工确认后单独执行。
 - 若工作流或生成失败，记录错误原因并说明已完成/未完成步骤，不要静默中断；
   发布与通知失败同样记录并保留本地产物。

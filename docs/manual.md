@@ -27,10 +27,10 @@
 
 ---
 
-## 0.2 表格怎么用（op.py 操作 14 张表）
+## 0.2 表格怎么用（domain/op.py 操作 14 张表）
 
-所有对表的操作都走统一入口 `op.py`，**不用关心底层是本地 CSV 还是 SeaTable**。
-通用格式：`python3 op.py <子命令> <表名> [参数]`（Windows 用 `py op.py` 或 `python op.py`；`<表名>` 用中文，如 `生产计划`）。
+所有对表的操作都走统一入口 `domain/op.py`，**不用关心底层是本地 CSV 还是 SeaTable**。
+通用格式：`python3 domain/op.py <子命令> <表名> [参数]`（Windows 用 `py domain/op.py` 或 `python domain/op.py`；`<表名>` 用中文，如 `生产计划`）。
 
 ### 14 张表一览（按业务主从关系）
 1. 项目
@@ -48,35 +48,35 @@
 13. 组装记录
 14. 成品采购记录
 
-> 表名就是 `op.py` 里要填的 `table` 参数，中文、不带空格。
+> 表名就是 `domain/op.py` 里要填的 `table` 参数，中文、不带空格。
 
 ### 核心命令速查
 | 命令 | 作用 | 示例 |
 |---|---|---|
-| `list <表>` | 列出整张表 | `python3 op.py list 生产计划` |
-| `query <表> --where 列=值` | 按条件筛选 | `python3 op.py query 生产计划 --where 状态=进行中` |
-| `append <表> '<json>'` | 新增一行 | `python3 op.py append 生产计划 '{"生产产品":"4G小卡","数量":100}'` |
-| `update <表> <行ID> '<json>'` | 改某行 | `python3 op.py update 生产计划 row_3 '{"状态":"已完成"}'` |
-| `delete <表> <行ID...>` | 删行（可多行） | `python3 op.py delete 生产计划 row_3` |
-| `link <表> <其他表> <行ID> <其他行ID...>` | 建双向关联 | `python3 op.py link 生产计划 项目 row_3 row_1` |
-| `linked <表> <行ID>` | 看某行关联了谁 | `python3 op.py linked 生产计划 row_3` |
-| `meta <表>` | 看表结构/列 | `python3 op.py meta 生产计划` |
-| `export-excel [文件]` | 全部表导出 Excel | `python3 op.py export-excel 生产数据.xlsx` |
+| `list <表>` | 列出整张表 | `python3 domain/op.py list 生产计划` |
+| `query <表> --where 列=值` | 按条件筛选 | `python3 domain/op.py query 生产计划 --where 状态=进行中` |
+| `append <表> '<json>'` | 新增一行 | `python3 domain/op.py append 生产计划 '{"生产产品":"4G小卡","数量":100}'` |
+| `update <表> <行ID> '<json>'` | 改某行 | `python3 domain/op.py update 生产计划 row_3 '{"状态":"已完成"}'` |
+| `delete <表> <行ID...>` | 删行（可多行） | `python3 domain/op.py delete 生产计划 row_3` |
+| `link <表> <其他表> <行ID> <其他行ID...>` | 建双向关联 | `python3 domain/op.py link 生产计划 项目 row_3 row_1` |
+| `linked <表> <行ID>` | 看某行关联了谁 | `python3 domain/op.py linked 生产计划 row_3` |
+| `meta <表>` | 看表结构/列 | `python3 domain/op.py meta 生产计划` |
+| `export-excel [文件]` | 全部表导出 Excel | `python3 domain/op.py export-excel 生产数据.xlsx` |
 
 ### 一条完整工作流示例
 ```bash
 # 1) 立项：建项目（产品需求必须用 Markdown 表格）
-python3 op.py append 项目 '{"项目":"客户A-4G小卡","产品需求":"| 产品名称 | 型号 | 数量 | 单价 | 金额 |\n| ---- | ---- | ---- | ---- | ---- |\n| 4G小卡 | V4.0 | 100 | 200 | 20000 |","合同总价":20000}'
+python3 domain/op.py append 项目 '{"项目":"客户A-4G小卡","产品需求":"| 产品名称 | 型号 | 数量 | 单价 | 金额 |\n| ---- | ---- | ---- | ---- | ---- |\n| 4G小卡 | V4.0 | 100 | 200 | 20000 |","合同总价":20000}'
 
 # 2) 做生产计划（没填的字段会自动套默认值：状态=计划中/阶段=库存核对/立项日期=今天）
-python3 op.py append 生产计划 '{"生产产品":"4G小卡","数量":100,"关联项目":"客户A-4G小卡"}'
+python3 domain/op.py append 生产计划 '{"生产产品":"4G小卡","数量":100,"关联项目":"客户A-4G小卡"}'
 
 # 3) 和生产计划双向关联项目（铁律：主数据写入后必须立即建关联）
-python3 op.py link 生产计划 项目 <生产计划行ID> <项目行ID>
+python3 domain/op.py link 生产计划 项目 <生产计划行ID> <项目行ID>
 
 # 4) 查询 + 导出给同事用 Excel 看
-python3 op.py list 生产计划
-python3 op.py export-excel 生产数据.xlsx
+python3 domain/op.py list 生产计划
+python3 domain/op.py export-excel 生产数据.xlsx
 ```
 
 ### 两个格式铁律（务必遵守）
@@ -132,9 +132,9 @@ flowchart LR
 | ⑤ 库存核对 | 库存核对记录 | 缺料预警、盘点差异 |
 | ⑥ 发货交付 | 发货清单 | 出库内容(MD 表)、快递、签收 |
 | ⑦ 维修售后 | 维修记录 | 返修、供应商追责 |
-| ⑧ 分析看板 | （跨全部表） | `op.py export-excel` + 分析公式 |
+| ⑧ 分析看板 | （跨全部表） | `domain/op.py export-excel` + 分析公式 |
 
-> 所有表都通过 `op.py` 操作（见 0.2 节）；表与表之间的关联由 `link` 命令建立双向链路。
+> 所有表都通过 `domain/op.py` 操作（见 0.2 节）；表与表之间的关联由 `link` 命令建立双向链路。
 
 ---
 
@@ -200,22 +200,22 @@ flowchart LR
 
 ### 这张图对本技能的意义
 
-- **「关联」不是装饰，是排程的依据**：上面每条 `--> ` 在数据库里都对应一次 `op.py link`；没有 link，时间先后排不出来。
+- **「关联」不是装饰，是排程的依据**：上面每条 `--> ` 在数据库里都对应一次 `domain/op.py link`；没有 link，时间先后排不出来。
 - **「在制品看板」的真实样子**：8 月初是这张图最紧张的时段——`贴片 / 4G 模组烧录 / 外壳 / 组装料` 四条线并发，对应本技能 §9「在制品看板」按剩余时间升序排的逻辑。
-- **跨表依赖可视化**：库存核对 → PCB → 物料 → 贴片 → 组装，正是从 `项目` 一路 `op.py link` 到 `组装记录` 的完整链路；按依赖建链是铁律（§1）。
+- **跨表依赖可视化**：库存核对 → PCB → 物料 → 贴片 → 组装，正是从 `项目` 一路 `domain/op.py link` 到 `组装记录` 的完整链路；按依赖建链是铁律（§1）。
 
 ---
 
-## 0.5 消息↔SeaTable 核对（wxmatch.py，v1.6.2）
+## 0.5 消息↔SeaTable 核对（wx/wxmatch.py，v1.6.2）
 
 微信情报解决「群里说了什么」，核对引擎解决「**群里说的和 SeaTable 记的对不对得上**」——
 专抓「群里说了但表里没有」的缺口。
 
 ```bash
-python wxmatch.py scan                # 扫描监控群消息 + 微信收到的合同 PDF，写核对台账
-python wxmatch.py list                # 查看待核对项（按置信度排序）
-python wxmatch.py done WX-M-...001    # 处置留痕
-python wxmatch.py intent              # 导出高置信项预填意图（确认后走 approve 写库）
+python wx/wxmatch.py scan                # 扫描监控群消息 + 微信收到的合同 PDF，写核对台账
+python wx/wxmatch.py list                # 查看待核对项（按置信度排序）
+python wx/wxmatch.py done WX-M-...001    # 处置留痕
+python wx/wxmatch.py intent              # 导出高置信项预填意图（确认后走 approve 写库）
 ```
 
 | 核对类型 | 群里看到的 | 对哪张表 | 匹配规则 |
@@ -233,16 +233,16 @@ python wxmatch.py intent              # 导出高置信项预填意图（确认�
 
 ---
 
-## 0.6 风险预测（foresee.py，v1.7.0）
+## 0.6 风险预测（domain/foresee.py，v1.7.0）
 
 前面所有能力都是「记录→展示→核对」，风险预测引擎解决「**接下来会出什么事**」——
 把历史数据变成提前量，新合同一进来就知道哪些环节必须立刻执行。
 
 ```bash
-python foresee.py                     # 三路预测重算 → data/foresee.json + 预测台账 + 终端风险摘要
-python foresee.py --json              # 调试：直接输出 JSON
-python foresee.py review              # 预测复盘：台账预测 vs 实际交货 → 准度报告
-python foresee.py ask 20260831-001    # 对话式追问：计划风险/供应商画像/类别 buffer
+python domain/foresee.py                     # 三路预测重算 → data/foresee.json + 预测台账 + 终端风险摘要
+python domain/foresee.py --json              # 调试：直接输出 JSON
+python domain/foresee.py review              # 预测复盘：台账预测 vs 实际交货 → 准度报告
+python domain/foresee.py ask 20260831-001    # 对话式追问：计划风险/供应商画像/类别 buffer
 ```
 
 | 计算模块 | 回答的问题 | 方法 |
@@ -251,7 +251,7 @@ python foresee.py ask 20260831-001    # 对话式追问：计划风险/供应商
 | 供应商画像 | 供应商承诺的交期能信几分？排程该加多少 buffer？ | 5 张采购表 承诺 vs 实际偏差（组装料平均 +29 天，IC 最准 +0.2 天） |
 | 缺料预警 | 哪些计划会缺料停工？现在要不要下单？ | BOM 缺口 × 在途采购 ETA（含类别 buffer）→ 必须立刻下单 / 在途来不及 |
 
-**数据流**：`seatable_sync.py` → `partdb_sync.py` → `foresee.py` → `cockpit.py`。
+**数据流**：`sync/seatable_sync.py` → `sync/partdb_sync.py` → `domain/foresee.py` → `cockpit/cockpit.py`。
 预测结果落 `data/foresee.json`（本地，不入库）。
 
 **驾驶舱**：老板/生产/采购页「风险雷达」section——合同倒排表（逾期红标 + 环节
@@ -259,12 +259,12 @@ python foresee.py ask 20260831-001    # 对话式追问：计划风险/供应商
 高风险/必须立刻下单自动进「下一步行动建议」。
 
 **预测台账与复盘（自我学习闭环）**：每次运行自动把当日预测落 `data/预测台账.csv`
-（同日同计划去重覆盖）；`python foresee.py review` 把已到期/已交付的预测与实际
+（同日同计划去重覆盖）；`python domain/foresee.py review` 把已到期/已交付的预测与实际
 对照——**预警正确**（说晚真晚）/ **误报**（说晚没晚，可容忍）/ **漏报**（判「正常」
 却晚了，最伤，逐条点名）/ **正确**。预警准确率随台账积累逐月可信。每日 9 点自动化
 在预测后自动跑 review，漏报>0 会在播报中点名。
 
-**对话式追问**：`python foresee.py ask <计划编号|产品名|供应商名|类别>`——例如
+**对话式追问**：`python domain/foresee.py ask <计划编号|产品名|供应商名|类别>`——例如
 `ask 20260831-001` 出该计划的风险判定 + 五环节最晚开始日 + 缺料在途详情；
 `ask 示例供应商AF` 出该供应商交期画像。在 WorkBuddy 对话里直接问「XX 计划什么风险」时
 专家也会走这条命令。

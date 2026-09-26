@@ -27,7 +27,7 @@ def _step(sid, status="success", error=""):
 class TestVerify(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="wf_verify_")
-        import workflow as wf
+        from workflows import workflow as wf
         self.wf = wf
         self._orig_runs = wf.RUNS_DIR
         self._orig_here = wf.HERE

@@ -10,6 +10,36 @@
 
 **想直接点开玩玩？** → **[交互式使用指南（在线，无需安装）](https://darling5.github.io/seatable-production/usage-guide.html)**
 
+## 目录结构（2026-09-26 起按域归组）
+
+早期 40+ 个 `.py` 平铺在根目录，已按功能域归组。根目录只留两个入口级脚本（二期/三期总入口）与配置样例：
+
+```
+├── SKILL.md / README.md        技能定义 / 本说明
+├── project_brain.py            二期「单项目第二大脑」总入口
+├── decision_support.py          三期「项目决策辅助」总入口
+├── application/                核心逻辑包：可信执行闸门、契约、二/三期内核
+├── adapters/                   SeaTable / PartDB / 本地 CSV 适配层
+├── domain/                     业务域：行情(market)、供应商、大宗商品、
+│                               预见(foresee)、证据、写入入口(op)、赢单、CRM 分派
+├── workflows/                  编排：workflow / business_loop / daily_brief /
+│                               evening_write / alerts / notify
+├── cockpit/                    驾驶舱：生成器、常驻服务、自启、分享页、发布
+├── wx/                         微信域：消息接入、匹配、工卡、媒体、企微推送、WA 库
+├── sync/                       同步：SeaTable / PartDB / 专家包 / 回填
+├── tools/                      运维：部署、体检、安装向导、演示数据、口令、审计
+├── automations/                WorkBuddy 自动化桥（含 prompt）
+├── pipeline/                   客户初始化管道
+├── docs/ references/           文档与深入阅读
+├── expert/                     专家包（production-cockpit）
+├── partdb-part-create/         捆绑子技能：PartDB 建料
+├── partdb-price-import/        捆绑子技能：PartDB 价格导入
+├── feishu-paytable-reconcile/  捆绑子技能：飞书薪资表对账
+└── tests/                      全量测试（python -m unittest discover）
+```
+
+运行方式从 `python op.py` 变为 `python domain/op.py`，其余同理——所有文档内引用已同步更新。
+
 ## 为什么跑在 WorkBuddy 上
 
 这个项目完全可以在裸 Windows 上跑，但配合 WorkBuddy 用，有四个别人替代不了的点：
@@ -19,7 +49,7 @@
 | 1 | **技能两级共享** | 用户级（`~/.workbuddy/skills/`，个人私有）和项目级（`<项目>/.workbuddy/skills/`，团队同版本）天然分开，一人维护、全员即时升级，版本不会漂移 |
 | 2 | **团队资料库分发** | 驾驶舱 HTML 发到团队空间就是一个**固定链接**，服务端权限（owner/editor/reader），每日覆盖更新自动留版本历史——同事永远打开的是最新版，不用重新发文件 |
 | 3 | **定时自动化** | 「每日 9 点自动重建部署」「每周一物料行情检查」挂在平台侧，机器开着就能跑：拉云端数据 → 重新生成驾驶舱 → 重新发布到固定链接 → 推送摘要，全自动无人值守 |
-| 4 | **Agent Mail 推送** | 哨兵抓到的异常、站会摘要走发件箱，由 AI 会话经 Agent Mail 真正推送出去；企微群也可以直接推（`wecom_push.py --body-file`）——消息主动找你，不用你盯着看 |
+| 4 | **Agent Mail 推送** | 哨兵抓到的异常、站会摘要走发件箱，由 AI 会话经 Agent Mail 真正推送出去；企微群也可以直接推（`wx/wecom_push.py --body-file`）——消息主动找你，不用你盯着看 |
 
 ---
 
@@ -58,24 +88,24 @@ git clone https://github.com/Darling5/seatable-production.git \
 
 ```bash
 cd ~/.workbuddy/skills/seatable-production
-python setup.py            # 交互式：选 本地 / SeaTable
-python setup.py --local    # 或直接零配置
+python tools/setup.py            # 交互式：选 本地 / SeaTable
+python tools/setup.py --local    # 或直接零配置
 ```
 </details>
 
-## 一键全自动部署（deploy.py）
+## 一键全自动部署（tools/deploy.py）
 
-`setup.py` 只负责写配置；**`deploy.py` 把剩下的活全部干完**：装依赖 → 生成/更新配置 → 连通验证 → 拉云端数据 → 物料清单 → 驾驶舱 → 体检 → 部署报告。幂等可重跑，已有配置做「外科手术式」更新（口令、微信、行情段原样保留）。
+`tools/setup.py` 只负责写配置；**`tools/deploy.py` 把剩下的活全部干完**：装依赖 → 生成/更新配置 → 连通验证 → 拉云端数据 → 物料清单 → 驾驶舱 → 体检 → 部署报告。幂等可重跑，已有配置做「外科手术式」更新（口令、微信、行情段原样保留）。
 
 **你需要做的只有一件事：把资料给到下面任意一层。**
 
 | 资料给到哪层 | 命令 |
 |---|---|
-| 命令行参数 | `python deploy.py --seatable-token XXX --seatable-uuid YYY --partdb-url http://... --partdb-token K` |
-| 环境变量 | `export SEATABLE_TOKEN=... SEATABLE_UUID=...` 后跑 `python deploy.py --yes` |
-| 资料文件（推荐） | 复制 `deploy.yaml.example` 为 `deploy.yaml` 填好 → `python deploy.py --profile deploy.yaml` |
+| 命令行参数 | `python tools/deploy.py --seatable-token XXX --seatable-uuid YYY --partdb-url http://... --partdb-token K` |
+| 环境变量 | `export SEATABLE_TOKEN=... SEATABLE_UUID=...` 后跑 `python tools/deploy.py --yes` |
+| 资料文件（推荐） | 复制 `deploy.yaml.example` 为 `deploy.yaml` 填好 → `python tools/deploy.py --profile deploy.yaml` |
 | 什么都不给 | 终端可交互则逐项问答；加 `--yes` 走本地模式 |
-| 零资料演示 | `python deploy.py --demo`（60 秒全链路跑通，不需要任何账号） |
+| 零资料演示 | `python tools/deploy.py --demo`（60 秒全链路跑通，不需要任何账号） |
 
 部署结果长这样：
 
@@ -96,14 +126,14 @@ S8    部署报告            [OK]  完成   已写入 data/deploy-report.md
 
 > 🔒 `deploy.yaml` 含凭证，已被 `.gitignore` 排除；`config.yaml` 同理，两者都不会进仓库。
 
-## 发布到团队资料库（publish.py）
+## 发布到团队资料库（cockpit/publish.py）
 
 本地生成的驾驶舱是给构建用的，**分发**走 WorkBuddy 团队资料库：固定链接、服务端权限（owner/editor/reader）、每日覆盖更新自动留版本历史。
 
 ```bash
-python publish.py --setup --space-id <空间ID> --token-stdin   # 首次发布，node_id 回写 config.yaml
-python publish.py --token-stdin                                # 之后每天覆盖更新，链接不变
-python publish.py --status                                     # 查看当前发布目标
+python cockpit/publish.py --setup --space-id <空间ID> --token-stdin   # 首次发布，node_id 回写 config.yaml
+python cockpit/publish.py --token-stdin                                # 之后每天覆盖更新，链接不变
+python cockpit/publish.py --status                                     # 查看当前发布目标
 ```
 
 - 首次发布前先建团队空间（如「生产交付」），把同事按角色拉为协作者。
@@ -122,28 +152,28 @@ python publish.py --status                                     # 查看当前发
 
 这个技能做七件事：
 
-1. **统一读写**——`op.py` 一个入口管业务表，不管后端是本地 CSV 还是 SeaTable 云。
-2. **按角色出网页**——`cockpit.py` 把数据算成 KPI、甘特图、缺料预警，生成**单文件 HTML**，5 个角色各一套视图，可设口令分享给同事。
+1. **统一读写**——`domain/op.py` 一个入口管业务表，不管后端是本地 CSV 还是 SeaTable 云。
+2. **按角色出网页**——`cockpit/cockpit.py` 把数据算成 KPI、甘特图、缺料预警，生成**单文件 HTML**，5 个角色各一套视图，可设口令分享给同事。
 3. **采购合同变采购订单**——合同解析 → 标准 BOM 扩量 → PartDB/ERP API/MCP/文件库存源 → 人工审核 → 供应商分组 → 正式采购订单 PDF。
 4. **微信消息变业务情报**——双引擎只读本地微信数据库（4.x 直读加密库 / 3.x 走 merge_all.db），按监控群拉取新消息，提取交期、价格、停产、催货、进度和库存事件，确认后才写回业务表。
-5. **消息↔业务表逐条核对**——`wxmatch.py` 把群消息里的收款、新下单、合同 PDF 与 SeaTable 业务表对账，专抓「群里说了但表里没有」的缺口；**只读核对**，高置信项生成预填意图等人确认。
+5. **消息↔业务表逐条核对**——`wx/wxmatch.py` 把群消息里的收款、新下单、合同 PDF 与 SeaTable 业务表对账，专抓「群里说了但表里没有」的缺口；**只读核对**，高置信项生成预填意图等人确认。
 6. **行情可追踪**——从采购记录生成物料监控清单，记录渠道价快照、采购价偏差、环比涨跌和 NRND/EOL 生命周期；上游原料（金/银/铜/锡/塑料）另有独立行情线看成本走向。
-7. **风险可预知**——`foresee.py` 用历史真实工期给新合同倒排各环节最晚开始日（哪些必须立刻执行），用承诺 vs 实际交期给供应商画像（组装料平均晚 29 天，排程自动加 buffer），BOM 缺口 × 在途 ETA 判断哪些计划必须立刻下单补料。
+7. **风险可预知**——`domain/foresee.py` 用历史真实工期给新合同倒排各环节最晚开始日（哪些必须立刻执行），用承诺 vs 实际交期给供应商画像（组装料平均晚 29 天，排程自动加 buffer），BOM 缺口 × 在途 ETA 判断哪些计划必须立刻下单补料。
 8. **事项与证据可治理**——微信群里的业务事实进入 `production` 候选，负责人/截止日期/追问进入 `tasks` 候选；图片证据允许确认后上传，普通文件优先文本化；季度只列 90 天以上已闭环证据的清理候选，显式 `--yes` 才删除。
 
 ```mermaid
 flowchart LR
-    A[业务数据<br/>SeaTable · PartDB · 本地CSV] --> B[op.py 统一读写]
-    B --> C[cockpit.py<br/>单文件 HTML 驾驶舱]
+    A[业务数据<br/>SeaTable · PartDB · 本地CSV] --> B[domain/op.py 统一读写]
+    B --> C[cockpit/cockpit.py<br/>单文件 HTML 驾驶舱]
     C --> D[老板 / 生产经理 / 采购 / 仓库 / 销售<br/>各自视角 + 口令分享]
     C --> E[一键发起 → 写回<br/>先确认再落库]
-    F[微信群消息<br/>收款 / 下单 / 合同PDF] --> G[wxmatch.py 只读核对]
+    F[微信群消息<br/>收款 / 下单 / 合同PDF] --> G[wx/wxmatch.py 只读核对]
     G --> H{匹配上了?}
     H -- 高置信 --> I[生成预填意图<br/>人确认后写库]
     H -- 对不上 --> J[待核对清单<br/>提示漏立项 / 漏登记]
     I --> B
     J --> C
-    K[历史工期 · 供应商交期<br/>BOM缺口 × 在途] --> L[foresee.py 风险预测]
+    K[历史工期 · 供应商交期<br/>BOM缺口 × 在途] --> L[domain/foresee.py 风险预测]
     L --> M[合同倒排 · 必须立刻执行<br/>缺料必须立刻下单]
     M --> C
 ```
@@ -153,10 +183,10 @@ flowchart LR
 新增能力采用“本地专用数据 + 业务表确认写入”的方式，避免每日同步时覆盖监控信息：
 
 ```text
-微信 4.x：wxengine/wa_db.py 直读本地加密库（主密钥从进程内存提取）
+微信 4.x：wx/wa_db.py 直读本地加密库（主密钥从进程内存提取）
 微信 3.x：win-wechat-summary 生成 merge_all.db（回退路径）
         ↓ 只读，不连接微信服务器
-wechat_intake.py pull（引擎A优先，自动回退引擎B）
+wx/wechat_intake.py pull（引擎A优先，自动回退引擎B）
         ↓
 微信事件.csv（待确认）
         ↓ AI 分流，同一消息可拆两条
@@ -167,22 +197,22 @@ SeaTable 业务表 + 事项表 + 工作日志
 图片：先登记摘要/来源/哈希，允许确认后上传
 普通文件：优先文本化，失败或需核验版式/签章时才上传原件
         ↓ 同一批消息换个用法：对账而非提取
-wxmatch.py scan（只读核对，绝不自动写库）
+wx/wxmatch.py scan（只读核对，绝不自动写库）
         ↓ 收款/下单/合同PDF ↔ 业务表逐条匹配
 核对结果.csv → 高置信生成预填意图 → 用户确认 → 写回业务表
 
-采购记录 → market.py watchlist
+采购记录 → domain/market.py watchlist
         ↓
 物料监控清单.csv + 物料行情记录.csv
         ↓
 价格涨跌 / NRND / EOL → 驾驶舱告警
 
-market.py raw（commodities.py 驱动）
+domain/market.py raw（domain/commodities.py 驱动）
         ↓
 原料行情记录.csv（金/银/铜/锡/塑料）→ 成本走向告警
 ```
 
-> 个人微信没有开放读取 API。本项目不会连接微信服务器；微信 4.x 用户保持 PC 版登录即可（引擎A 自动从进程内存提取密钥），微信 3.x 用户需在 Windows 本机用 win-wechat-summary 生成 `merge_all.db`。涉及交期、价格、数量、金额或采购下单的微信事件，默认只进入“待确认”，不会自动改业务表；`wxmatch.py` 更进一步——它**只做核对不写库**，连预填意图都要你点头才生效。
+> 个人微信没有开放读取 API。本项目不会连接微信服务器；微信 4.x 用户保持 PC 版登录即可（引擎A 自动从进程内存提取密钥），微信 3.x 用户需在 Windows 本机用 win-wechat-summary 生成 `merge_all.db`。涉及交期、价格、数量、金额或采购下单的微信事件，默认只进入“待确认”，不会自动改业务表；`wx/wxmatch.py` 更进一步——它**只做核对不写库**，连预填意图都要你点头才生效。
 
 ---
 
@@ -190,7 +220,7 @@ market.py raw（commodities.py 驱动）
 
 **微信 4.x（推荐，零工具依赖）**：保持微信 PC 版登录，安装 `pip install cryptography` 即可。**微信 3.x**：安装运行 [win-wechat-summary](https://github.com/yanyan1115/win-wechat-summary) 生成 `merge_all.db`。配置 `config.yaml`：
 
-> **⚠️ 依赖装在哪个 venv 就用哪个 venv 跑**（`python wechat_intake.py doctor` 自检）。本仓库自带的 `.venv-pipeline` 可能缺 `cryptography`，症状是：
+> **⚠️ 依赖装在哪个 venv 就用哪个 venv 跑**（`python wx/wechat_intake.py doctor` 自检）。本仓库自带的 `.venv-pipeline` 可能缺 `cryptography`，症状是：
 > ```
 > [warn] 引擎A(wechatauto)加载失败：No module named 'cryptography'
 > [!] 引擎A不可用（微信4.x未登录 / 版本不支持 / 缺 cryptography）
@@ -215,7 +245,7 @@ wechat:
 **怎么选监控群（重要）**：先列出你的全部群聊，再按业务挑——不要拍脑袋写：
 
 ```bash
-python wechat_intake.py groups    # 列出全部群（名称+群ID，缓存到 groups.json）
+python wx/wechat_intake.py groups    # 列出全部群（名称+群ID，缓存到 groups.json）
 ```
 
 一个微信群列表动辄几百个，推荐按四类勾选（以本仓库实际 380 群筛选 31 群为例）：
@@ -227,28 +257,28 @@ python wechat_intake.py groups    # 列出全部群（名称+群ID，缓存到 g
 | 客户/项目 | 甲方项目群、商务群 | 催货、付款、需求变更——与超期预警交叉印证 |
 | 内部 | 公司内部生产群 | 决策、跨部门协调 |
 
-群名直接原样写进 `watch_groups` 列表即可（含空格、`&`、全角括号都没问题），匹配支持群名精确匹配 / 群 ID / 子串包含三种。改完配置跑一次 `python wxwatch.py once --minutes 60` 验证扫描的群数对不对。
+群名直接原样写进 `watch_groups` 列表即可（含空格、`&`、全角括号都没问题），匹配支持群名精确匹配 / 群 ID / 子串包含三种。改完配置跑一次 `python wx/wxwatch.py once --minutes 60` 验证扫描的群数对不对。
 
 检查数据库并列出群：
 
 ```bash
-python wechat_intake.py doctor
-python wechat_intake.py groups
-python wechat_intake.py pull
+python wx/wechat_intake.py doctor
+python wx/wechat_intake.py groups
+python wx/wechat_intake.py pull
 ```
 
 `pull` 使用 `data/wechat_intake/bookmark.json` 按群记录读取位置，重复执行不会反复拉取同一批消息。AI 提取事件后登记为待确认：
 
 ```bash
-python wechat_intake.py add-event \
+python wx/wechat_intake.py add-event \
   --group 供应商群 --sender 供应商A \
   --category 价格变动 \
   --text "FR8018HD 下周报价可能上涨 12%" \
   --intent '{"op":"log","table":"工作日志","data":{"原话":"FR8018HD 下周报价可能上涨 12%"}}'
 
-python wechat_intake.py list --status 待确认
-python wechat_intake.py approve WX20260821-001
-python wechat_intake.py ignore WX20260821-002
+python wx/wechat_intake.py list --status 待确认
+python wx/wechat_intake.py approve WX20260821-001
+python wx/wechat_intake.py ignore WX20260821-002
 ```
 
 可识别分类：交期变更、价格变动、停产通知、催货、进度、库存、其他。驾驶舱的「微信情报台」展示原文、来源群、分类、待确认状态和最终写入结果。
@@ -264,14 +294,14 @@ python wechat_intake.py ignore WX20260821-002
 
 「已到账 3 万，请小王今天核对发票」应拆为 production 回款候选和 tasks 核票事项候选。
 自动化只生成待确认清单；人工确认前不执行 `approve`，也不得把“高置信”说成“已写入”。
-需要手工核验 Base 时使用 `python op.py --base production ...` 或 `python op.py --base tasks ...`。
+需要手工核验 Base 时使用 `python domain/op.py --base production ...` 或 `python domain/op.py --base tasks ...`。
 
 附件采用“可检索优先”策略：
 
 - 图片允许在确认后上传到目标记录的图片/附件列，但先登记 OCR/视觉摘要、来源群、发送人、时间和哈希；
 - PDF、Word、Excel、PPT、TXT 等普通文件优先提取正文/表格，文本化失败或必须查看版式/签章时再上传原件；
-- 每季度运行 `python evidence.py scan --root data/wechat_intake --days 90 --json`，只列出超过 90 天、已闭环且非长期保留的候选；
-- 真正删除必须由人工明确批准后运行 `python evidence.py prune --root data/wechat_intake --days 90 --yes`。不带 `--yes` 永远只预览。
+- 每季度运行 `python domain/evidence.py scan --root data/wechat_intake --days 90 --json`，只列出超过 90 天、已闭环且非长期保留的候选；
+- 真正删除必须由人工明确批准后运行 `python domain/evidence.py prune --root data/wechat_intake --days 90 --yes`。不带 `--yes` 永远只预览。
 
 每日和季度自动化模板见 [`automations/README.md`](automations/README.md)，AI 总结分流规范见 [`references/wx-ai-summary-prompt.md`](references/wx-ai-summary-prompt.md)。
 
@@ -283,20 +313,20 @@ python wechat_intake.py ignore WX20260821-002
 
 ```bash
 # 🌉 耳朵：实时监听（1 秒轮询，监控群命中关键词自动登记事件+写通知发件箱）
-python wxwatch.py watch              # 常驻监听（微信保持登录）
-python wxwatch.py once --minutes 60  # 低频模式：扫描过去 N 分钟（配合定时任务）
-python wxwatch.py status             # 哨兵状态/最近命中
+python wx/wxwatch.py watch              # 常驻监听（微信保持登录）
+python wx/wxwatch.py once --minutes 60  # 低频模式：扫描过去 N 分钟（配合定时任务）
+python wx/wxwatch.py status             # 哨兵状态/最近命中
 
 # 🧠 神经：异常检测（超期项目/逾期应收/采购在途/计划停滞/行情异动/数据体检）
-python alerts.py run                 # 跑全部规则 → data/alerts.json
-python alerts.py show                # 查看上次结果
+python workflows/alerts.py run                 # 跑全部规则 → data/alerts.json
+python workflows/alerts.py show                # 查看上次结果
 
 # 📋 嘴巴：站会摘要（合成异常+微信情报+业务面，一段话说完今天要管什么）
-python daily_brief.py --push         # 生成 data/daily_brief.md / _short.md 并写发件箱
+python workflows/daily_brief.py --push         # 生成 data/daily_brief.md / _short.md 并写发件箱
 
 # 📬 发件箱（进程解耦：生产者只管写，AI 会话经 agent-mail 发送）
-python notify.py dump                # 取未发送通知（JSON 行）
-python notify.py mark-sent --ids 1,2 # 发送后标记
+python workflows/notify.py dump                # 取未发送通知（JSON 行）
+python workflows/notify.py mark-sent --ids 1,2 # 发送后标记
 ```
 
 关键词分两级：**高危**（交期/延期/涨价/停产/缺料/催货，命中即通知）和**一般**（价格/库存/到货/进度等，仅登记事件）。通知走发件箱，由每日 9 点自动化或对话中的 AI 经 Agent Mail 发送。
@@ -312,21 +342,21 @@ python notify.py mark-sent --ids 1,2 # 发送后标记
 从 IC、组装料、成品、外壳和 PCBA 采购记录提取型号与历史采购价，生成监控清单：
 
 ```bash
-python market.py watchlist
-python market.py watchlist --refresh
-python market.py add FR8018HD --price 3.10 --category IC
+python domain/market.py watchlist
+python domain/market.py watchlist --refresh
+python domain/market.py add FR8018HD --price 3.10 --category IC
 ```
 
 每周检查后写入行情快照；没有可靠价格或生命周期来源时填“未知”，不要猜测。NRND/EOL 需要保留来源链接：
 
 ```bash
-python market.py snapshot \
+python domain/market.py snapshot \
   --model FR8018HD --price 3.50 \
   --channel 立创商城 --lifecycle 在产 \
   --source "https://example.com/source"
 
-python market.py report
-python market.py alerts
+python domain/market.py report
+python domain/market.py alerts
 ```
 
 默认 `market.alert_threshold: 10`：
@@ -338,17 +368,17 @@ python market.py alerts
 
 ### 代理商 API 自动查价（得捷 / 贸泽）
 
-人工录入太慢，行情可以**自动拉**：`suppliers.py` 抹平得捷与贸泽两个官方 API 的差异，统一折算人民币。
+人工录入太慢，行情可以**自动拉**：`domain/suppliers.py` 抹平得捷与贸泽两个官方 API 的差异，统一折算人民币。
 
 ```bash
-python suppliers.py doctor              # 凭证自检（值脱敏，不打印明文）
-python suppliers.py doctor --live       # 真实联网探测一次（消耗 1 次配额）
-python market.py lookup FR8018HD        # 单型号查价，**只查不写**
-python market.py compare FR8018HD       # 多源比价，原价与 ¥ 并列，标出最低/最高/差价
-python market.py sync --dry-run         # 预览这轮将查哪些（不联网、不写库）
-python market.py sync                   # 按节奏批量拉价并写快照
-python market.py sync --limit 5         # 只查前 5 个（省配额调试）
-python market.py sync --force           # 忽略节奏强制全查
+python domain/suppliers.py doctor              # 凭证自检（值脱敏，不打印明文）
+python domain/suppliers.py doctor --live       # 真实联网探测一次（消耗 1 次配额）
+python domain/market.py lookup FR8018HD        # 单型号查价，**只查不写**
+python domain/market.py compare FR8018HD       # 多源比价，原价与 ¥ 并列，标出最低/最高/差价
+python domain/market.py sync --dry-run         # 预览这轮将查哪些（不联网、不写库）
+python domain/market.py sync                   # 按节奏批量拉价并写快照
+python domain/market.py sync --limit 5         # 只查前 5 个（省配额调试）
+python domain/market.py sync --force           # 忽略节奏强制全查
 ```
 
 **凭证怎么配**（`config.yaml` 的 `market.api_keys`，已被 `.gitignore` 排除，**不会进仓库**）：
@@ -399,7 +429,7 @@ market:
 > ⚠️ **先看清适用性，别指望它管全部料**：得捷/贸泽是**欧美代理商**，对国产料和定制料号基本零覆盖。实测本仓库 25 个启用型号（FR8018HD 奉加微、ML307N 中移物联、OM6626B 等国产芯片为主），贸泽**有效命中 0 条**。
 > 这两个 API 的正确用法是**选型阶段查新料号**（`lookup` / `compare` 打价、查库存、查生命周期），而不是给国产 BOM 做行情巡检 —— 后者仍以人工录入和立创商城为主。
 
-**四条铁律**（改代码前先读 `suppliers.py` 文件头）：
+**四条铁律**（改代码前先读 `domain/suppliers.py` 文件头）：
 
 1. **只读**——只调查询接口，绝不碰下单/报价/购物车。下单必须人工在官网完成。
 2. **凭证不落库**——只从本地 `config.yaml` 读，日志与报错一律脱敏（只显示前 4 位）。
@@ -408,19 +438,19 @@ market:
 
 其他要点：贸泽一次可查 **10 个型号**（代码自动分批，省配额），得捷只能逐个查；得捷令牌自动缓存到 `data/.supplier_tokens.json`，过期自动刷新；多渠道各写一条快照时，**涨跌幅只跟同渠道的上一条比**，避免把渠道差价误报成涨跌。
 
-数据保存在 `data/物料监控清单.csv` 与 `data/物料行情记录.csv`，均为本地专用文件，不会被 `seatable_sync.py` 覆盖。
+数据保存在 `data/物料监控清单.csv` 与 `data/物料行情记录.csv`，均为本地专用文件，不会被 `sync/seatable_sync.py` 覆盖。
 
 ### 原料行情（金 / 银 / 铜 / 锡 + 塑料原料）
 
 元器件之外，还有一层更上游的成本：**原料**。锡价直接决定 SMT 焊料成本，铜价决定 PCB 与线材，金银决定镀层与键合线，而 ABS/PC/PS 决定外壳与结构件。
 
 ```bash
-python market.py raw list                      # 看有哪些品种、各自的数据源
-python market.py raw fetch                     # 拉一次实时价并写库（每天跑一次即可积累走势）
-python market.py raw show --days 30            # 走势表（sparkline + 区间涨跌）
-python market.py raw trend --days 30           # 波动超阈值告警（默认 ±3%）
-python market.py raw add ABS --price 11800     # 人工录入现货价
-python market.py raw backfill AU --contract au2612 --days 60   # 一次性补历史
+python domain/market.py raw list                      # 看有哪些品种、各自的数据源
+python domain/market.py raw fetch                     # 拉一次实时价并写库（每天跑一次即可积累走势）
+python domain/market.py raw show --days 30            # 走势表（sparkline + 区间涨跌）
+python domain/market.py raw trend --days 30           # 波动超阈值告警（默认 ±3%）
+python domain/market.py raw add ABS --price 11800     # 人工录入现货价
+python domain/market.py raw backfill AU --contract au2612 --days 60   # 一次性补历史
 ```
 
 | 品种 | 类别 | 数据源 | 单位 |
@@ -435,9 +465,9 @@ python market.py raw backfill AU --contract au2612 --days 60   # 一次性补历
 - **PP / LLDPE / PVC 期货**作为 ABS/PC/PS 的**上游石化链代理指标**（趋势相关，能提前感知塑料成本拐点）；
 - **ABS/PC/PS 现货**走人工录入（你的采购报价填进去即可积累走势）。
 
-若日后接入含产业数据的付费源（如同花顺 iFinD 有化工品现货库），只需在 `commodities.py` 里加一个 source 适配器，**CSV 结构与展示层都不用动**。
+若日后接入含产业数据的付费源（如同花顺 iFinD 有化工品现货库），只需在 `domain/commodities.py` 里加一个 source 适配器，**CSV 结构与展示层都不用动**。
 
-**数据源细节**（`commodities.py` 文件头有完整记录）：
+**数据源细节**（`domain/commodities.py` 文件头有完整记录）：
 
 - 实时价走 `hq.sinajs.cn/list=nf_XXX0`（上期所/大商所连续合约），**免费、无需申请、无 API key**，人民币计价，一次请求取回全部 9 个品种；
 - 新浪的日 K 线服务**已下线**（返回 `Service not found`），所以历史补录改走东方财富 K 线，secid 形如 `113.au2612`（113 上期所 / 114 大商所）；
@@ -445,7 +475,7 @@ python market.py raw backfill AU --contract au2612 --days 60   # 一次性补历
 
 数据保存在 `data/原料行情记录.csv`（本地专用）。原料波动阈值默认 ±3%，比元器件的 ±10% 敏感，可在 `config.yaml` 的 `commodities.alert_threshold` 调整。
 
-**驾驶舱展示（v1.6.0）**：`cockpit.py` 已内置「原料行情（上游成本 · 金属 / 塑料）」模块——最新价、近 30 天区间涨跌、SVG 走势线、口径徽章（连续/合约）一目了然；波动 ≥ 阈值的品种进「原料波动告警」卡片，动静最大的 2 条还会进「下一步行动建议」（标注影响的是**报价基调**，不是停线事件）。老板页与采购页均可见。阈值与回看天数与 CLI 同源（`commodities` 段），不会出现命令行显示 ±3% 而网页按别的数算的情况。
+**驾驶舱展示（v1.6.0）**：`cockpit/cockpit.py` 已内置「原料行情（上游成本 · 金属 / 塑料）」模块——最新价、近 30 天区间涨跌、SVG 走势线、口径徽章（连续/合约）一目了然；波动 ≥ 阈值的品种进「原料波动告警」卡片，动静最大的 2 条还会进「下一步行动建议」（标注影响的是**报价基调**，不是停线事件）。老板页与采购页均可见。阈值与回看天数与 CLI 同源（`commodities` 段），不会出现命令行显示 ±3% 而网页按别的数算的情况。
 
 ## 消息↔SeaTable 核对（v1.6.2）
 
@@ -453,10 +483,10 @@ python market.py raw backfill AU --contract au2612 --days 60   # 一次性补历
 收款、新下单、合同 PDF 逐条对账，专抓「群里说了但表里没有」的缺口。
 
 ```bash
-python wxmatch.py scan                # 扫描监控群消息 + 微信收到的合同 PDF，写核对台账
-python wxmatch.py list                # 查看待核对项
-python wxmatch.py done WX-M-...001    # 处置留痕
-python wxmatch.py intent              # 导出高置信项的预填意图（确认后走 approve 写库）
+python wx/wxmatch.py scan                # 扫描监控群消息 + 微信收到的合同 PDF，写核对台账
+python wx/wxmatch.py list                # 查看待核对项
+python wx/wxmatch.py done WX-M-...001    # 处置留痕
+python wx/wxmatch.py intent              # 导出高置信项的预填意图（确认后走 approve 写库）
 ```
 
 | 核对类型 | 群里看到的 | 对 SeaTable 哪张表 | 匹配规则 |
@@ -482,10 +512,10 @@ python wxmatch.py intent              # 导出高置信项的预填意图（确�
 **① 零配置（默认）** — 数据存 `data/` 下的 CSV，Excel 直接打开：
 
 ```bash
-python3 op.py append 生产计划 '{"生产产品":"4G小卡","数量":100,"关联项目":"演示项目A"}'
-python3 op.py list 生产计划
-python3 op.py export-excel 生产数据.xlsx
-python3 cockpit.py                      # 生成驾驶舱网页
+python3 domain/op.py append 生产计划 '{"生产产品":"4G小卡","数量":100,"关联项目":"演示项目A"}'
+python3 domain/op.py list 生产计划
+python3 domain/op.py export-excel 生产数据.xlsx
+python3 cockpit/cockpit.py                      # 生成驾驶舱网页
 ```
 
 **② 接你自己的 SeaTable** — `cp config.yaml.example config.yaml`，填上：
@@ -541,24 +571,24 @@ partdb:
 seatable-production/
 ├── SKILL.md              # 领域知识（流程/表规则/格式/分析），不含任何凭证
 ├── config.yaml.example   # 配置模板（复制为 config.yaml 后填写）
-├── op.py                 # 统一数据操作 CLI（模型与用户都只调它）
-├── cockpit.py            # 驾驶舱网页生成器（单文件 HTML）
-├── wechat_intake.py      # 微信本地库 → 待确认事件 → production/tasks 分流候选（双引擎）
-├── evidence.py           # 图片证据元数据 + 90 天清理候选（显式 --yes 才删除）
-├── wxengine/wa_db.py     # 微信 4.x 解密引擎（SQLCipher4 直读，主密钥从进程内存提取）
-├── wxmatch.py            # 消息↔SeaTable 核对引擎（只读对账，高置信生成预填意图）
-├── foresee.py            # 风险预测引擎（合同倒排·供应商画像·缺料预警 → data/foresee.json）
-├── wxwatch.py            # 实时哨兵：监听监控群，关键词命中自动登记事件+通知
-├── alerts.py             # 异常检测引擎：超期/应收/在途/停滞/行情 → data/alerts.json
-├── daily_brief.py        # 站会摘要：异常+微信情报+业务面 合成一段话
-├── notify.py             # 通知发件箱：进程解耦，AI 会话经 agent-mail 发送
-├── market.py             # 物料监控清单 / 价格涨跌 / NRND-EOL（含 raw 子命令入口）
-├── suppliers.py          # 得捷·贸泽官方 API 只读查价（凭证本地化 / 失败降级 / 统一 ¥）
-├── commodities.py        # 上游原料行情（金/银/铜/锡/塑料，零凭证数据源）
-├── seatable_sync.py      # 拉 SeaTable 云表快照供驾驶舱离线渲染
-├── partdb_sync.py        # 拉 PartDB 库存与缺料快照
-├── backfill_seatable.py  # 历史数据补录（确定性字段预填，需拍板的留空）
-├── wecom_push.py         # 企业微信推送（发件箱 flush / 单条 push）
+├── domain/op.py                 # 统一数据操作 CLI（模型与用户都只调它）
+├── cockpit/cockpit.py            # 驾驶舱网页生成器（单文件 HTML）
+├── wx/wechat_intake.py      # 微信本地库 → 待确认事件 → production/tasks 分流候选（双引擎）
+├── domain/evidence.py           # 图片证据元数据 + 90 天清理候选（显式 --yes 才删除）
+├── wx/wa_db.py     # 微信 4.x 解密引擎（SQLCipher4 直读，主密钥从进程内存提取）
+├── wx/wxmatch.py            # 消息↔SeaTable 核对引擎（只读对账，高置信生成预填意图）
+├── domain/foresee.py            # 风险预测引擎（合同倒排·供应商画像·缺料预警 → data/foresee.json）
+├── wx/wxwatch.py            # 实时哨兵：监听监控群，关键词命中自动登记事件+通知
+├── workflows/alerts.py             # 异常检测引擎：超期/应收/在途/停滞/行情 → data/alerts.json
+├── workflows/daily_brief.py        # 站会摘要：异常+微信情报+业务面 合成一段话
+├── workflows/notify.py             # 通知发件箱：进程解耦，AI 会话经 agent-mail 发送
+├── domain/market.py             # 物料监控清单 / 价格涨跌 / NRND-EOL（含 raw 子命令入口）
+├── domain/suppliers.py          # 得捷·贸泽官方 API 只读查价（凭证本地化 / 失败降级 / 统一 ¥）
+├── domain/commodities.py        # 上游原料行情（金/银/铜/锡/塑料，零凭证数据源）
+├── sync/seatable_sync.py      # 拉 SeaTable 云表快照供驾驶舱离线渲染
+├── sync/partdb_sync.py        # 拉 PartDB 库存与缺料快照
+├── sync/backfill_seatable.py  # 历史数据补录（确定性字段预填，需拍板的留空）
+├── wx/wecom_push.py         # 企业微信推送（发件箱 flush / 单条 push）
 ├── pipeline/             # 合同 → BOM → 库存审核 → 正式采购订单
 │   ├── inventory_sources.py # PartDB / API / MCP / Excel·CSV 适配器
 │   └── rules.yaml        # 无客户信息的公共采购规则模板
@@ -573,7 +603,7 @@ seatable-production/
 ├── scripts/              # 便捷 shell（SeaTable token / PartDB 查询）
 ├── partdb-price-import/  # 子技能：采购合同 PDF → PartDB 价格录入
 ├── partdb-part-create/   # 子技能：PartDB 新建物料 + 供应商件
-├── expert/               # 专家包（内嵌技能副本，python sync_expert.py 同步，CI 校验漂移）
+├── expert/               # 专家包（内嵌技能副本，python sync/sync_expert.py 同步，CI 校验漂移）
 ├── data/                 # 本地数据（自动生成，已 gitignore）
 └── docs/                 # 手册、配图、在线指南
 ```

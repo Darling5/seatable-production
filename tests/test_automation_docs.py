@@ -37,7 +37,7 @@ def test_public_docs_contract():
 
 def test_command_help_is_offline_and_explicit():
     proc = subprocess.run(
-        [sys.executable, str(ROOT / "evidence.py"), "prune", "--help"],
+        [sys.executable, str(ROOT / "domain" / "evidence.py"), "prune", "--help"],
         cwd=str(ROOT), capture_output=True, text=True, check=False,
     )
     output = proc.stdout + proc.stderr

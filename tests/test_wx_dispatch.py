@@ -10,7 +10,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
-import wx_dispatch as wd  # noqa: E402
+from wx import wx_dispatch as wd  # noqa: E402
 
 
 def test_explicit_production_preserves_intent():

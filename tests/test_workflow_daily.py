@@ -74,12 +74,12 @@ class TestCli(unittest.TestCase):
 
     def _parse(self, argv):
         import argparse
-        from workflow import main  # noqa: F401 — 复用其 parser 逻辑太重，直接独立构建
+        from workflows.workflow import main  # noqa: F401 — 复用其 parser 逻辑太重，直接独立构建
         # 简化：直接调用 main 会执行，这里只验证 choices 合法性
         return argv
 
     def test_workflow_module_importable(self):
-        import workflow  # noqa: F401
+        from workflows import workflow  # noqa: F401
         self.assertTrue(hasattr(workflow, "cmd_run"))
 
     def test_daily_callable(self):

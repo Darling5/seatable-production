@@ -10,7 +10,7 @@ from pathlib import Path
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
-import evidence  # noqa: E402
+from domain import evidence  # noqa: E402
 
 
 def test_metadata_first(tmp):

@@ -1,7 +1,7 @@
 # 采购合同 PDF → PartDB 价格导入
 
 > 适用：用户给出采购合同 / 报价单 PDF，要求把型号与含税单价录入 PartDB 的价格 / 供应商记录。
-> 本文件是 `seatable-production` 的补充参考，与 `op.py` 后端无关，直接走 PartDB Hydra API。
+> 本文件是 `seatable-production` 的补充参考，与 `domain/op.py` 后端无关，直接走 PartDB Hydra API。
 > 完整业务流程、BOM 成本算法见本仓库 `SKILL.md` 与 `references/workflow.md`。
 
 ## 0. 前置：凭据（不入库）

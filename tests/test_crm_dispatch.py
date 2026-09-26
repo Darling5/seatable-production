@@ -14,8 +14,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 import json
 import tempfile
 
-import crm_dispatch as cd
-import wx_dispatch as wd
+from domain import crm_dispatch as cd
+from wx import wx_dispatch as wd
 
 FAILED = []
 

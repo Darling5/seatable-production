@@ -5,7 +5,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 模块在上一级
-import market
+from domain import market
 
 # 把数据文件指向临时文件，绝不污染真实历史
 market.WATCH_PATH = os.path.join(market.DATA, "_test_watch.csv")
@@ -90,11 +90,11 @@ for t in ("Active", "New Product", "NRND", "Not Recommended for New Designs",
           "Obsolete", "End of Life", "", "在产", "不推荐用于新设计"):
     print("   %-34s -> %s" % (repr(t), market.suppliers_lc_map(t)
                               if hasattr(market, "suppliers_lc_map")
-                              else __import__("suppliers")._map_lifecycle(t)))
+                              else __import__("domain.suppliers", fromlist=["suppliers"])._map_lifecycle(t)))
 
 print()
 print("数字解析自测：")
-from suppliers import _float, _int
+from domain.suppliers import _float, _int
 for v in ("$4.49", "¥ 31.9", "1,234.5", "733 In Stock", "", None, "110 Days"):
     print("   %-16r -> float=%s int=%s" % (v, _float(v), _int(v)))
 
