@@ -1,0 +1,30 @@
+# 行尾策略：跨平台统一 LF，避免整仓 diff 噪音与「工具写入后文件变 mixed」
+#
+# 为什么需要它：本机 PortableGit 的 etc/gitconfig 里 core.autocrlf=true，
+# 检出时会把所有文本文件写成 CRLF。Windows 下用文本工具改写这些文件时
+# 又常常写回 LF，于是同一文件内 CRLF 与 LF 混用（w/mixed），
+# 后续每次编辑都会产生整文件 diff 噪音。
+# 显式声明 eol=lf 后，无论 autocrlf 设成什么，检出与比较都以 LF 为准。
+# 详见坑库 WIN-009。
+
+* text=auto eol=lf
+
+# Windows 批处理与 Cmdlet 必须 CRLF，否则 cmd.exe / PowerShell 解析异常
+# （LF 换行会让 cmd.exe 吞掉命令，见坑库 WIN-001）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制文件一律不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.xlsx binary
+*.xls binary
+*.docx binary
+*.db binary
+*.zip binary
+*.gz binary
