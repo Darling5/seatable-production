@@ -19,25 +19,39 @@
 
 ## 2. 真实技能目录的解析顺序（通用、跨机器）
 
-`bridge_common.py` 按以下顺序定位 seatable-production：
+`bridge_common.py` 按以下顺序定位 seatable-production（**先到先得，且目录内必须
+有 `SKILL.md` 才作数**）：
 1. 环境变量 `SEATABLE_PRODUCTION_DIR`（最优先，推荐团队显式设置）
-2. `~/.workbuddy/skills/seatable-production`（WorkBuddy 默认技能位置）
-3. 相对 `../seatable-production`
+2. `~/.workbuddy/skills/seatable-production*`（WorkBuddy 默认技能位置）
+3. 相对 `../seatable-production*`
+
+第 2、3 条用的是**通配**而不是写死的目录名，原因是技能目录名可能带版本号
+（`seatable-production-1.8.0`），而且**升级后旧的无版本目录常被留成空壳**。
+`-` 的排序大于结尾，所以反向排序时版本化目录天然优先；再用「含 `SKILL.md`」
+把空壳目录挡掉。效果：技能从 1.8.0 升到 1.9.0（或换回无版本名）时，
+`bridge_common.py` 与 wrapper 都不用改。
 
 ## 3. 部署步骤（团队照做）
 
-1. **放置桥接脚本**：把 `automations/bridge/` 下的 4 个文件
-   （`bridge_common.py` + `sync/seatable_sync.py` / `sync/partdb_sync.py` / `cockpit/cockpit.py`）
-   复制到你的 WorkBuddy「生产交付」项目目录（即自动化 cwds 的第一个目录）。
+1. **放置桥接脚本**：把 `automations/bridge/` 下的 **4 个文件**平铺复制到你的
+   WorkBuddy「生产交付」项目目录：
+   - `bridge_common.py`（通用核心，不单独运行）
+   - `cockpit.py` / `seatable_sync.py` / `partdb_sync.py`（三个 wrapper，各 3 行）
+
+   ⚠️ wrapper 的**文件名必须与技能目录内的脚本同名**（`cockpit.py` 对应
+   `cockpit/cockpit.py`，`seatable_sync.py` 对应 `sync/seatable_sync.py`）——
+   `bridge_common` 是拿 `sys.argv[0]` 的 basename 去查映射表的。
+   2026-09-26 仓库整理后脚本按域归组，映射表见 `bridge_common.SUBDIR_BY_WRAPPER`。
 2. **（可选但推荐）设置环境变量**：
    `SEATABLE_PRODUCTION_DIR = <你机器上 seatable-production 技能目录的绝对路径>`
 3. **在 WorkBuddy 新建每日自动化**，配置如下：
    - 名称：`生产驾驶舱·每日9点自动重建部署`
    - 调度（rrule）：`FREQ=DAILY;BYHOUR=9;BYMINUTE=0`
    - 状态：`ACTIVE`
-   - 工作目录（cwds，按顺序）：
-     1. 你的「生产交付」项目目录（决定 UI 分组归属）
-     2. seatable-production 技能目录（保证脚本/数据可访问）
+   - 工作目录（cwds）：填你的「生产交付」项目目录（决定 UI 分组归属）。
+     实测平台**一次只接受一个工作目录**（逗号分隔、传 JSON 数组都不生效，只会
+     留第一项），所以**不要**把技能目录也塞进 cwds —— 脚本一律在 Prompt 里用
+     `cd <技能目录> && python ...` 显式切换（调度器默认 cwd 不保证是技能目录）。
    - Prompt：见下方「自动化 Prompt 模板」
 4. **首次运行验证**：手动触发一次，确认能从项目目录调通 wrapper 并生成
    `项目管理驾驶舱.html`。
@@ -53,9 +67,8 @@
 
 > 下方为 v1.x 旧模板（已被 v2.0 取代，留作参考）：
 
-> 把下方的 `{{SEATABLE_PRODUCTION_DIR}}` 替换为你的实际技能目录绝对路径
-> （或留作说明，因为 cwds 已保证脚本可从项目目录调起）。模板只规定流程，
-> 不包含真实 token、UUID，也不等于授权自动写入或删除数据。
+> 把下方的 `{{SEATABLE_PRODUCTION_DIR}}` 替换为你的实际技能目录绝对路径。
+> 模板只规定流程，不包含真实 token、UUID，也不等于授权自动写入或删除数据。
 
 ```
 你是「生产交付驾驶舱」专家。请执行每日 9 点例行数据更新任务：
@@ -105,7 +118,7 @@
 - 名称：`生产驾驶舱·每晚19点全量重建发布`
 - 调度（rrule）：`FREQ=DAILY;BYHOUR=19;BYMINUTE=0`
 - 状态：`ACTIVE`
-- 工作目录（cwds，按顺序）：同 09:00 那条（项目目录 + 技能目录）
+- 工作目录（cwds）：同 09:00 那条（**单个**项目目录；技能目录靠 Prompt 里 `cd` 切换）
 - Prompt：见 `automations/evening-prompt.md`
 
 > **发布门禁**：19:00 的发布步骤带 `--gate {run_id}`。账本里关键阶段
@@ -155,6 +168,13 @@
 ## 7. 维护者本机实际配置（参考，非强制）
 
 - 本机「生产交付」项目目录：`C:\Users\11430\WorkBuddy\2026-08-14-14-34-58`
-  （里面是 3 个硬编码转发到技能目录的 wrapper；团队建议改用上方通用版）
-- 技能目录：`C:\Users\11430\.workbuddy\skills\seatable-production`
-- 自动化 cwds：`[生产交付目录, 技能目录]`；status：`ACTIVE`
+  - 2026-09-26 起里面是**通用版**：`bridge_common.py` + 3 个 3 行 wrapper
+    （原先的 3 个硬编码 wrapper 指向已被升级留空的旧技能目录，双重失效；
+    原件归档在技能仓库 `data/archive/2026-09-26-restructure/`）。
+- 技能目录实名：`C:\Users\11430\.workbuddy\skills\seatable-production-1.8.0`
+  - ⚠️ `skills/` 下还有一个**同名的空壳目录** `seatable-production`（升级遗留，
+    里面 0 个文件）。写自动化路径时别写成它；`bridge_common` 已用「含 SKILL.md」
+    的校验把它挡掉。
+- 三条 ACTIVE 自动化的 cwds（各一个）：09:00 与周一行情 → 生产交付项目目录；
+  19:00 → 微信文件目录 `D:\User\Documents\xwechat_files\...\msg\file`
+  （保留原值：该目录是微信数据源，作为 cwd 便于引擎直读）。
