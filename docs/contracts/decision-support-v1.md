@@ -35,6 +35,29 @@
 来源侧保留 `source_system` `source_base` `source_table` `source_row_id`
 `source_message_id` —— **名称一律不作关联键**。
 
+> **实测证实**：这三个字段曾经在二期投影层被漏掉（`_brief()` 丢 `plan_id`、
+> `actions_out` 丢 `plan_id`/`run_id`/`snapshot_id`、`add_evidence` 不传 `plan_id`），
+> 结果是「记忆/行动/证据 → 生产计划」在契约层断链。已在二期补齐，
+> 并由 `alignment.check_alignment()` 每次实跑校验 —— **不靠读文档相信**。
+
+### 1.1.1 跨期对齐层（`application/decision_support/alignment.py`）
+
+只读对齐、字段权威对账、语义分歧裁决，全部落在这一处：
+
+| 能力 | 接口 |
+|---|---|
+| 回填八个统一字段 | `make_unified(...)` → 键集合恒等于 `UNIFIED_FIELDS` |
+| 生成运行编号 | `new_run_id()` → `RUN-YYYYMMDD-XXXX`（与二期同格式） |
+| 两期输入一致性校验 | `check_alignment(ctx, planning)` → `{ok, items[], summary}` |
+| 决策守卫 | `check_no_authored_decision_id(payload, allowed)` |
+| 版本重查 | `compare_versions(ctx_version, current_version)` |
+| 时间容差解析 | `parse_time()` / `normalize_time()`（空格与 ISO-T 两种都吃） |
+| 人/模型预测分家 | `human_prediction_records()` / `split_prediction_records()` / `merge_prediction_records()` |
+| 二期模块定位 | `find_brain_root()` / `import_brain()` / `load_context()` |
+
+对齐检查项与语义分歧裁决详见 **`docs/contracts/alignment-p2-p3-v1.md`**；
+机器可读字段映射见 `examples/alignment-field-map.json`。
+
 ### 1.2 输入：ProjectContext
 
 ```python
@@ -70,14 +93,15 @@ ds = from_inputs(inputs)
 
 ### 1.4 所有跨期假设（集中在适配层，逐条可查）
 
-| id | 假设 | 风险 |
-|---|---|---|
-| A1 | 八个统一字段由二期定义，本期只读对齐 | 二期改字段名则本期需同步 |
-| A2 | 工序/依赖/工期/日历/资源属计划域，二期未覆盖，本期以 PlanningSnapshot 提供 | 接真实表需要字段映射，映射只改适配层 |
-| A3 | `observations`（未核实观察）**不**作为排程的确定输入 | 当事实用会产出伪确定交期 |
-| A4 | `source_freshness` 中 `stale=true` 的来源转成「结论待复核」提示 | 忽略时效会让旧数据看起来像新结论 |
-| A5 | `steps[*].plan_id` 与二期行动/记忆的 `plan_id` 同源可比；名称不作关联键 | 用名称关联会在改名时静默断链 |
-| A6 | 本期不写业务表、不建审批器；执行一律走第一期闸门 | 无 |
+| id | 假设 | 风险 | 现状 |
+|---|---|---|---|
+| A1 | 八个统一字段由二期定义，本期只读对齐 | 二期改字段名则本期需同步 | **已实测**：二期投影层曾漏 `plan_id`/`run_id`/`snapshot_id`/`version`，已补齐 |
+| A2 | 工序/依赖/工期/日历/资源属计划域，二期未覆盖，本期以 PlanningSnapshot 提供 | 接真实表需要字段映射，映射只改适配层 | 待真实表接入 |
+| A3 | `observations`（未核实观察）**不**作为排程的确定输入 | 当事实用会产出伪确定交期 | 已实现（`conditions_from_context`） |
+| A4 | `source_freshness` 中 `stale=true` 的来源转成「结论待复核」提示 | 忽略时效会让旧数据看起来像新结论 | 依赖 `data_as_of` 口径；二期原把它算成「现在」，已修正为「最晚采集时间」 |
+| A5 | `steps[*].plan_id` 与二期行动/记忆的 `plan_id` 同源可比；名称不作关联键 | 用名称关联会在改名时静默断链 | **已实测**：plan_id 必须过二期 `validate_id`；找不到引用时报 `plan_link_unverified` |
+| A6 | 本期不写业务表、不建审批器；执行一律走第一期闸门 | 无 | **已实测**：`check_no_authored_decision_id` 断言产出里无自造决策 |
+| A7 | 二期 `predictions[]` 是**人**的预测；本期 `forecast_date` 是**算法**的 | 合并统计会得到没有意义的「准确率」 | 已实现（`prediction_source` 分家） |
 
 ---
 
@@ -276,13 +300,18 @@ r5 = ds.explain(step_id="STP-A-TEST")   # 这条日期凭什么这么算（推�
 CLI：
 
 ```bash
-python decision_support.py analyze|compare|delay|explain|backtest|demo [--json]
+python decision_support.py analyze|compare|delay|explain|backtest|align|demo [--json]
+python decision_support.py align --brain-root auto        # 两期契约对齐检查
 ```
 
 ### 5.1 `analyze()` 返回结构（要点）
 
 ```
 contract_version / rules_version / project_id / snapshot_id / as_of / data_as_of
+unified{ project_id, plan_id, action_id, evidence_id, decision_id,
+         run_id, snapshot_id, version }        # 八个统一字段（本次运行的回填）
+alignment{ ok, items[{code,severity,message,ref,how_to_fix}],
+           errors[], warnings[], summary{...}, context_version }
 calendar{...}
 dates{ <plan_id>: {contract_date, internal_plan_date,
                    resource_feasible_date, resource_feasible_status,
@@ -291,11 +320,17 @@ cpm{ critical_path[], project_finish, steps[], issues[], method, disclaimer }
 resource_feasible{ plans[], steps[], resources[], conflicts_resolved[],
                    protected_steps[], unresolved[], issues[] }
 gaps[]                      # 缺口 / 不可确定的原因码
-caveats[]                   # 来自二期上下文的来源时效
-assumptions[]               # A1..A6
-evidence{ evidence_ids[], decision_ids[], unresolved_conflicts[], missing_info[] }
+caveats[]                   # 二期来源时效 + 对齐 error（error 会并入这里）
+assumptions[]               # A1..A7
+evidence{ evidence_ids[], decision_ids[], action_ids[],
+          unresolved_conflicts[], missing_info[] }
+human_predictions[]         # 二期里**人**的预测（prediction_source=human）
+execution_gate{ gate_module, rule, pre_execution, ds_writes_business_tables }
 authorization_note
 ```
+
+`alignment.ok=false` 只表示有 error 级问题；warning 不阻断算法，但**必须出现在结论里**。
+所有 error 同时并入 `caveats`，保证「前提错了」不会被漂亮的数字盖过去。
 
 ### 5.2 原因码
 
@@ -378,3 +413,6 @@ python decision_support.py demo
 | 预测时点 | `predicted_at` |
 | 防未来信息 | `no_lookahead` |
 | 样本不足 | `insufficient_sample` |
+| 人的预测 / 算法的预测 | `prediction_source=human` / `prediction_source=model` |
+| 八个统一字段 | `UNIFIED_FIELDS` / `unified` |
+| 跨期对齐 | `check_alignment` / `align_version` |

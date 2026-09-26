@@ -11,6 +11,7 @@
   python decision_support.py explain   --snapshot <file> --step <id>
                                                               凭什么算成这天？
   python decision_support.py backtest  --records <file>       以前预测准不准？
+  python decision_support.py align                            两期契约对得上吗？
   python decision_support.py demo                             用内置合成样例跑一遍全链路
 
 约定：
@@ -29,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from application.decision_support import schema as S                    # noqa: E402
+from application.decision_support import alignment as ALIGN             # noqa: E402
 from application.decision_support.backtest import backtest              # noqa: E402
 from application.decision_support.service import DecisionSupport        # noqa: E402
 
@@ -262,6 +264,87 @@ def cmd_backtest(args) -> int:
     return 0
 
 
+def print_align(res: dict) -> None:
+    print("=" * 74)
+    print("二期/三期契约对齐 %s · 二期契约 %s"
+          % (res["align_version"], S.BRAIN_CONTRACT_VERSION))
+    print("=" * 74)
+    print("输入来源：%s" % res["context_source"])
+    print("二期模块定位：%s（in_tree=同一棵树；isolated=别名包隔离装载；missing=不可用）"
+          % res["brain_root_kind"])
+    s = res["summary"]
+    print("项目 %s · 快照 %s · 上下文版本 %s"
+          % (s.get("project_id") or "—", s.get("snapshot_id") or "—",
+             s.get("context_version")))
+    print("结论：%s（error %d / warning %d）"
+          % ("对齐" if res["ok"] else "**未对齐**", s["n_errors"], s["n_warnings"]))
+    print("\n【逐项】")
+    icon = {"error": "✗", "warning": "!", "info": "·"}
+    for i in res["items"]:
+        print("  %s [%s] %s" % (icon.get(i["severity"], "·"), i["code"], i["message"]))
+        if i["severity"] in ("error", "warning") and i.get("how_to_fix"):
+            print("        处置：%s" % i["how_to_fix"])
+    print("\n【语义分歧裁决】同名词两期含义不同，必须分开统计")
+    for sp in ALIGN.SEMANTIC_SPLITS:
+        print("  · 「%s」" % sp["term"])
+        print("      二期：%s" % sp["brain_side"])
+        print("      三期：%s" % sp["ds_side"])
+        print("      裁决：%s" % sp["ruling"])
+    print("\n【八个统一字段】%s" % " · ".join(ALIGN.UNIFIED_FIELDS))
+    print("【执行闸门】%s" % ALIGN.EXECUTION_GATE["rule"])
+    print("            %s\n" % ALIGN.EXECUTION_GATE["pre_execution"])
+
+
+def _ctx_has_data(ctx: dict) -> bool:
+    """这份 ProjectContext 里**真的有记录**吗？
+
+    空的二期库里 `get_project_context` 也会返回一份结构完整的上下文
+    （契约版本、counts 全 0），光看 `contract_version` 会把「读到空库」
+    误当成「读到数据」。所以按记录数与版本号判定。
+    """
+    if not ctx.get("contract_version"):
+        return False
+    if int(ctx.get("version") or 0) > 1:
+        return True
+    for k in ("observations", "facts", "commitments", "decisions", "predictions",
+              "actions", "evidence_refs"):
+        if ctx.get(k):
+            return True
+    return False
+
+
+def cmd_align(args) -> int:
+    snap = _load_json(args.snapshot or DEFAULT_SNAPSHOT)
+    cpath = getattr(args, "context", "") or DEFAULT_CONTEXT
+    pid = str(snap.get("project_id") or "")
+    sid = str(snap.get("snapshot_id") or "")
+
+    ctx, kind, err = ALIGN.load_context(
+        pid, sid, getattr(args, "brain_root", ""),
+        getattr(args, "brain_data", ""))
+    notes = []
+    if not _ctx_has_data(ctx):
+        # 真实模块可用但里面没有这个项目 —— 说清楚，然后回退到「捕获样本」
+        if ctx or err:
+            notes.append("真实模块读到的上下文里没有本项目的数据%s"
+                         % ("（%s）" % err if err else ""))
+        kind = kind if kind in ("in_tree", "isolated") else "missing"
+        ctx = _load_json(cpath) if os.path.exists(cpath) else {}
+        source = ("mock 捕获样本（由真实二期回放导出）"
+                  if os.path.exists(cpath) else "空")
+    else:
+        source = "project_brain（%s）" % kind
+
+    res = {"align_version": ALIGN.ALIGN_VERSION, "brain_root_kind": kind,
+           "context_source": source, "source_notes": notes}
+    res.update(ALIGN.check_alignment(ctx, snap))
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        print_align(res)
+    return 0 if res["ok"] else 2
+
+
 def cmd_demo(args) -> int:
     ds = _make_ds(args)
     print("### 1/2 交付依赖\n")
@@ -312,6 +395,14 @@ def build_parser() -> argparse.ArgumentParser:
                                                       "decision-support-predictions-sample.json"))
     sp.add_argument("--as-of", default="")
     sp.set_defaults(func=cmd_backtest)
+
+    sp = sub.add_parser("align", help="二期/三期契约对齐检查（字段、快照、plan 联表）")
+    common(sp)
+    sp.add_argument("--brain-root", default="auto",
+                    help="二期模块根目录；auto=自动定位（同树优先，其次兄弟 worktree）")
+    sp.add_argument("--brain-data", default="",
+                    help="二期记忆库数据目录（默认用二期默认值）")
+    sp.set_defaults(func=cmd_align)
 
     sp = sub.add_parser("demo", help="用内置合成样例跑完整链路")
     common(sp)

@@ -13,6 +13,9 @@
                                           及历史中位工期基线对照
   契约适配   ports                       —— 读第二期 project-brain-v1 的 ProjectContext，
                                           所有跨期假设集中于此
+  跨期对齐   alignment                   —— 统一字段回填、项目/快照/契约版本一致性校验、
+                                          plan_id 联表可验证性、时间格式归一化、
+                                          「人的预测」与「算法预测」分家
 
 三条边界（与第二期共同契约一致，本期不越界）：
   · 合同日期 / 内部计划日期 / 预测日期分开存，永不互相覆盖；
@@ -26,9 +29,16 @@
     ds.analyze()          # 交付依赖：三日期 + 关键路径 + 资源可行排程
     ds.compare()          # S0/S1/S2 方案比较
     ds.explain("STP-A-ASM")   # 这条日期凭什么这么算
+
+    from application.decision_support import check_alignment   # 两期输入是否对得上
 """
-from . import (backtest, calendar, graph, ports, resources, scenarios, schedule,
-               schema, service)
+from . import (alignment, backtest, calendar, graph, ports, resources, scenarios,
+               schedule, schema, service)
+from .alignment import (ALIGN_VERSION, EXECUTION_GATE, SEMANTIC_SPLITS, UNIFIED_FIELDS,
+                        check_alignment, check_no_authored_decision_id, compare_versions,
+                        field_map_json, find_brain_root, human_prediction_records,
+                        make_unified, merge_prediction_records, new_run_id,
+                        parse_time, read_context, split_prediction_records)
 from .backtest import (HIT_TOLERANCE_DAYS, MIN_SAMPLE, VERDICT_SOURCE, audit_no_lookahead,
                        backtest as backtest_predictions, filter_as_of,
                        history_median_duration, make_record_from_schedule,
@@ -42,8 +52,8 @@ from .resources import ResourceTimeline, detect_conflicts, resource_feasible_sch
 from .scenarios import (SimulationLedger, SimulationWriter, apply_mutations,
                         compare_scenarios)
 from .schedule import build_cpm, propagate_delay
-from .schema import (BRAIN_CONTRACT_VERSION, DS_CONTRACT_VERSION, RULES_VERSION,
-                     SCHEDULE_DISCLAIMER)
+from .schema import (BRAIN_CONTRACT_VERSION, DS_CONTRACT_VERSION, PREDICTION_SOURCES,
+                     RULES_VERSION, SCHEDULE_DISCLAIMER)
 from .service import (DecisionSupport, analyze, compare, explain_step, from_inputs,
                       load_inputs, run_backtest)
 
@@ -64,10 +74,16 @@ __all__ = [
     # 适配层
     "ProjectContextPort", "MockProjectContextPort", "BrainProjectContextPort",
     "PlanningSnapshotPort", "MockPlanningSnapshotPort", "build_inputs", "ASSUMPTIONS",
+    # 跨期对齐
+    "check_alignment", "check_no_authored_decision_id", "read_context", "make_unified",
+    "new_run_id", "compare_versions", "parse_time", "find_brain_root",
+    "human_prediction_records", "split_prediction_records", "merge_prediction_records",
+    "field_map_json", "UNIFIED_FIELDS", "SEMANTIC_SPLITS", "EXECUTION_GATE",
+    "ALIGN_VERSION",
     # 版本与口径
     "DS_CONTRACT_VERSION", "BRAIN_CONTRACT_VERSION", "RULES_VERSION",
-    "SCHEDULE_DISCLAIMER",
+    "SCHEDULE_DISCLAIMER", "PREDICTION_SOURCES",
     # 子模块
-    "backtest", "calendar", "graph", "ports", "resources", "scenarios", "schedule",
-    "schema", "service",
+    "alignment", "backtest", "calendar", "graph", "ports", "resources", "scenarios",
+    "schedule", "schema", "service",
 ]

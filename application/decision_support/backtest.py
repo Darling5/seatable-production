@@ -178,6 +178,10 @@ def review_prediction(record: dict, samples: list[dict] = None) -> dict:
     return {
         "prediction_id": record.get("prediction_id"),
         "plan_id": record.get("plan_id"),
+        # 来源必须一路带着走：复盘报表按它分组，人的判断与算法的输出不混算
+        "prediction_source": (record.get("prediction_source")
+                              or S.PREDICTION_SOURCE_MODEL),
+        "source_ref": record.get("source_ref") or "",
         "status": "reviewed",
         "predicted_at": record.get("predicted_at"),
         "predicted_date": predicted,
@@ -296,9 +300,35 @@ def backtest(records: list[dict], samples: list[dict] = None,
         "as_of": _parse_dt(as_of).isoformat(),
         "baseline": baseline,
         "foresee_alignment": foresee_stats,
+        # 按来源分开计数：人的预测与算法的预测**各自**统计。
+        # 看这一块就能知道「这次的样本里有多少是算法自己的」——
+        # 若 model 为 0，这份报告说明的只是人的判断准不准，不是算法的。
+        "by_source": _by_source(records or [], reviews),
         "summary": summary,
         "reviews": reviews,
     }
+
+
+def _by_source(records, reviews) -> dict:
+    out = {s: {"n_records": 0, "n_reviewed": 0, "n_pending": 0, "n_undetermined": 0}
+           for s in S.PREDICTION_SOURCES}
+    for r in records:
+        src = str(r.get("prediction_source") or S.PREDICTION_SOURCE_MODEL)
+        src = src if src in S.PREDICTION_SOURCES else S.PREDICTION_SOURCE_MODEL
+        out[src]["n_records"] += 1
+    for rev in reviews:
+        src = str(rev.get("prediction_source") or S.PREDICTION_SOURCE_MODEL)
+        src = src if src in S.PREDICTION_SOURCES else S.PREDICTION_SOURCE_MODEL
+        status = rev.get("status")
+        if status == "reviewed":
+            out[src]["n_reviewed"] += 1
+        elif status == "pending":
+            out[src]["n_pending"] += 1
+        else:
+            out[src]["n_undetermined"] += 1
+    out["note"] = ("human = 人的判断（二期 predictions[]）；model = 算法产出。"
+                   "两者分开统计，不合并成一个准确率。")
+    return out
 
 
 # ────────────────────────── 生成预测记录 ──────────────────────────
@@ -306,11 +336,17 @@ def make_record_from_schedule(schedule: dict, plan_id: str, *,
                               predicted_at, snapshot_id: str = "",
                               method: str = "", verdict: str = "",
                               target_date: str = "", assumptions=(),
-                              sample_scope=None, sample_ids=()) -> dict:
+                              sample_scope=None, sample_ids=(),
+                              prediction_source: str = "model",
+                              source_ref: str = "") -> dict:
     """从一次排程结果里抽出某个计划的预测，落成一条可复盘的预测记录。
 
     关键：`predicted_at` 必须显式给出。**没有预测时点，就没有复盘可言** ——
     事后补的时点等于事后编的准确率。
+
+    `prediction_source` 区分这条预测是**算法算的**（model，默认）还是
+    **人说的**（human，来自二期 predictions[]）。两者都保留、分开统计 ——
+    合并成一个「准确率」是没有意义的数字。
     """
     plan = next((p for p in (schedule.get("plans") or [])
                  if p.get("plan_id") == plan_id), None)
@@ -321,6 +357,10 @@ def make_record_from_schedule(schedule: dict, plan_id: str, *,
     return {
         "prediction_id": "PDC-%s-%s" % (_parse_dt(predicted_at).strftime("%Y%m%d"), plan_id),
         "plan_id": plan_id,
+        "prediction_source": (prediction_source
+                              if prediction_source in S.PREDICTION_SOURCES
+                              else S.PREDICTION_SOURCE_MODEL),
+        "source_ref": source_ref,
         "predicted_at": _parse_dt(predicted_at).isoformat(),
         "predicted_date": fd,
         "predicted_status": plan.get("forecast_status"),

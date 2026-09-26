@@ -180,6 +180,13 @@ BACKTEST_NO_LOOKAHEAD = (
 )
 ACCURACY_UNDEFINED = "insufficient_sample"   # 样本不足时给这个，而不是给一个数字
 
+# ────────────────────────── 预测来源（与二期对齐）──────────────────────────
+# 二期 `predictions[]` 是**人**说的预测；本期 `forecast_date` 是**算法**算的。
+# 两者都叫「预测」，但混在一起统计出来的准确率没有意义 —— 分开存、分开算。
+PREDICTION_SOURCE_MODEL = "model"    # 算法产出（本期 forecast_date）
+PREDICTION_SOURCE_HUMAN = "human"    # 人的判断（二期 predictions[]，带 actor/confidence）
+PREDICTION_SOURCES = (PREDICTION_SOURCE_MODEL, PREDICTION_SOURCE_HUMAN)
+
 # ────────────────────────── 授权口径 ──────────────────────────
 GATE_MODULE = "application.authorization"
 AUTH_NOTE = (
