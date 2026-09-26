@@ -30,20 +30,31 @@ OUTBOX = os.path.join(INTAKE_DIR, "notify_outbox.json")
 WECOM_HOME = os.path.expanduser("~/.config/wecom")
 
 # CLI 定位：优先 PATH，其次 WorkBuddy node 目录（npm install -g 装在这里）
-_NODE_BIN = r"C:\Users\11430\.workbuddy\binaries\node\versions\22.22.2-2"
-_CLI_JS = os.path.join(_NODE_BIN, "node_modules", "@wecom", "cli", "bin", "wecom.js")
+_NODE_BIN = r"C:\Users\11430\.workbuddy\binaries\node\versions\22.22.2-3"
+_CLI_JS = r"C:\Users\11430\.workbuddy\binaries\node\cli-connector-packages\node_modules\@wecom\cli\bin\wecom.js"
 _NODE_EXE = os.path.join(_NODE_BIN, "node.exe")
+# WorkBuddy 把 wecom-cli 装在 cli-connector-packages 下（Windows 上是 wecom-cli.cmd），
+# 与受管 node 版本目录分离。脚本直接调用该 .cmd，避免 subprocess(shell=False) 在 Windows
+# 上无法解析无扩展名的 "wecom-cli" 导致 FileNotFoundError → 误判「未授权」。
+_CONNECTOR_PKG = r"C:\Users\11430\.workbuddy\binaries\node\cli-connector-packages"
+def _find_wecom_cli():
+    for name in ("wecom-cli.cmd", "wecom-cli.exe", "wecom-cli.ps1", "wecom-cli"):
+        p = os.path.join(_CONNECTOR_PKG, name)
+        if os.path.exists(p):
+            return p
+    return "wecom-cli"
+_WECOM_CLI = _find_wecom_cli()
 
 
 def _cli_env():
     env = dict(os.environ)
-    env["PATH"] = _NODE_BIN + os.pathsep + env.get("PATH", "")
+    env["PATH"] = os.pathsep.join([_CONNECTOR_PKG, _NODE_BIN]) + os.pathsep + env.get("PATH", "")
     return env
 
 
 def run_cli(args, timeout=30):
     """执行 wecom-cli，返回 (ok, stdout)。优先 PATH 里的 wecom-cli，失败则用 node 直跑 cli.js。"""
-    cmds = [["wecom-cli"] + args]
+    cmds = [[_WECOM_CLI] + args]
     if os.path.exists(_CLI_JS) and os.path.exists(_NODE_EXE):
         cmds.append([_NODE_EXE, _CLI_JS] + args)
     last_err = ""
