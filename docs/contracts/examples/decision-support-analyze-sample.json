@@ -1,0 +1,922 @@
+{
+  "contract_version": "decision-support-v1",
+  "rules_version": "ds-rules-1.0.0",
+  "generated_at": "2026-09-26T11:33:35",
+  "project_id": "PRJ-20260928-0001",
+  "snapshot_id": "SNP-20260928-0830",
+  "as_of": "2026-09-28T08:30:00",
+  "data_as_of": "2026-09-26 09:08:00",
+  "unified": {
+    "project_id": "PRJ-20260928-0001",
+    "plan_id": "PLN-20260928-A001",
+    "action_id": "",
+    "evidence_id": "",
+    "decision_id": "",
+    "run_id": "RUN-20260926-f489",
+    "snapshot_id": "SNP-20260928-0830",
+    "version": 16
+  },
+  "alignment": {
+    "align_version": "p2p3-align-v1",
+    "ok": true,
+    "items": [
+      {
+        "code": "as_of_mismatch",
+        "severity": "warning",
+        "message": "计划快照时点 2026-09-28T08:30:00 与二期数据截至时间 2026-09-26T09:08:00 相差 47.4 小时（阈值 24）",
+        "ref": "",
+        "how_to_fix": "差异大说明一边数据较旧，结论要标注「基于过期数据」"
+      },
+      {
+        "code": "plan_link_unverified",
+        "severity": "warning",
+        "message": "计划 PLN-20260928-C001 在二期上下文里查不到任何引用（记忆/行动/证据都没有）",
+        "ref": "PLN-20260928-C001",
+        "how_to_fix": "可能是新计划、或二期尚未记录；本结论的「计划↔行动」关联未经证实"
+      },
+      {
+        "code": "time_format_non_iso",
+        "severity": "info",
+        "message": "5 条记录的时间是空格写法（如 2026-09-24 09:05:00）而非 ISO-T；已按容差解析",
+        "ref": "OBS-20260926-a5f3",
+        "how_to_fix": "两边新增字段时统一用 ISO-T；读取端必须容忍两种"
+      }
+    ],
+    "errors": [],
+    "warnings": [
+      {
+        "code": "as_of_mismatch",
+        "severity": "warning",
+        "message": "计划快照时点 2026-09-28T08:30:00 与二期数据截至时间 2026-09-26T09:08:00 相差 47.4 小时（阈值 24）",
+        "ref": "",
+        "how_to_fix": "差异大说明一边数据较旧，结论要标注「基于过期数据」"
+      },
+      {
+        "code": "plan_link_unverified",
+        "severity": "warning",
+        "message": "计划 PLN-20260928-C001 在二期上下文里查不到任何引用（记忆/行动/证据都没有）",
+        "ref": "PLN-20260928-C001",
+        "how_to_fix": "可能是新计划、或二期尚未记录；本结论的「计划↔行动」关联未经证实"
+      }
+    ],
+    "summary": {
+      "n_errors": 0,
+      "n_warnings": 2,
+      "brain_contract": "project-brain-v1",
+      "expected_contract": "project-brain-v1",
+      "project_id": "PRJ-20260928-0001",
+      "snapshot_id": "SNP-20260928-0830",
+      "context_version": 16,
+      "plan_ids_linked": [
+        "PLN-20260928-A001",
+        "PLN-20260928-B001"
+      ]
+    },
+    "context_version": 16
+  },
+  "calendar": {
+    "name": "样例日历：周一至周五 09:00—17:00，无额外节假日",
+    "workdays": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "start_hour": 9.0,
+    "end_hour": 17.0,
+    "hours_per_day": 8.0,
+    "holidays": [],
+    "extra_workdays": [],
+    "note": "工作日 = 周一至周五（减去节假日、加上调休）"
+  },
+  "dates": {
+    "PLN-20260928-A001": {
+      "plan_id": "PLN-20260928-A001",
+      "name": "A 批",
+      "contract_date": "2026-10-09",
+      "internal_plan_date": "2026-10-02",
+      "forecast_date": "2026-10-01",
+      "forecast_status": "determined",
+      "delay_vs_contract_days": -8,
+      "undetermined_reasons": [],
+      "source": "cpm（仅前置关系口径）",
+      "resource_feasible_date": "2026-10-01",
+      "resource_feasible_status": "determined"
+    },
+    "PLN-20260928-B001": {
+      "plan_id": "PLN-20260928-B001",
+      "name": "B 批",
+      "contract_date": "2026-10-09",
+      "internal_plan_date": "2026-09-30",
+      "forecast_date": "2026-09-29",
+      "forecast_status": "determined",
+      "delay_vs_contract_days": -10,
+      "undetermined_reasons": [],
+      "source": "cpm（仅前置关系口径）",
+      "resource_feasible_date": "2026-09-29",
+      "resource_feasible_status": "determined"
+    },
+    "PLN-20260928-C001": {
+      "plan_id": "PLN-20260928-C001",
+      "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
+      "contract_date": "2026-10-16",
+      "internal_plan_date": "",
+      "forecast_date": null,
+      "forecast_status": "undetermined",
+      "delay_vs_contract_days": null,
+      "undetermined_reasons": [
+        {
+          "code": "unconfirmed_precondition",
+          "message": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+          "ref": "STP-C-ASM",
+          "detail": {
+            "step_id": "STP-C-ASM",
+            "kinds": "payment",
+            "items": [
+              {
+                "kind": "payment",
+                "status": "unknown",
+                "note": "C 批预付款未收，且没有可用的到账日期 —— 因此下游不得产出确定交期"
+              }
+            ]
+          }
+        },
+        {
+          "code": "unknown_duration",
+          "message": "工期未知，无法推算日期",
+          "ref": "STP-C-TEST",
+          "detail": {
+            "step_id": "STP-C-TEST",
+            "name": "C 批 测试"
+          }
+        }
+      ],
+      "source": "cpm（仅前置关系口径）",
+      "resource_feasible_date": null,
+      "resource_feasible_status": "undetermined"
+    }
+  },
+  "cpm": {
+    "method": "heuristic_earliest_start_first",
+    "method_cn": "就绪优先启发式（最早可开始优先，资源冲突顺延）",
+    "disclaimer": "本排程为可解释启发式规则结果，非资源约束下的最优排程（RCPSP 属 NP-hard，本期不做最优求解）。关键路径按「仅前置关系」口径计算，不包含资源约束。",
+    "critical_path": [
+      "STP-A-ASM",
+      "STP-A-TEST"
+    ],
+    "project_finish": "2026-10-01T17:00",
+    "steps": [
+      {
+        "step_id": "STP-A-ASM",
+        "plan_id": "PLN-20260928-A001",
+        "name": "A 批 组装",
+        "process": "组装",
+        "status": "not_started",
+        "frozen": false,
+        "duration_hours": 8.0,
+        "duration_source": "input",
+        "predecessors": [],
+        "successors": [
+          "STP-A-TEST"
+        ],
+        "resources": [
+          {
+            "resource_id": "RES-ASM-A",
+            "hours": 8.0,
+            "units": null
+          }
+        ],
+        "earliest_start": "2026-09-30T09:00",
+        "earliest_finish": "2026-09-30T17:00",
+        "latest_start": "2026-09-30T09:00",
+        "latest_finish": "2026-10-01T09:00",
+        "slack_hours": 0.0,
+        "critical": true,
+        "forecast_date": "2026-09-30",
+        "forecast_status": "determined",
+        "undetermined_reasons": [],
+        "condition_gate": "2026-09-30T09:00:00",
+        "condition_soft": "",
+        "condition_assumed": false,
+        "depends_on_unverified": false,
+        "contract_date": "",
+        "internal_plan_date": "",
+        "source_row_id": "stepA1",
+        "source_table": "生产工序"
+      },
+      {
+        "step_id": "STP-B-ASM",
+        "plan_id": "PLN-20260928-B001",
+        "name": "B 批 组装",
+        "process": "组装",
+        "status": "not_started",
+        "frozen": false,
+        "duration_hours": 8.0,
+        "duration_source": "input",
+        "predecessors": [],
+        "successors": [
+          "STP-B-TEST"
+        ],
+        "resources": [
+          {
+            "resource_id": "RES-ASM-B",
+            "hours": 8.0,
+            "units": null
+          }
+        ],
+        "earliest_start": "2026-09-28T09:00",
+        "earliest_finish": "2026-09-28T17:00",
+        "latest_start": "2026-09-30T09:00",
+        "latest_finish": "2026-10-01T09:00",
+        "slack_hours": 48.0,
+        "critical": false,
+        "forecast_date": "2026-09-28",
+        "forecast_status": "determined",
+        "undetermined_reasons": [],
+        "condition_gate": "2026-09-28T09:00:00",
+        "condition_soft": "",
+        "condition_assumed": false,
+        "depends_on_unverified": false,
+        "contract_date": "",
+        "internal_plan_date": "",
+        "source_row_id": "stepB1",
+        "source_table": "生产工序"
+      },
+      {
+        "step_id": "STP-C-ASM",
+        "plan_id": "PLN-20260928-C001",
+        "name": "C 批 组装",
+        "process": "组装",
+        "status": "not_started",
+        "frozen": false,
+        "duration_hours": 8.0,
+        "duration_source": "input",
+        "predecessors": [],
+        "successors": [
+          "STP-C-TEST"
+        ],
+        "resources": [
+          {
+            "resource_id": "RES-ASM-A",
+            "hours": 8.0,
+            "units": null
+          }
+        ],
+        "earliest_start": "2026-09-28T09:00",
+        "earliest_finish": "2026-09-28T17:00",
+        "latest_start": "2026-10-01T09:00",
+        "latest_finish": "2026-10-01T17:00",
+        "slack_hours": 72.0,
+        "critical": false,
+        "forecast_date": "2026-09-28",
+        "forecast_status": "determined",
+        "undetermined_reasons": [
+          {
+            "code": "unconfirmed_precondition",
+            "message": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+            "ref": "STP-C-ASM",
+            "detail": {
+              "step_id": "STP-C-ASM",
+              "kinds": "payment",
+              "items": [
+                {
+                  "kind": "payment",
+                  "status": "unknown",
+                  "note": "C 批预付款未收，且没有可用的到账日期 —— 因此下游不得产出确定交期"
+                }
+              ]
+            }
+          }
+        ],
+        "condition_gate": "",
+        "condition_soft": "",
+        "condition_assumed": false,
+        "depends_on_unverified": false,
+        "contract_date": "",
+        "internal_plan_date": "",
+        "source_row_id": "stepC1",
+        "source_table": "生产工序"
+      },
+      {
+        "step_id": "STP-A-TEST",
+        "plan_id": "PLN-20260928-A001",
+        "name": "A 批 测试",
+        "process": "测试",
+        "status": "not_started",
+        "frozen": false,
+        "duration_hours": 8.0,
+        "duration_source": "input",
+        "predecessors": [
+          "STP-A-ASM"
+        ],
+        "successors": [],
+        "resources": [
+          {
+            "resource_id": "GRP-TEST",
+            "hours": 8.0,
+            "units": null
+          }
+        ],
+        "earliest_start": "2026-10-01T09:00",
+        "earliest_finish": "2026-10-01T17:00",
+        "latest_start": "2026-10-01T09:00",
+        "latest_finish": "2026-10-01T17:00",
+        "slack_hours": 0.0,
+        "critical": true,
+        "forecast_date": "2026-10-01",
+        "forecast_status": "determined",
+        "undetermined_reasons": [],
+        "condition_gate": "",
+        "condition_soft": "",
+        "condition_assumed": false,
+        "depends_on_unverified": false,
+        "contract_date": "",
+        "internal_plan_date": "",
+        "source_row_id": "stepA2",
+        "source_table": "生产工序"
+      },
+      {
+        "step_id": "STP-B-TEST",
+        "plan_id": "PLN-20260928-B001",
+        "name": "B 批 测试",
+        "process": "测试",
+        "status": "not_started",
+        "frozen": false,
+        "duration_hours": 8.0,
+        "duration_source": "input",
+        "predecessors": [
+          "STP-B-ASM"
+        ],
+        "successors": [],
+        "resources": [
+          {
+            "resource_id": "GRP-TEST",
+            "hours": 8.0,
+            "units": null
+          }
+        ],
+        "earliest_start": "2026-09-29T09:00",
+        "earliest_finish": "2026-09-29T17:00",
+        "latest_start": "2026-10-01T09:00",
+        "latest_finish": "2026-10-01T17:00",
+        "slack_hours": 48.0,
+        "critical": false,
+        "forecast_date": "2026-09-29",
+        "forecast_status": "determined",
+        "undetermined_reasons": [],
+        "condition_gate": "",
+        "condition_soft": "",
+        "condition_assumed": false,
+        "depends_on_unverified": false,
+        "contract_date": "",
+        "internal_plan_date": "",
+        "source_row_id": "stepB2",
+        "source_table": "生产工序"
+      },
+      {
+        "step_id": "STP-C-TEST",
+        "plan_id": "PLN-20260928-C001",
+        "name": "C 批 测试",
+        "process": "测试",
+        "status": "not_started",
+        "frozen": false,
+        "duration_hours": null,
+        "duration_source": "unknown",
+        "predecessors": [
+          "STP-C-ASM"
+        ],
+        "successors": [],
+        "resources": [
+          {
+            "resource_id": "GRP-TEST",
+            "hours": 8.0,
+            "units": null
+          }
+        ],
+        "earliest_start": "2026-09-28T17:00",
+        "earliest_finish": null,
+        "latest_start": null,
+        "latest_finish": "2026-10-01T17:00",
+        "slack_hours": null,
+        "critical": false,
+        "forecast_date": null,
+        "forecast_status": "undetermined",
+        "undetermined_reasons": [
+          {
+            "code": "unknown_duration",
+            "message": "工期未知，无法推算日期",
+            "ref": "STP-C-TEST",
+            "detail": {
+              "step_id": "STP-C-TEST",
+              "name": "C 批 测试"
+            }
+          }
+        ],
+        "condition_gate": "",
+        "condition_soft": "",
+        "condition_assumed": false,
+        "depends_on_unverified": false,
+        "contract_date": "",
+        "internal_plan_date": "",
+        "source_row_id": "stepC2",
+        "source_table": "生产工序"
+      }
+    ],
+    "issues": []
+  },
+  "resource_feasible": {
+    "ok": true,
+    "method": "heuristic_earliest_start_first",
+    "method_cn": "就绪优先启发式（最早可开始优先，资源冲突顺延）",
+    "disclaimer": "本排程为可解释启发式规则结果，非资源约束下的最优排程（RCPSP 属 NP-hard，本期不做最优求解）。关键路径按「仅前置关系」口径计算，不包含资源约束。",
+    "plans": [
+      {
+        "plan_id": "PLN-20260928-A001",
+        "name": "A 批",
+        "forecast_date": "2026-10-01",
+        "forecast_status": "determined",
+        "depends_on_unverified": false,
+        "contract_date": "2026-10-09",
+        "internal_plan_date": "2026-10-02",
+        "step_ids": [
+          "STP-A-ASM",
+          "STP-A-TEST"
+        ]
+      },
+      {
+        "plan_id": "PLN-20260928-B001",
+        "name": "B 批",
+        "forecast_date": "2026-09-29",
+        "forecast_status": "determined",
+        "depends_on_unverified": false,
+        "contract_date": "2026-10-09",
+        "internal_plan_date": "2026-09-30",
+        "step_ids": [
+          "STP-B-ASM",
+          "STP-B-TEST"
+        ]
+      },
+      {
+        "plan_id": "PLN-20260928-C001",
+        "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
+        "forecast_date": null,
+        "forecast_status": "undetermined",
+        "depends_on_unverified": false,
+        "contract_date": "2026-10-16",
+        "internal_plan_date": "",
+        "step_ids": [
+          "STP-C-ASM",
+          "STP-C-TEST"
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "step_id": "STP-A-ASM",
+        "plan_id": "PLN-20260928-A001",
+        "name": "A 批 组装",
+        "process": "组装",
+        "status": "not_started",
+        "frozen": false,
+        "resources": [
+          "RES-ASM-A"
+        ],
+        "resolved_resources": {
+          "RES-ASM-A": "RES-ASM-A"
+        },
+        "start": "2026-09-30T09:00",
+        "finish": "2026-09-30T17:00",
+        "forecast_date": "2026-09-30",
+        "forecast_status": "determined",
+        "depends_on_unverified": false,
+        "shifted_by_resource": false,
+        "shifted_from": "",
+        "shift_reason": "",
+        "undetermined_reasons": []
+      },
+      {
+        "step_id": "STP-A-TEST",
+        "plan_id": "PLN-20260928-A001",
+        "name": "A 批 测试",
+        "process": "测试",
+        "status": "not_started",
+        "frozen": false,
+        "resources": [
+          "GRP-TEST"
+        ],
+        "resolved_resources": {
+          "GRP-TEST": "RES-TEST-1"
+        },
+        "start": "2026-10-01T09:00",
+        "finish": "2026-10-01T17:00",
+        "forecast_date": "2026-10-01",
+        "forecast_status": "determined",
+        "depends_on_unverified": false,
+        "shifted_by_resource": false,
+        "shifted_from": "",
+        "shift_reason": "",
+        "undetermined_reasons": []
+      },
+      {
+        "step_id": "STP-B-ASM",
+        "plan_id": "PLN-20260928-B001",
+        "name": "B 批 组装",
+        "process": "组装",
+        "status": "not_started",
+        "frozen": false,
+        "resources": [
+          "RES-ASM-B"
+        ],
+        "resolved_resources": {
+          "RES-ASM-B": "RES-ASM-B"
+        },
+        "start": "2026-09-28T09:00",
+        "finish": "2026-09-28T17:00",
+        "forecast_date": "2026-09-28",
+        "forecast_status": "determined",
+        "depends_on_unverified": false,
+        "shifted_by_resource": false,
+        "shifted_from": "",
+        "shift_reason": "",
+        "undetermined_reasons": []
+      },
+      {
+        "step_id": "STP-B-TEST",
+        "plan_id": "PLN-20260928-B001",
+        "name": "B 批 测试",
+        "process": "测试",
+        "status": "not_started",
+        "frozen": false,
+        "resources": [
+          "GRP-TEST"
+        ],
+        "resolved_resources": {
+          "GRP-TEST": "RES-TEST-1"
+        },
+        "start": "2026-09-29T09:00",
+        "finish": "2026-09-29T17:00",
+        "forecast_date": "2026-09-29",
+        "forecast_status": "determined",
+        "depends_on_unverified": false,
+        "shifted_by_resource": false,
+        "shifted_from": "",
+        "shift_reason": "",
+        "undetermined_reasons": []
+      },
+      {
+        "step_id": "STP-C-ASM",
+        "plan_id": "PLN-20260928-C001",
+        "name": "C 批 组装",
+        "process": "组装",
+        "status": "not_started",
+        "frozen": false,
+        "resources": [
+          "RES-ASM-A"
+        ],
+        "resolved_resources": {},
+        "start": null,
+        "finish": null,
+        "forecast_date": null,
+        "forecast_status": "undetermined",
+        "depends_on_unverified": false,
+        "shifted_by_resource": false,
+        "shifted_from": "",
+        "shift_reason": "",
+        "undetermined_reasons": [
+          {
+            "code": "unconfirmed_precondition",
+            "message": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+            "ref": "STP-C-ASM"
+          }
+        ]
+      },
+      {
+        "step_id": "STP-C-TEST",
+        "plan_id": "PLN-20260928-C001",
+        "name": "C 批 测试",
+        "process": "测试",
+        "status": "not_started",
+        "frozen": false,
+        "resources": [
+          "GRP-TEST"
+        ],
+        "resolved_resources": {},
+        "start": null,
+        "finish": null,
+        "forecast_date": null,
+        "forecast_status": "undetermined",
+        "depends_on_unverified": false,
+        "shifted_by_resource": false,
+        "shifted_from": "",
+        "shift_reason": "",
+        "undetermined_reasons": [
+          {
+            "code": "unknown_duration",
+            "message": "工期未知，无法推算日期",
+            "ref": "STP-C-TEST"
+          }
+        ]
+      }
+    ],
+    "resources": [
+      {
+        "resource_id": "RES-ASM-A",
+        "name": "A 批组装工位",
+        "type": "设备",
+        "daily_capacity_hours": 8.0,
+        "in_service": true,
+        "days": [
+          {
+            "date": "2026-09-30",
+            "used_hours": 8.0,
+            "capacity_hours": 8.0,
+            "overload": false,
+            "steps": [
+              "STP-A-ASM"
+            ]
+          }
+        ],
+        "total_hours": 8.0
+      },
+      {
+        "resource_id": "RES-ASM-B",
+        "name": "B 批组装工位",
+        "type": "设备",
+        "daily_capacity_hours": 8.0,
+        "in_service": true,
+        "days": [
+          {
+            "date": "2026-09-28",
+            "used_hours": 8.0,
+            "capacity_hours": 8.0,
+            "overload": false,
+            "steps": [
+              "STP-B-ASM"
+            ]
+          }
+        ],
+        "total_hours": 8.0
+      },
+      {
+        "resource_id": "RES-TEST-1",
+        "name": "测试台 1",
+        "type": "设备",
+        "daily_capacity_hours": 8.0,
+        "in_service": true,
+        "days": [
+          {
+            "date": "2026-09-29",
+            "used_hours": 8.0,
+            "capacity_hours": 8.0,
+            "overload": false,
+            "steps": [
+              "STP-B-TEST"
+            ]
+          },
+          {
+            "date": "2026-10-01",
+            "used_hours": 8.0,
+            "capacity_hours": 8.0,
+            "overload": false,
+            "steps": [
+              "STP-A-TEST"
+            ]
+          }
+        ],
+        "total_hours": 16.0
+      }
+    ],
+    "conflicts_resolved": [],
+    "protected_steps": [],
+    "unresolved": [
+      {
+        "step_id": "STP-C-ASM",
+        "plan_id": "PLN-20260928-C001",
+        "reason": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+        "reason_code": "unconfirmed_precondition"
+      },
+      {
+        "step_id": "STP-C-TEST",
+        "plan_id": "PLN-20260928-C001",
+        "reason": "工期未知，无法推算日期",
+        "reason_code": "unknown_duration"
+      }
+    ],
+    "issues": []
+  },
+  "gaps": [
+    {
+      "code": "unconfirmed_precondition",
+      "message": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
+      "ref": "STP-C-ASM",
+      "detail": {
+        "step_id": "STP-C-ASM",
+        "kinds": "payment",
+        "items": [
+          {
+            "kind": "payment",
+            "status": "unknown",
+            "note": "C 批预付款未收，且没有可用的到账日期 —— 因此下游不得产出确定交期"
+          }
+        ]
+      },
+      "step_id": "STP-C-ASM",
+      "plan_id": "PLN-20260928-C001",
+      "stage": "cpm"
+    },
+    {
+      "code": "unknown_duration",
+      "message": "工期未知，无法推算日期",
+      "ref": "STP-C-TEST",
+      "detail": {
+        "step_id": "STP-C-TEST",
+        "name": "C 批 测试"
+      },
+      "step_id": "STP-C-TEST",
+      "plan_id": "PLN-20260928-C001",
+      "stage": "cpm"
+    }
+  ],
+  "caveats": [
+    {
+      "code": "stale_source_snapshot",
+      "message": "来源 email/供应商邮件 数据已 140.32 小时未更新（阈值 24 小时），本结论可能基于过期数据",
+      "ref": "email"
+    },
+    {
+      "code": "stale_source_snapshot",
+      "message": "来源 wechat/群聊·A批物料 数据已 48.07 小时未更新（阈值 24 小时），本结论可能基于过期数据",
+      "ref": "wechat"
+    },
+    {
+      "code": "stale_source_snapshot",
+      "message": "来源 wechat/群聊·生产 数据已 25.39 小时未更新（阈值 24 小时），本结论可能基于过期数据",
+      "ref": "wechat"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "A1",
+      "about": "公共字段",
+      "assumption": "project_id / plan_id / action_id / evidence_id / decision_id / run_id / snapshot_id / version 由二期 project-brain-v1 定义，本期只读对齐。",
+      "risk": "若二期改字段名，本期需同步；本期不做自动兼容别名。",
+      "status": "已实测（2026-09-26 对齐）：二期投影层原本漏了 plan_id / run_id / snapshot_id / version，证据行 plan_id 恒空 —— 已在二期补齐；现由 alignment.check_alignment 每次实跑校验，不再靠文档相信。"
+    },
+    {
+      "id": "A2",
+      "about": "计划域数据不在二期契约内",
+      "assumption": "工序、前置关系、工期、日历、资源属于计划域，二期契约未覆盖，本期以 PlanningSnapshot（合成 JSON）提供；字段名与 adapters/schema.py 的「生产工序 / 资源 / 资源分配」对齐。",
+      "risk": "接真实表时可能需要字段映射，映射只应改在本适配层。"
+    },
+    {
+      "id": "A3",
+      "about": "未核实观察不得当输入",
+      "assumption": "ProjectContext.observations（未核实观察）**不**作为排程的确定输入；只有 facts（已核实）与 commitments 中带明确时间的，才可当条件。",
+      "risk": "若把 observation 当事实用，会产出伪确定交期。"
+    },
+    {
+      "id": "A4",
+      "about": "来源时效",
+      "assumption": "ProjectContext.source_freshness 中标 stale=true 的来源，在本期转成「结论待复核」提示，并降低结论的确定性表述。",
+      "risk": "忽略时效会让基于旧数据的排程看起来像新结论。",
+      "status": "依赖 data_as_of 口径正确。二期原本把系统写入时刻算进 data_as_of，导致它恒等于「现在」；已修正为「最晚一条采集时间」。"
+    },
+    {
+      "id": "A5",
+      "about": "关联键",
+      "assumption": "计划快照的 steps[*].plan_id 与二期行动/记忆的 plan_id 同源可比；名称（产品名、供应商名）一律不作关联键。",
+      "risk": "用名称关联会在改名时静默断链。",
+      "status": "已实测：plan_id 必须符合 PLN-YYYYMMDD-XXXX（二期 validate_id 会拒），且三期快照里出现的 plan_id 应能在二期上下文里找到引用；找不到时报 plan_link_unverified，**不假装能关联**。"
+    },
+    {
+      "id": "A6",
+      "about": "写入",
+      "assumption": "本期不写入任何业务表，不新增审批器；执行一律走第一期闸门。",
+      "risk": "无。",
+      "status": "已实测：三期产出里出现的 decision_id 必须全部来自二期（alignment.check_no_authored_decision_id），方案选择不产生决策。"
+    },
+    {
+      "id": "A7",
+      "about": "预测口径",
+      "assumption": "二期 predictions[] 是**人**的预测；三期的 forecast_date 是**算法**的预测。复盘时按 prediction_source 分开统计。",
+      "risk": "合并统计会得到一个没有意义的「准确率」。",
+      "status": "已实现：alignment.human_prediction_records 把人说的预测转成同构记录，与模型记录并列保存、互不覆盖。"
+    }
+  ],
+  "evidence": {
+    "evidence_ids": [
+      "EVD-20260926-2905"
+    ],
+    "decision_ids": [
+      "DEC-20260926-9794"
+    ],
+    "action_ids": [
+      "ACT-20260926-9751"
+    ],
+    "unresolved_conflicts": [
+      {
+        "conflict_id": "CFL-2293a6ee",
+        "project_id": "PRJ-20260928-0001",
+        "aspect_key": "A_material_available_at",
+        "values": [
+          "2026-09-29",
+          "2026-09-30"
+        ],
+        "member_ids": [
+          "OBS-20260926-6b4e",
+          "OBS-20260926-a5f3"
+        ],
+        "members": [
+          {
+            "memory_id": "OBS-20260926-6b4e",
+            "kind": "observation",
+            "value": "2026-09-29",
+            "plan_id": "PLN-20260928-A001",
+            "captured_at": "2026-09-24 11:25:00"
+          },
+          {
+            "memory_id": "OBS-20260926-a5f3",
+            "kind": "observation",
+            "value": "2026-09-30",
+            "plan_id": "PLN-20260928-A001",
+            "captured_at": "2026-09-24 09:05:00"
+          }
+        ],
+        "resolved": false,
+        "hint": "两条来源说法不一致，请人工确认哪条为准（程序不替人裁决）"
+      }
+    ],
+    "missing_info": [
+      {
+        "code": "unresolved_conflict",
+        "message": "存在未解决的来源冲突",
+        "ref": "CFL-2293a6ee",
+        "subject": "A_material_available_at",
+        "as_of": "2026-09-26T11:29:11"
+      },
+      {
+        "code": "stale_source",
+        "message": "来源数据超过时效阈值未更新",
+        "ref": "email//供应商邮件",
+        "subject": "供应商邮件（140.3 小时未更新）",
+        "as_of": "2026-09-26T11:29:11"
+      },
+      {
+        "code": "stale_source",
+        "message": "来源数据超过时效阈值未更新",
+        "ref": "wechat//群聊·A批物料",
+        "subject": "群聊·A批物料（48.1 小时未更新）",
+        "as_of": "2026-09-26T11:29:11"
+      },
+      {
+        "code": "stale_source",
+        "message": "来源数据超过时效阈值未更新",
+        "ref": "wechat//群聊·生产",
+        "subject": "群聊·生产（25.4 小时未更新）",
+        "as_of": "2026-09-26T11:29:11"
+      }
+    ],
+    "note": "证据索引只做引用，事实本体在二期 project-brain-v1，本期不复制。"
+  },
+  "human_predictions": [
+    {
+      "prediction_id": "PRD-20260926-2a03",
+      "plan_id": "PLN-20260928-A001",
+      "prediction_source": "human",
+      "source_ref": "PRD-20260926-2a03",
+      "predicted_at": "2026-09-25T10:06:00",
+      "predicted_date": "2026-09-30",
+      "predicted_status": "determined",
+      "actor": "生产-张",
+      "aspect_key": "A_completion_forecast",
+      "confidence": 0.6,
+      "confidence_source": "human",
+      "rationale": "按测试台档期 + 组装 8h 与测试 8h 估算",
+      "text": "预计 A 批 2026-09-30 完成组装与测试",
+      "source_system": "wechat",
+      "source_table": "群聊·生产",
+      "input_snapshot_id": "SNP-20260928-0830",
+      "rules_version": "",
+      "actual": {},
+      "undetermined_reasons": []
+    }
+  ],
+  "authorization_note": "方案选择不等于执行授权。本模块只产出建议，任何落库/下单/对外承诺都必须携带 approve 的 WriteGrant 走 application.authorization 闸门。",
+  "execution_gate": {
+    "gate_module": "application.authorization",
+    "rule": "方案选择不等于执行授权；任何落库都必须先过第一期 WriteGrant。",
+    "pre_execution": "执行前用 compare_versions() 重查二期顶层 version，不一致即拒绝（旧版本结论不得写库）。",
+    "ds_writes_business_tables": false,
+    "forbidden_tables": [
+      "项目",
+      "来源消息",
+      "证据",
+      "项目记忆",
+      "行动项",
+      "行动事件",
+      "提醒"
+    ]
+  },
+  "_sample_note": "合成样例：由 examples/decision-support-planning-sample.json + decision-support-context-mock.json 实时产出；全部虚构数据。plan_id / step_id 是稳定键；run_id / evidence_id 每次运行不同。forecast_status ∈ {determined, conditional, undetermined}，只有 determined 才代表结论不依赖未核实假设。unified 为八个统一字段（二期契约 §1）；human_predictions 是二期里**人**的预测，带 prediction_source=human。"
+}

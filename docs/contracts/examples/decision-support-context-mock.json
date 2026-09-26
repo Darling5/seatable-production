@@ -1,0 +1,556 @@
+{
+  "contract_version": "project-brain-v1",
+  "project_id": "PRJ-20260928-0001",
+  "project": {},
+  "snapshot_id": "SNP-20260928-0830",
+  "version": 16,
+  "generated_at": "2026-09-26T11:29:11",
+  "data_as_of": "2026-09-26 09:08:00",
+  "source_freshness": [
+    {
+      "source_system": "email",
+      "source_base": "",
+      "source_table": "供应商邮件",
+      "records": 1,
+      "age_hours": 140.32,
+      "oldest_age_hours": 140.32,
+      "stale": true,
+      "stale_after_hours": 24
+    },
+    {
+      "source_system": "wechat",
+      "source_base": "",
+      "source_table": "群聊·A批物料",
+      "records": 3,
+      "age_hours": 48.07,
+      "oldest_age_hours": 50.4,
+      "stale": true,
+      "stale_after_hours": 24
+    },
+    {
+      "source_system": "wechat",
+      "source_base": "",
+      "source_table": "群聊·生产",
+      "records": 1,
+      "age_hours": 25.39,
+      "oldest_age_hours": 25.39,
+      "stale": true,
+      "stale_after_hours": 24
+    },
+    {
+      "source_system": "wechat",
+      "source_base": "",
+      "source_table": "群聊·项目决策",
+      "records": 1,
+      "age_hours": 2.35,
+      "oldest_age_hours": 2.35,
+      "stale": false,
+      "stale_after_hours": 24
+    }
+  ],
+  "facts": [],
+  "observations": [
+    {
+      "memory_id": "OBS-20260926-a5f3",
+      "kind": "observation",
+      "kind_cn": "观察",
+      "text": "供应商称 A 批物料下周三到货",
+      "rationale": "",
+      "actor": "采购-王",
+      "value": "2026-09-30",
+      "aspect_key": "A_material_available_at",
+      "due_date": "",
+      "confidence": "",
+      "project_id": "PRJ-20260928-0001",
+      "plan_id": "PLN-20260928-A001",
+      "action_id": "",
+      "evidence_id": "",
+      "decision_id": "",
+      "run_id": "RUN-20260928-0001",
+      "snapshot_id": "",
+      "version": 1,
+      "occurred_at": "2026-09-30",
+      "captured_at": "2026-09-24 09:05:00",
+      "source_system": "wechat",
+      "source_base": "",
+      "source_table": "群聊·A批物料",
+      "source_row_id": "",
+      "source_message_id": "msg-2001"
+    },
+    {
+      "memory_id": "OBS-20260926-6b4e",
+      "kind": "observation",
+      "kind_cn": "观察",
+      "text": "产线称 A 批物料 2026-09-29 可到货",
+      "rationale": "",
+      "actor": "生产-张",
+      "value": "2026-09-29",
+      "aspect_key": "A_material_available_at",
+      "due_date": "",
+      "confidence": "",
+      "project_id": "PRJ-20260928-0001",
+      "plan_id": "PLN-20260928-A001",
+      "action_id": "",
+      "evidence_id": "",
+      "decision_id": "",
+      "run_id": "RUN-20260928-0001",
+      "snapshot_id": "",
+      "version": 1,
+      "occurred_at": "",
+      "captured_at": "2026-09-24 11:25:00",
+      "source_system": "wechat",
+      "source_base": "",
+      "source_table": "群聊·A批物料",
+      "source_row_id": "",
+      "source_message_id": "msg-2002"
+    },
+    {
+      "memory_id": "OBS-20260926-b066",
+      "kind": "observation",
+      "kind_cn": "观察",
+      "text": "采购称 B 批物料 2026-09-28 可到仓",
+      "rationale": "",
+      "actor": "采购-王",
+      "value": "2026-09-28",
+      "aspect_key": "B_material_available_at",
+      "due_date": "",
+      "confidence": "",
+      "project_id": "PRJ-20260928-0001",
+      "plan_id": "PLN-20260928-B001",
+      "action_id": "",
+      "evidence_id": "",
+      "decision_id": "",
+      "run_id": "RUN-20260928-0001",
+      "snapshot_id": "",
+      "version": 1,
+      "occurred_at": "",
+      "captured_at": "2026-09-20 15:10:00",
+      "source_system": "email",
+      "source_base": "",
+      "source_table": "供应商邮件",
+      "source_row_id": "",
+      "source_message_id": "msg-2004"
+    }
+  ],
+  "commitments": [],
+  "decisions": [
+    {
+      "memory_id": "DEC-20260926-9794",
+      "kind": "decision",
+      "kind_cn": "决策",
+      "text": "测试台优先给 A 批使用，B 批让位",
+      "rationale": "A 批交期更紧；B 批材料到得晚，先让它等",
+      "actor": "老板",
+      "value": "A",
+      "aspect_key": "test_bench_priority",
+      "due_date": "",
+      "confidence": "",
+      "project_id": "PRJ-20260928-0001",
+      "plan_id": "PLN-20260928-A001",
+      "action_id": "",
+      "evidence_id": "",
+      "decision_id": "DEC-20260926-9794",
+      "run_id": "RUN-20260928-0001",
+      "snapshot_id": "",
+      "version": 1,
+      "occurred_at": "",
+      "captured_at": "2026-09-26 09:08:00",
+      "source_system": "wechat",
+      "source_base": "",
+      "source_table": "群聊·项目决策",
+      "source_row_id": "",
+      "source_message_id": "msg-2005"
+    }
+  ],
+  "predictions": [
+    {
+      "memory_id": "PRD-20260926-2a03",
+      "kind": "prediction",
+      "kind_cn": "预测",
+      "text": "预计 A 批 2026-09-30 完成组装与测试",
+      "rationale": "按测试台档期 + 组装 8h 与测试 8h 估算",
+      "actor": "生产-张",
+      "value": "2026-09-30",
+      "aspect_key": "A_completion_forecast",
+      "due_date": "",
+      "confidence": 0.6,
+      "project_id": "PRJ-20260928-0001",
+      "plan_id": "PLN-20260928-A001",
+      "action_id": "",
+      "evidence_id": "",
+      "decision_id": "",
+      "run_id": "RUN-20260928-0001",
+      "snapshot_id": "",
+      "version": 1,
+      "occurred_at": "",
+      "captured_at": "2026-09-25 10:06:00",
+      "source_system": "wechat",
+      "source_base": "",
+      "source_table": "群聊·生产",
+      "source_row_id": "",
+      "source_message_id": "msg-2003"
+    }
+  ],
+  "actions": [
+    {
+      "action_id": "ACT-20260926-9751",
+      "project_id": "PRJ-20260928-0001",
+      "plan_id": "PLN-20260928-A001",
+      "evidence_id": "",
+      "decision_id": "",
+      "run_id": "RUN-20260928-0001",
+      "snapshot_id": "",
+      "version": 3,
+      "title": "A 批物料到场并检验",
+      "kind": "delivery",
+      "kind_cn": "到货",
+      "status": "ready",
+      "status_cn": "待执行",
+      "owner": "采购-王",
+      "due_date": "2026-09-30",
+      "due_date_original": "2026-09-30",
+      "overdue_days": 0,
+      "carry_over_count": 0,
+      "acceptance_criteria": "A 批物料全部到场、检验合格并办理入库",
+      "blocked_reason": "",
+      "blocked_owner": "",
+      "blocked_since": "",
+      "evidence_ids": [
+        "EVD-20260926-2905"
+      ],
+      "as_of": "2026-09-26T11:29:11"
+    }
+  ],
+  "action_events": [
+    {
+      "event_id": "EVT-20260926-0a24",
+      "project_id": "PRJ-20260928-0001",
+      "plan_id": "PLN-20260928-A001",
+      "action_id": "ACT-20260926-9751",
+      "evidence_id": "",
+      "decision_id": "",
+      "run_id": "RUN-20260928-0001",
+      "snapshot_id": "",
+      "version": 1,
+      "from_state": "candidate",
+      "from_state_cn": "候选",
+      "to_state": "pending_confirm",
+      "to_state_cn": "待确认",
+      "reason": "需求与到货时间已由采购确认口径",
+      "actor": "对齐夹具",
+      "created_at": "2026-09-26T11:29:11",
+      "__row_id__": "EVT-20260926-0a24",
+      "__version__": 1
+    },
+    {
+      "event_id": "EVT-20260926-a65a",
+      "project_id": "PRJ-20260928-0001",
+      "plan_id": "PLN-20260928-A001",
+      "action_id": "ACT-20260926-9751",
+      "evidence_id": "",
+      "decision_id": "",
+      "run_id": "RUN-20260928-0001",
+      "snapshot_id": "",
+      "version": 1,
+      "from_state": "pending_confirm",
+      "from_state_cn": "待确认",
+      "to_state": "ready",
+      "to_state_cn": "待执行",
+      "reason": "进入待执行",
+      "actor": "对齐夹具",
+      "created_at": "2026-09-26T11:29:11",
+      "__row_id__": "EVT-20260926-a65a",
+      "__version__": 1
+    }
+  ],
+  "blockers": [],
+  "today_focus": [],
+  "evidence_refs": [
+    {
+      "project_id": "PRJ-20260928-0001",
+      "plan_id": "PLN-20260928-A001",
+      "action_id": "ACT-20260926-9751",
+      "evidence_id": "EVD-20260926-2905",
+      "decision_id": "",
+      "run_id": "",
+      "snapshot_id": "",
+      "version": 1,
+      "kind": "arrival",
+      "claim_type": "in_transit",
+      "claim_cn": "在途",
+      "summary": "供应商称 A 批物料在途，预计 2026-09-30 到（未核实）",
+      "subject": "",
+      "quantity": 200,
+      "quantity_total": 200,
+      "unit": "",
+      "occurred_at": "2026-09-24T09:00:00",
+      "captured_at": "2026-09-24T09:05:00",
+      "source_system": "wechat",
+      "source_base": "",
+      "source_table": "群聊·A批物料",
+      "source_row_id": "",
+      "source_message_id": "msg-2001",
+      "verified": false,
+      "verified_by": "",
+      "verified_at": "",
+      "criteria_met": "",
+      "confidence": "",
+      "status": "active",
+      "dedupe_key": "EK-36c82c4d21bb838f59782cc4",
+      "__row_id__": "EVD-20260926-2905",
+      "__version__": 1
+    }
+  ],
+  "missing_info": [
+    {
+      "code": "unresolved_conflict",
+      "message": "存在未解决的来源冲突",
+      "ref": "CFL-2293a6ee",
+      "subject": "A_material_available_at",
+      "as_of": "2026-09-26T11:29:11"
+    },
+    {
+      "code": "stale_source",
+      "message": "来源数据超过时效阈值未更新",
+      "ref": "email//供应商邮件",
+      "subject": "供应商邮件（140.3 小时未更新）",
+      "as_of": "2026-09-26T11:29:11"
+    },
+    {
+      "code": "stale_source",
+      "message": "来源数据超过时效阈值未更新",
+      "ref": "wechat//群聊·A批物料",
+      "subject": "群聊·A批物料（48.1 小时未更新）",
+      "as_of": "2026-09-26T11:29:11"
+    },
+    {
+      "code": "stale_source",
+      "message": "来源数据超过时效阈值未更新",
+      "ref": "wechat//群聊·生产",
+      "subject": "群聊·生产（25.4 小时未更新）",
+      "as_of": "2026-09-26T11:29:11"
+    }
+  ],
+  "conflicts": [
+    {
+      "conflict_id": "CFL-2293a6ee",
+      "project_id": "PRJ-20260928-0001",
+      "aspect_key": "A_material_available_at",
+      "values": [
+        "2026-09-29",
+        "2026-09-30"
+      ],
+      "members": [
+        {
+          "memory_id": "OBS-20260926-6b4e",
+          "kind": "observation",
+          "kind_cn": "观察",
+          "value": "2026-09-29",
+          "text": "产线称 A 批物料 2026-09-29 可到货",
+          "occurred_at": "",
+          "captured_at": "2026-09-24 11:25:00",
+          "project_id": "PRJ-20260928-0001",
+          "plan_id": "PLN-20260928-A001",
+          "action_id": "",
+          "evidence_id": "",
+          "decision_id": "",
+          "run_id": "RUN-20260928-0001",
+          "snapshot_id": "",
+          "version": 1,
+          "source_system": "wechat",
+          "source_table": "群聊·A批物料",
+          "source_row_id": ""
+        },
+        {
+          "memory_id": "OBS-20260926-a5f3",
+          "kind": "observation",
+          "kind_cn": "观察",
+          "value": "2026-09-30",
+          "text": "供应商称 A 批物料下周三到货",
+          "occurred_at": "2026-09-30",
+          "captured_at": "2026-09-24 09:05:00",
+          "project_id": "PRJ-20260928-0001",
+          "plan_id": "PLN-20260928-A001",
+          "action_id": "",
+          "evidence_id": "",
+          "decision_id": "",
+          "run_id": "RUN-20260928-0001",
+          "snapshot_id": "",
+          "version": 1,
+          "source_system": "wechat",
+          "source_table": "群聊·A批物料",
+          "source_row_id": ""
+        }
+      ],
+      "resolved": false,
+      "hint": "两条来源说法不一致，请人工确认哪条为准（程序不替人裁决）"
+    }
+  ],
+  "counts": {
+    "actions_open": 1,
+    "actions_closed": 0,
+    "blockers": 0,
+    "conflicts": 1,
+    "gaps": 4
+  },
+  "answers": {
+    "status": {
+      "answer": "项目 PRJ-20260928-0001：在办行动 1 个，已关闭 0 个，阻塞 0 个，来源冲突 1 处。",
+      "items": [
+        {
+          "action_id": "ACT-20260926-9751",
+          "project_id": "PRJ-20260928-0001",
+          "plan_id": "PLN-20260928-A001",
+          "evidence_id": "",
+          "decision_id": "",
+          "run_id": "RUN-20260928-0001",
+          "snapshot_id": "",
+          "version": 3,
+          "title": "A 批物料到场并检验",
+          "kind": "delivery",
+          "kind_cn": "到货",
+          "status": "ready",
+          "status_cn": "待执行",
+          "owner": "采购-王",
+          "due_date": "2026-09-30",
+          "due_date_original": "2026-09-30",
+          "overdue_days": 0,
+          "carry_over_count": 0,
+          "acceptance_criteria": "A 批物料全部到场、检验合格并办理入库",
+          "blocked_reason": "",
+          "blocked_owner": "",
+          "blocked_since": "",
+          "evidence_ids": [
+            "EVD-20260926-2905"
+          ],
+          "as_of": "2026-09-26T11:29:11"
+        }
+      ],
+      "evidence_ids": [
+        "EVD-20260926-2905"
+      ],
+      "as_of": "2026-09-26 09:08:00",
+      "caveats": [
+        "其中 3 条为**未核实观察**，不得当作事实使用",
+        "存在 1 处来源冲突，结论可能随后续核实变化"
+      ]
+    },
+    "blockers": {
+      "answer": "当前没有登记在案的阻塞。",
+      "items": [],
+      "evidence_ids": [],
+      "as_of": "2026-09-26 09:08:00",
+      "caveats": []
+    },
+    "today": {
+      "answer": "今日重点 1 项：A 批物料到场并检验（采购-王，None）",
+      "items": [
+        {
+          "action_id": "ACT-20260926-9751",
+          "project_id": "PRJ-20260928-0001",
+          "plan_id": "PLN-20260928-A001",
+          "evidence_id": "",
+          "decision_id": "",
+          "run_id": "RUN-20260928-0001",
+          "snapshot_id": "",
+          "version": 3,
+          "title": "A 批物料到场并检验",
+          "kind": "delivery",
+          "kind_cn": "到货",
+          "status": "ready",
+          "status_cn": "待执行",
+          "owner": "采购-王",
+          "due_date": "2026-09-30",
+          "due_date_original": "2026-09-30",
+          "overdue_days": 0,
+          "carry_over_count": 0,
+          "acceptance_criteria": "A 批物料全部到场、检验合格并办理入库",
+          "blocked_reason": "",
+          "blocked_owner": "",
+          "blocked_since": "",
+          "evidence_ids": [
+            "EVD-20260926-2905"
+          ],
+          "as_of": "2026-09-26T11:29:11"
+        }
+      ],
+      "evidence_ids": [
+        "EVD-20260926-2905"
+      ],
+      "as_of": "2026-09-26T11:29:11",
+      "caveats": []
+    },
+    "decisions": {
+      "answer": "共 1 条决策：测试台优先给 A 批使用，B 批让位（老板，理由是 A 批交期更紧；B 批材料到得晚，先让它等）",
+      "items": [
+        {
+          "memory_id": "DEC-20260926-9794",
+          "kind": "decision",
+          "kind_cn": "决策",
+          "text": "测试台优先给 A 批使用，B 批让位",
+          "rationale": "A 批交期更紧；B 批材料到得晚，先让它等",
+          "actor": "老板",
+          "value": "A",
+          "aspect_key": "test_bench_priority",
+          "due_date": "",
+          "confidence": "",
+          "project_id": "PRJ-20260928-0001",
+          "plan_id": "PLN-20260928-A001",
+          "action_id": "",
+          "evidence_id": "",
+          "decision_id": "DEC-20260926-9794",
+          "run_id": "RUN-20260928-0001",
+          "snapshot_id": "",
+          "version": 1,
+          "occurred_at": "",
+          "captured_at": "2026-09-26 09:08:00",
+          "source_system": "wechat",
+          "source_base": "",
+          "source_table": "群聊·项目决策",
+          "source_row_id": "",
+          "source_message_id": "msg-2005"
+        }
+      ],
+      "evidence_ids": [],
+      "as_of": "2026-09-26 09:08:00",
+      "caveats": []
+    },
+    "gaps": {
+      "answer": "共 4 处信息缺口：来源数据超过时效阈值未更新×3；存在未解决的来源冲突×1",
+      "items": [
+        {
+          "code": "unresolved_conflict",
+          "message": "存在未解决的来源冲突",
+          "ref": "CFL-2293a6ee",
+          "subject": "A_material_available_at",
+          "as_of": "2026-09-26T11:29:11"
+        },
+        {
+          "code": "stale_source",
+          "message": "来源数据超过时效阈值未更新",
+          "ref": "email//供应商邮件",
+          "subject": "供应商邮件（140.3 小时未更新）",
+          "as_of": "2026-09-26T11:29:11"
+        },
+        {
+          "code": "stale_source",
+          "message": "来源数据超过时效阈值未更新",
+          "ref": "wechat//群聊·A批物料",
+          "subject": "群聊·A批物料（48.1 小时未更新）",
+          "as_of": "2026-09-26T11:29:11"
+        },
+        {
+          "code": "stale_source",
+          "message": "来源数据超过时效阈值未更新",
+          "ref": "wechat//群聊·生产",
+          "subject": "群聊·生产（25.4 小时未更新）",
+          "as_of": "2026-09-26T11:29:11"
+        }
+      ],
+      "evidence_ids": [],
+      "as_of": "2026-09-26 09:08:00",
+      "caveats": []
+    }
+  },
+  "_note": "合成 mock：由 docs/contracts/examples/alignment-p2-scenario.json 经**真实**二期 ProjectBrain 回放后导出的 ProjectContext，不是手写的。二期分支合并后请改用 application.project_brain.get_project_context 真实读取；本文件仅在二期模块不可用时兜底，读法完全一致。"
+}

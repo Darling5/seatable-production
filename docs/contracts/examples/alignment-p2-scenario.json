@@ -1,0 +1,185 @@
+{
+  "scenario_version": "p2p3-align-v1",
+  "description": "二期/三期联合夹具：与 decision-support-planning-sample.json **同一个项目、同一批 plan_id**。由真实 ProjectBrain 回放，产出 ProjectContext，供三期决策辅助读取。全部虚构数据。",
+  "project": {
+    "project_id": "PRJ-20260928-0001",
+    "plan_id": "PLN-20260928-A001",
+    "name": "合成项目：A/B 两批组装测试排产（对齐夹具）"
+  },
+  "snapshot_id": "SNP-20260928-0830",
+  "as_of": "2026-09-28T08:30:00",
+  "carries": {
+    "human_prediction": "msg-2003 的 prediction 条目 —— 用于验证「人说的预测」与「模型算的预测」分家",
+    "unresolved_conflict": "msg-2001 与 msg-2002 对 A_material_available_at 给出两个取值",
+    "stale_source": "msg-2004（email / 供应商邮件，2026-09-20 采集）",
+    "plan_link": "每条消息都带 plan_id，用于验证三期快照的 plan_id 能在二期上下文里被引用到",
+    "decision": "msg-2005 —— 二期决策记录，三期只允许引用、不允许创作"
+  },
+  "steps": [
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-2001",
+        "message_time": "2026-09-24 09:00",
+        "captured_at": "2026-09-24 09:05:00",
+        "source_system": "wechat",
+        "source_base": "",
+        "source_table": "群聊·A批物料",
+        "sender": "采购-王",
+        "project_id": "PRJ-20260928-0001",
+        "plan_id": "PLN-20260928-A001",
+        "text": "A 批物料供应商说下周三才能到，我们按这个排",
+        "items": [
+          {
+            "kind": "observation",
+            "text": "供应商称 A 批物料下周三到货",
+            "aspect_key": "A_material_available_at",
+            "value": "2026-09-30",
+            "relative_date": "下周三",
+            "actor": "采购-王",
+            "action": {
+              "title": "A 批物料到场并检验",
+              "kind": "delivery",
+              "owner": "采购-王",
+              "due_relative": "下周三",
+              "acceptance_criteria": "A 批物料全部到场、检验合格并办理入库"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-2002",
+        "message_time": "2026-09-24 11:20",
+        "captured_at": "2026-09-24 11:25:00",
+        "source_system": "wechat",
+        "source_base": "",
+        "source_table": "群聊·A批物料",
+        "sender": "生产-张",
+        "project_id": "PRJ-20260928-0001",
+        "plan_id": "PLN-20260928-A001",
+        "text": "产线说 A 批物料其实 9/29 就能到，比采购说的早一天",
+        "items": [
+          {
+            "kind": "observation",
+            "text": "产线称 A 批物料 2026-09-29 可到货",
+            "aspect_key": "A_material_available_at",
+            "value": "2026-09-29",
+            "actor": "生产-张"
+          }
+        ]
+      }
+    },
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-2003",
+        "message_time": "2026-09-25 10:00",
+        "captured_at": "2026-09-25 10:06:00",
+        "source_system": "wechat",
+        "source_base": "",
+        "source_table": "群聊·生产",
+        "sender": "生产-张",
+        "project_id": "PRJ-20260928-0001",
+        "plan_id": "PLN-20260928-A001",
+        "text": "A 批组装加测试预计 9/30 完成",
+        "items": [
+          {
+            "kind": "prediction",
+            "text": "预计 A 批 2026-09-30 完成组装与测试",
+            "aspect_key": "A_completion_forecast",
+            "value": "2026-09-30",
+            "actor": "生产-张",
+            "confidence": 0.6,
+            "rationale": "按测试台档期 + 组装 8h 与测试 8h 估算"
+          }
+        ]
+      }
+    },
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-2004",
+        "message_time": "2026-09-20 15:00",
+        "captured_at": "2026-09-20 15:10:00",
+        "source_system": "email",
+        "source_base": "",
+        "source_table": "供应商邮件",
+        "sender": "采购-王",
+        "project_id": "PRJ-20260928-0001",
+        "plan_id": "PLN-20260928-B001",
+        "text": "B 批物料已备齐，下周一可到仓",
+        "items": [
+          {
+            "kind": "observation",
+            "text": "采购称 B 批物料 2026-09-28 可到仓",
+            "aspect_key": "B_material_available_at",
+            "value": "2026-09-28",
+            "actor": "采购-王"
+          }
+        ]
+      }
+    },
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-2005",
+        "message_time": "2026-09-26 09:00",
+        "captured_at": "2026-09-26 09:08:00",
+        "source_system": "wechat",
+        "source_base": "",
+        "source_table": "群聊·项目决策",
+        "sender": "老板",
+        "project_id": "PRJ-20260928-0001",
+        "plan_id": "PLN-20260928-A001",
+        "text": "A 批交期更紧，测试台先保 A，B 批往后排",
+        "items": [
+          {
+            "kind": "decision",
+            "text": "测试台优先给 A 批使用，B 批让位",
+            "aspect_key": "test_bench_priority",
+            "value": "A",
+            "actor": "老板",
+            "rationale": "A 批交期更紧；B 批材料到得晚，先让它等"
+          }
+        ]
+      }
+    },
+    {
+      "op": "evidence",
+      "ref": "ev-A-material",
+      "kind": "arrival",
+      "claim_type": "in_transit",
+      "action_title": "A 批物料到场并检验",
+      "summary": "供应商称 A 批物料在途，预计 2026-09-30 到（未核实）",
+      "quantity": 200,
+      "quantity_total": 200,
+      "occurred_at": "2026-09-24T09:00:00",
+      "captured_at": "2026-09-24T09:05:00",
+      "source_system": "wechat",
+      "source_table": "群聊·A批物料",
+      "source_message_id": "msg-2001"
+    },
+    {
+      "op": "transition",
+      "action_title": "A 批物料到场并检验",
+      "to": "pending_confirm",
+      "reason": "需求与到货时间已由采购确认口径"
+    },
+    {
+      "op": "transition",
+      "action_title": "A 批物料到场并检验",
+      "to": "ready",
+      "reason": "进入待执行"
+    },
+    {
+      "op": "snapshot",
+      "snapshot_id": "SNP-20260928-0830"
+    },
+    {
+      "op": "context"
+    }
+  ]
+}

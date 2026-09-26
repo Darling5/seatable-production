@@ -1,0 +1,59 @@
+{
+  "align_version": "p2p3-align-v1",
+  "ok": true,
+  "items": [
+    {
+      "code": "as_of_mismatch",
+      "severity": "warning",
+      "message": "计划快照时点 2026-09-28T08:30:00 与二期数据截至时间 2026-09-26T09:08:00 相差 47.4 小时（阈值 24）",
+      "ref": "",
+      "how_to_fix": "差异大说明一边数据较旧，结论要标注「基于过期数据」"
+    },
+    {
+      "code": "plan_link_unverified",
+      "severity": "warning",
+      "message": "计划 PLN-20260928-C001 在二期上下文里查不到任何引用（记忆/行动/证据都没有）",
+      "ref": "PLN-20260928-C001",
+      "how_to_fix": "可能是新计划、或二期尚未记录；本结论的「计划↔行动」关联未经证实"
+    },
+    {
+      "code": "time_format_non_iso",
+      "severity": "info",
+      "message": "5 条记录的时间是空格写法（如 2026-09-24 09:05:00）而非 ISO-T；已按容差解析",
+      "ref": "OBS-20260926-a5f3",
+      "how_to_fix": "两边新增字段时统一用 ISO-T；读取端必须容忍两种"
+    }
+  ],
+  "errors": [],
+  "warnings": [
+    {
+      "code": "as_of_mismatch",
+      "severity": "warning",
+      "message": "计划快照时点 2026-09-28T08:30:00 与二期数据截至时间 2026-09-26T09:08:00 相差 47.4 小时（阈值 24）",
+      "ref": "",
+      "how_to_fix": "差异大说明一边数据较旧，结论要标注「基于过期数据」"
+    },
+    {
+      "code": "plan_link_unverified",
+      "severity": "warning",
+      "message": "计划 PLN-20260928-C001 在二期上下文里查不到任何引用（记忆/行动/证据都没有）",
+      "ref": "PLN-20260928-C001",
+      "how_to_fix": "可能是新计划、或二期尚未记录；本结论的「计划↔行动」关联未经证实"
+    }
+  ],
+  "summary": {
+    "n_errors": 0,
+    "n_warnings": 2,
+    "brain_contract": "project-brain-v1",
+    "expected_contract": "project-brain-v1",
+    "project_id": "PRJ-20260928-0001",
+    "snapshot_id": "SNP-20260928-0830",
+    "context_version": 16,
+    "plan_ids_linked": [
+      "PLN-20260928-A001",
+      "PLN-20260928-B001"
+    ]
+  },
+  "context_version": 16,
+  "_sample_note": "合成样例：check_alignment 实时产出。ok=false 只表示有 error；warning 不阻断算法但必须出现在结论里。"
+}

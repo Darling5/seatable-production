@@ -1,0 +1,204 @@
+{
+  "_note": "合成项目快照 · 第三期「项目决策辅助」首个验收样例（A/B 两批）。全部虚构，不是真实业务数据。日历按题目要求：周一至周五 09:00—17:00，无额外节假日（故 2026-10-01 视为工作日）。基准条件 = A 批材料 2026-09-30（周三）到、B 批材料 2026-09-28（周一）到。",
+  "contract_version": "decision-support-v1",
+  "project_id": "PRJ-20260928-0001",
+  "snapshot_id": "SNP-20260928-0830",
+  "as_of": "2026-09-28T08:30:00",
+  "planning_start": "2026-09-28T09:00:00",
+  "source_system": "manual",
+  "source_base": "local",
+  "source_table": "生产工序",
+  "calendar": {
+    "name": "样例日历：周一至周五 09:00—17:00，无额外节假日",
+    "workdays": [0, 1, 2, 3, 4],
+    "start_hour": 9.0,
+    "end_hour": 17.0,
+    "holidays": [],
+    "extra_workdays": []
+  },
+  "plans": [
+    {
+      "plan_id": "PLN-20260928-A001",
+      "name": "A 批",
+      "contract_date": "2026-10-09",
+      "internal_plan_date": "2026-10-02",
+      "source_row_id": "recA001",
+      "source_table": "生产计划"
+    },
+    {
+      "plan_id": "PLN-20260928-B001",
+      "name": "B 批",
+      "contract_date": "2026-10-09",
+      "internal_plan_date": "2026-09-30",
+      "source_row_id": "recB001",
+      "source_table": "生产计划"
+    },
+    {
+      "plan_id": "PLN-20260928-C001",
+      "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
+      "contract_date": "2026-10-16",
+      "internal_plan_date": "",
+      "source_row_id": "recC001",
+      "source_table": "生产计划"
+    }
+  ],
+  "resource_groups": [
+    {
+      "group_id": "GRP-TEST",
+      "name": "测试设备池",
+      "type": "设备",
+      "members": ["RES-TEST-1"],
+      "note": "A、B 两批共享的测试资源；S2 方案往这个池里加一台设备"
+    }
+  ],
+  "resources": [
+    {
+      "resource_id": "RES-ASM-A",
+      "name": "A 批组装工位",
+      "type": "设备",
+      "daily_capacity_hours": 8,
+      "in_service": true,
+      "processes": ["组装"],
+      "source_row_id": "resA",
+      "source_table": "资源"
+    },
+    {
+      "resource_id": "RES-ASM-B",
+      "name": "B 批组装工位",
+      "type": "设备",
+      "daily_capacity_hours": 8,
+      "in_service": true,
+      "processes": ["组装"],
+      "source_row_id": "resB",
+      "source_table": "资源"
+    },
+    {
+      "resource_id": "RES-TEST-1",
+      "name": "测试台 1",
+      "type": "设备",
+      "daily_capacity_hours": 8,
+      "in_service": true,
+      "processes": ["测试"],
+      "source_row_id": "resT1",
+      "source_table": "资源"
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "STP-A-ASM",
+      "plan_id": "PLN-20260928-A001",
+      "name": "A 批 组装",
+      "process": "组装",
+      "duration_hours": 8,
+      "duration_source": "input",
+      "status": "not_started",
+      "predecessors": [],
+      "preconditions": [
+        {
+          "kind": "material",
+          "status": "confirmed",
+          "available_at": "2026-09-30",
+          "ref": "IC-2026-0912",
+          "note": "A 批物料周三到货（已与采购单核对）"
+        }
+      ],
+      "resources": [{"resource_id": "RES-ASM-A", "hours": 8}],
+      "source_row_id": "stepA1",
+      "source_table": "生产工序"
+    },
+    {
+      "step_id": "STP-A-TEST",
+      "plan_id": "PLN-20260928-A001",
+      "name": "A 批 测试",
+      "process": "测试",
+      "duration_hours": 8,
+      "duration_source": "input",
+      "status": "not_started",
+      "predecessors": ["STP-A-ASM"],
+      "preconditions": [],
+      "resources": [{"resource_id": "GRP-TEST", "hours": 8}],
+      "source_row_id": "stepA2",
+      "source_table": "生产工序"
+    },
+    {
+      "step_id": "STP-B-ASM",
+      "plan_id": "PLN-20260928-B001",
+      "name": "B 批 组装",
+      "process": "组装",
+      "duration_hours": 8,
+      "duration_source": "input",
+      "status": "not_started",
+      "predecessors": [],
+      "preconditions": [
+        {
+          "kind": "material",
+          "status": "confirmed",
+          "available_at": "2026-09-28",
+          "ref": "IC-2026-0910",
+          "note": "B 批物料周一已到货"
+        }
+      ],
+      "resources": [{"resource_id": "RES-ASM-B", "hours": 8}],
+      "source_row_id": "stepB1",
+      "source_table": "生产工序"
+    },
+    {
+      "step_id": "STP-B-TEST",
+      "plan_id": "PLN-20260928-B001",
+      "name": "B 批 测试",
+      "process": "测试",
+      "duration_hours": 8,
+      "duration_source": "input",
+      "status": "not_started",
+      "predecessors": ["STP-B-ASM"],
+      "preconditions": [],
+      "resources": [{"resource_id": "GRP-TEST", "hours": 8}],
+      "source_row_id": "stepB2",
+      "source_table": "生产工序"
+    },
+    {
+      "step_id": "STP-C-ASM",
+      "plan_id": "PLN-20260928-C001",
+      "name": "C 批 组装",
+      "process": "组装",
+      "duration_hours": 8,
+      "duration_source": "input",
+      "status": "not_started",
+      "predecessors": [],
+      "preconditions": [
+        {
+          "kind": "payment",
+          "status": "unknown",
+          "available_at": "",
+          "ref": "SO-2026-0777",
+          "note": "C 批预付款未收，且没有可用的到账日期 —— 因此下游不得产出确定交期"
+        }
+      ],
+      "resources": [{"resource_id": "RES-ASM-A", "hours": 8}],
+      "source_row_id": "stepC1",
+      "source_table": "生产工序"
+    },
+    {
+      "step_id": "STP-C-TEST",
+      "plan_id": "PLN-20260928-C001",
+      "name": "C 批 测试",
+      "process": "测试",
+      "duration_hours": null,
+      "duration_source": "unknown",
+      "status": "not_started",
+      "predecessors": ["STP-C-ASM"],
+      "preconditions": [],
+      "resources": [{"resource_id": "GRP-TEST", "hours": 8}],
+      "source_row_id": "stepC2",
+      "source_table": "生产工序"
+    }
+  ],
+  "conditions": [],
+  "cost_model": {
+    "is_synthetic": true,
+    "note": "费用与加急可行性均为合成假设，不是真实报价。",
+    "resource_day_cost": {"RES-TEST-2": 900},
+    "expedite_fee": 1200,
+    "overtime_hour_cost": 150
+  }
+}
