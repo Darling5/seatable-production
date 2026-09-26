@@ -11,9 +11,16 @@ import datetime as dt
 import hashlib
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+# 本文件位于 <仓库根>/domain/，被直接执行（python domain/order_to_cash.py）时
+# sys.path[0] 是 domain/ 而非仓库根，需自己补上才能 import application/。
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from application import contracts
 

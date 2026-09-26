@@ -23,6 +23,12 @@ import json
 import os
 import sys
 
+# 本文件位于 <仓库根>/workflows/，被直接执行（python workflows/loop_sync.py）时
+# sys.path[0] 是 workflows/ 而非仓库根，需自己补上才能 import adapters/ 与 domain/。
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 from adapters import schema
 from domain.order_to_cash import BusinessStore
 
