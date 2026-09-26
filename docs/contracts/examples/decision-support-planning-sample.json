@@ -18,7 +18,7 @@
   },
   "plans": [
     {
-      "plan_id": "PLN-20260928-A",
+      "plan_id": "PLN-20260928-A001",
       "name": "A 批",
       "contract_date": "2026-10-09",
       "internal_plan_date": "2026-10-02",
@@ -26,7 +26,7 @@
       "source_table": "生产计划"
     },
     {
-      "plan_id": "PLN-20260928-B",
+      "plan_id": "PLN-20260928-B001",
       "name": "B 批",
       "contract_date": "2026-10-09",
       "internal_plan_date": "2026-09-30",
@@ -34,7 +34,7 @@
       "source_table": "生产计划"
     },
     {
-      "plan_id": "PLN-20260928-C",
+      "plan_id": "PLN-20260928-C001",
       "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
       "contract_date": "2026-10-16",
       "internal_plan_date": "",
@@ -86,7 +86,7 @@
   "steps": [
     {
       "step_id": "STP-A-ASM",
-      "plan_id": "PLN-20260928-A",
+      "plan_id": "PLN-20260928-A001",
       "name": "A 批 组装",
       "process": "组装",
       "duration_hours": 8,
@@ -108,7 +108,7 @@
     },
     {
       "step_id": "STP-A-TEST",
-      "plan_id": "PLN-20260928-A",
+      "plan_id": "PLN-20260928-A001",
       "name": "A 批 测试",
       "process": "测试",
       "duration_hours": 8,
@@ -122,7 +122,7 @@
     },
     {
       "step_id": "STP-B-ASM",
-      "plan_id": "PLN-20260928-B",
+      "plan_id": "PLN-20260928-B001",
       "name": "B 批 组装",
       "process": "组装",
       "duration_hours": 8,
@@ -144,7 +144,7 @@
     },
     {
       "step_id": "STP-B-TEST",
-      "plan_id": "PLN-20260928-B",
+      "plan_id": "PLN-20260928-B001",
       "name": "B 批 测试",
       "process": "测试",
       "duration_hours": 8,
@@ -158,7 +158,7 @@
     },
     {
       "step_id": "STP-C-ASM",
-      "plan_id": "PLN-20260928-C",
+      "plan_id": "PLN-20260928-C001",
       "name": "C 批 组装",
       "process": "组装",
       "duration_hours": 8,
@@ -180,7 +180,7 @@
     },
     {
       "step_id": "STP-C-TEST",
-      "plan_id": "PLN-20260928-C",
+      "plan_id": "PLN-20260928-C001",
       "name": "C 批 测试",
       "process": "测试",
       "duration_hours": null,

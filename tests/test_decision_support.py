@@ -208,22 +208,22 @@ class DeliveryScheduleTest(unittest.TestCase):
 
     def test_case1_materials_monday_a_tue_b_wed(self):
         r = DecisionSupport(with_a_material_available(MON)).analyze()
-        self.assertEqual(plan_finish(r, "PLN-20260928-A"), TUE)     # A 周二
-        self.assertEqual(plan_finish(r, "PLN-20260928-B"), WED)     # B 周三
+        self.assertEqual(plan_finish(r, "PLN-20260928-A001"), TUE)     # A 周二
+        self.assertEqual(plan_finish(r, "PLN-20260928-B001"), WED)     # B 周三
 
     def test_case2_a_material_wednesday_a_thu_b_tue(self):
         r = DecisionSupport(snap()).analyze()
-        self.assertEqual(plan_finish(r, "PLN-20260928-A"), THU)     # A 周四
-        self.assertEqual(plan_finish(r, "PLN-20260928-B"), TUE)     # B 提前到周二
+        self.assertEqual(plan_finish(r, "PLN-20260928-A001"), THU)     # A 周四
+        self.assertEqual(plan_finish(r, "PLN-20260928-B001"), TUE)     # B 提前到周二
 
     def test_delaying_a_material_lets_b_move_earlier(self):
         """Case1 → Case2：A 材料推迟，B 反而提前一天（允许重排未开始工序）。"""
         before = DecisionSupport(with_a_material_available(MON)).analyze()
         after = DecisionSupport(snap()).analyze()
-        self.assertEqual(plan_finish(before, "PLN-20260928-B"), WED)
-        self.assertEqual(plan_finish(after, "PLN-20260928-B"), TUE)
-        d1 = date.fromisoformat(plan_finish(after, "PLN-20260928-B"))
-        d0 = date.fromisoformat(plan_finish(before, "PLN-20260928-B"))
+        self.assertEqual(plan_finish(before, "PLN-20260928-B001"), WED)
+        self.assertEqual(plan_finish(after, "PLN-20260928-B001"), TUE)
+        d1 = date.fromisoformat(plan_finish(after, "PLN-20260928-B001"))
+        d0 = date.fromisoformat(plan_finish(before, "PLN-20260928-B001"))
         self.assertEqual((d1 - d0).days, -1)
 
     def test_step_timestamps_case2(self):
@@ -250,7 +250,7 @@ class DeliveryScheduleTest(unittest.TestCase):
     def test_unpaid_condition_yields_undetermined_not_a_date(self):
         r = DecisionSupport(snap()).analyze()
         c = next(p for p in r["resource_feasible"]["plans"]
-                 if p["plan_id"] == "PLN-20260928-C")
+                 if p["plan_id"] == "PLN-20260928-C001")
         self.assertIsNone(c["forecast_date"])
         self.assertEqual(c["forecast_status"], "undetermined")
 
@@ -258,16 +258,16 @@ class DeliveryScheduleTest(unittest.TestCase):
         """预测与合同不同也要各归各：合同日期必须原样读出。"""
         s = snap()
         r = DecisionSupport(s).analyze()
-        a = r["dates"]["PLN-20260928-A"]
+        a = r["dates"]["PLN-20260928-A001"]
         self.assertEqual(a["contract_date"], "2026-10-09")          # 输入值
         self.assertEqual(a["resource_feasible_date"], THU)          # 算法产出
         # 输出里的合同日期必须与输入快照完全一致
-        src = next(p for p in s["plans"] if p["plan_id"] == "PLN-20260928-A")
+        src = next(p for p in s["plans"] if p["plan_id"] == "PLN-20260928-A001")
         self.assertEqual(a["contract_date"], src["contract_date"])
 
     def test_three_date_kinds_kept_separate(self):
         r = DecisionSupport(snap()).analyze()
-        a = r["dates"]["PLN-20260928-A"]
+        a = r["dates"]["PLN-20260928-A001"]
         self.assertEqual(a["contract_date"], "2026-10-09")
         self.assertEqual(a["internal_plan_date"], "2026-10-02")
         self.assertEqual(a["resource_feasible_date"], THU)
@@ -276,7 +276,7 @@ class DeliveryScheduleTest(unittest.TestCase):
 
     def test_delay_vs_contract_computed(self):
         r = DecisionSupport(snap()).analyze()
-        a = r["dates"]["PLN-20260928-A"]
+        a = r["dates"]["PLN-20260928-A001"]
         # 预测 10-01，合同 10-09 → 早 8 天（负数=提前）
         self.assertEqual(a["delay_vs_contract_days"], -8)
 
@@ -285,7 +285,7 @@ class DeliveryScheduleTest(unittest.TestCase):
         s = snap()
         s["calendar"]["holidays"] = [THU]
         r = DecisionSupport(s).analyze()
-        self.assertEqual(plan_finish(r, "PLN-20260928-A"), FRI)
+        self.assertEqual(plan_finish(r, "PLN-20260928-A001"), FRI)
 
 
 # ══════════════════════════ 4. 资源冲突与保护 ══════════════════════════
@@ -375,7 +375,7 @@ class DelayPropagationTest(unittest.TestCase):
         self.assertEqual(moved.get("STP-A-ASM"), 1)
         self.assertEqual(moved.get("STP-A-TEST"), 1)      # 传播到下游
         self.assertEqual([p["plan_id"] for p in d["affected_plans"]],
-                         ["PLN-20260928-A"])
+                         ["PLN-20260928-A001"])
         self.assertEqual(d["affected_plans"][0]["delta_days"], 1)
 
     def test_slack_absorbs_delay(self):
@@ -432,22 +432,22 @@ class ScenarioCompareTest(unittest.TestCase):
 
     def test_s0_is_baseline_and_matches_acceptance_case2(self):
         self.assertTrue(self._sc("S0")["is_baseline"])
-        self.assertEqual(self._finish("S0", "PLN-20260928-A"), THU)
-        self.assertEqual(self._finish("S0", "PLN-20260928-B"), TUE)
+        self.assertEqual(self._finish("S0", "PLN-20260928-A001"), THU)
+        self.assertEqual(self._finish("S0", "PLN-20260928-B001"), TUE)
 
     def test_s1_brings_a_one_day_earlier(self):
-        self.assertEqual(self._finish("S1", "PLN-20260928-A"), WED)   # 周三
+        self.assertEqual(self._finish("S1", "PLN-20260928-A001"), WED)   # 周三
         delta = next(c for c in self._sc("S1")["completion"]
-                     if c["plan_id"] == "PLN-20260928-A")["delta_days"]
+                     if c["plan_id"] == "PLN-20260928-A001")["delta_days"]
         self.assertEqual(delta, -1)
 
     def test_s1_result_is_conditional_not_determined(self):
         """情景假设撑起来的日期只能是 conditional —— 它不是确定结论。"""
         c = next(x for x in self._sc("S1")["completion"]
-                 if x["plan_id"] == "PLN-20260928-A")
+                 if x["plan_id"] == "PLN-20260928-A001")
         self.assertEqual(c["forecast_status"], "conditional")
         c0 = next(x for x in self._sc("S0")["completion"]
-                  if x["plan_id"] == "PLN-20260928-A")
+                  if x["plan_id"] == "PLN-20260928-A001")
         self.assertEqual(c0["forecast_status"], "determined")
 
     def test_conditional_flag_survives_into_analyze_dates(self):
@@ -455,13 +455,13 @@ class ScenarioCompareTest(unittest.TestCase):
         sc = next(x for x in default_scenarios(s) if x["scenario_id"] == "S1")
         mutated, _ = apply_mutations(s, sc["mutations"])
         r = DecisionSupport(mutated).analyze()
-        a = r["dates"]["PLN-20260928-A"]
+        a = r["dates"]["PLN-20260928-A001"]
         self.assertEqual(a["resource_feasible_status"], "conditional")
         self.assertEqual(a["resource_feasible_date"], WED)
 
     def test_s2_does_not_improve_a(self):
         """题目明确要求：仅加测试设备、材料仍周三到 → A 交期不改善。"""
-        self.assertEqual(self._finish("S2", "PLN-20260928-A"), THU)
+        self.assertEqual(self._finish("S2", "PLN-20260928-A001"), THU)
         self.assertEqual(self._sc("S2")["affected_projects"], [])
 
     def test_s2_explains_the_new_resource_was_never_used(self):

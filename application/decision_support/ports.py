@@ -37,6 +37,9 @@ ASSUMPTIONS = [
         "assumption": "project_id / plan_id / action_id / evidence_id / decision_id / "
                       "run_id / snapshot_id / version 由二期 project-brain-v1 定义，本期只读对齐。",
         "risk": "若二期改字段名，本期需同步；本期不做自动兼容别名。",
+        "status": "已实测（2026-09-26 对齐）：二期投影层原本漏了 plan_id / run_id / "
+                  "snapshot_id / version，证据行 plan_id 恒空 —— 已在二期补齐；"
+                  "现由 alignment.check_alignment 每次实跑校验，不再靠文档相信。",
     },
     {
         "id": "A2",
@@ -59,6 +62,8 @@ ASSUMPTIONS = [
         "assumption": "ProjectContext.source_freshness 中标 stale=true 的来源，"
                       "在本期转成「结论待复核」提示，并降低结论的确定性表述。",
         "risk": "忽略时效会让基于旧数据的排程看起来像新结论。",
+        "status": "依赖 data_as_of 口径正确。二期原本把系统写入时刻算进 data_as_of，"
+                  "导致它恒等于「现在」；已修正为「最晚一条采集时间」。",
     },
     {
         "id": "A5",
@@ -66,12 +71,26 @@ ASSUMPTIONS = [
         "assumption": "计划快照的 steps[*].plan_id 与二期行动/记忆的 plan_id 同源可比；"
                       "名称（产品名、供应商名）一律不作关联键。",
         "risk": "用名称关联会在改名时静默断链。",
+        "status": "已实测：plan_id 必须符合 PLN-YYYYMMDD-XXXX（二期 validate_id 会拒），"
+                  "且三期快照里出现的 plan_id 应能在二期上下文里找到引用；"
+                  "找不到时报 plan_link_unverified，**不假装能关联**。",
     },
     {
         "id": "A6",
         "about": "写入",
         "assumption": "本期不写入任何业务表，不新增审批器；执行一律走第一期闸门。",
         "risk": "无。",
+        "status": "已实测：三期产出里出现的 decision_id 必须全部来自二期"
+                  "（alignment.check_no_authored_decision_id），方案选择不产生决策。",
+    },
+    {
+        "id": "A7",
+        "about": "预测口径",
+        "assumption": "二期 predictions[] 是**人**的预测；三期的 forecast_date 是"
+                      "**算法**的预测。复盘时按 prediction_source 分开统计。",
+        "risk": "合并统计会得到一个没有意义的「准确率」。",
+        "status": "已实现：alignment.human_prediction_records 把人说的预测转成同构记录，"
+                  "与模型记录并列保存、互不覆盖。",
     },
 ]
 
@@ -122,17 +141,19 @@ class MockProjectContextPort(ProjectContextPort):
 
 
 class BrainProjectContextPort(ProjectContextPort):
-    """真实端口：优先调用第二期的 `application.project_brain.get_project_context`。
+    """真实端口：读二期 `application.project_brain.get_project_context`。
 
-    二期模块尚未合并到本分支时，`available()` 返回 False，
-    调用方应回退到 mock —— 而不是让整个流程挂掉。
+    两期都把模块放在顶层包 `application/` 下，所以分支并行时普通 import 会撞名。
+    这里走 `alignment.import_brain()`：合并后同树直连，未合并时用别名包隔离装载。
+    两条路都不可用时 `available()` 返回 False，调用方回退 mock —— 而不是让流程挂掉。
     """
 
     source = "project_brain"
 
     def __init__(self, root: str = ""):
         self.root = root
-        self._fn = None
+        self.kind = ""
+        self._pb = None
         self._loaded = False
         self._err = ""
 
@@ -140,25 +161,21 @@ class BrainProjectContextPort(ProjectContextPort):
         if self._loaded:
             return
         self._loaded = True
-        try:
-            import sys
-            if self.root and self.root not in sys.path:
-                sys.path.insert(0, self.root)
-            from application.project_brain import get_project_context   # noqa
-            self._fn = get_project_context
-        except Exception as e:                                          # pragma: no cover
-            self._err = "%s: %s" % (type(e).__name__, e)
+        from .alignment import import_brain
+        self._pb, self.kind, self._err = import_brain(self.root)
 
     def available(self) -> bool:
         self._load()
-        return self._fn is not None
+        return self._pb is not None
 
     def get_project_context(self, project_id: str, snapshot_id: str = "") -> dict:
         self._load()
-        if self._fn is None:
-            return {"error": "brain_unavailable", "message": self._err}
+        if self._pb is None:
+            return {"error": "brain_unavailable", "message": self._err,
+                    "brain_root_kind": self.kind}
         try:
-            return self._fn(project_id, snapshot_id) or {}
+            fn = getattr(self._pb, "get_project_context")
+            return dict(fn(project_id, snapshot_id) or {})
         except Exception as e:                                          # pragma: no cover
             return {"error": "brain_call_failed", "message": str(e)}
 
@@ -193,7 +210,20 @@ class MockPlanningSnapshotPort(PlanningSnapshotPort):
 
 # ────────────────────────── 上下文 → 算法输入 ──────────────────────────
 def pick_default_port(brain_root: str = "", mock_path: str = "") -> ProjectContextPort:
-    """按「真实优先、mock 兜底」挑一个端口，并说明挑了谁、为什么。"""
+    """按「真实优先、mock 兜底」挑一个端口，并说明挑了谁、为什么。
+
+    ``brain_root="auto"`` 时自动定位二期模块（同树优先，其次兄弟 worktree）——
+    这是两期同窗口开发时的常用姿势；给具体路径时按路径来。
+    """
+    if brain_root == "auto":
+        from .alignment import find_brain_root
+        root, kind = find_brain_root()
+        brain = BrainProjectContextPort(root)
+        if brain.available():
+            return brain
+        if mock_path and os.path.exists(mock_path):
+            return MockProjectContextPort.from_file(mock_path)
+        return MockProjectContextPort({})
     brain = BrainProjectContextPort(brain_root)
     if brain.available():
         return brain
@@ -207,23 +237,28 @@ def context_notes(ctx: dict) -> dict:
 
     注意：这里**不复制事实内容** —— 只在需要引用时按 evidence_id / memory_id 指回去，
     事实的家永远在二期。
+
+    实现上委托给 ``alignment.read_context``：字段口径只允许有一个定义处，
+    否则「二期改了字段名，三期没跟上」这类问题会散落在多个文件里各改各的。
     """
-    ctx = dict(ctx or {})
-    stale = [s for s in (ctx.get("source_freshness") or []) if s.get("stale")]
-    gaps = list(ctx.get("missing_info") or [])
-    conflicts = [c for c in (ctx.get("conflicts") or []) if not c.get("resolved")]
+    from .alignment import read_context
+    view = read_context(ctx)
     return {
-        "contract_version": ctx.get("contract_version") or "",
-        "data_as_of": ctx.get("data_as_of") or "",
-        "snapshot_id": ctx.get("snapshot_id") or "",
-        "stale_sources": stale,
-        "missing_info": gaps,
-        "unresolved_conflicts": conflicts,
-        "evidence_ids": [e.get("evidence_id") for e in (ctx.get("evidence_refs") or [])
-                         if e.get("evidence_id")],
-        "decision_ids": [d.get("decision_id") for d in (ctx.get("decisions") or [])
-                         if d.get("decision_id")],
-        "n_observations_unverified": len(ctx.get("observations") or []),
+        "align_version": view["align_version"],
+        "contract_version": view["contract_version"],
+        "project_id": view["project_id"],
+        "version": view["version"],
+        "data_as_of": view["data_as_of"],
+        "snapshot_id": view["snapshot_id"],
+        "plan_ids": view["plan_ids"],
+        "stale_sources": view["stale_sources"],
+        "missing_info": view["missing_info"],
+        "unresolved_conflicts": view["unresolved_conflicts"],
+        "evidence_ids": view["evidence_ids"],
+        "decision_ids": view["decision_ids"],
+        "action_ids": view["action_ids"],
+        "n_observations_unverified": view["n_observations_unverified"],
+        "fields_missing_on_records": view["fields_missing_on_records"],
     }
 
 
@@ -293,7 +328,14 @@ def build_inputs(project_id: str, *, context_port: ProjectContextPort = None,
                  planning_port: PlanningSnapshotPort = None,
                  snapshot_id: str = "", brain_root: str = "",
                  mock_context_path: str = "", mock_planning_path: str = "") -> dict:
-    """组装本期算法的完整输入：计划域快照 + 二期上下文 + 假设与注意事项。"""
+    """组装本期算法的完整输入：计划域快照 + 二期上下文 + 假设与注意事项。
+
+    额外产出一份 ``alignment``：两期输入是否真的指向**同一个项目、同一个快照、
+    同一个契约版本**。这份报告跟着结论走，让「前提错了」这件事看得见 ——
+    沉默地带着错前提算出漂亮数字，比直接报错危险得多。
+    """
+    from .alignment import check_alignment, make_unified, new_run_id
+
     cport = context_port or pick_default_port(brain_root, mock_context_path)
     if planning_port is not None:
         pport = planning_port
@@ -306,17 +348,35 @@ def build_inputs(project_id: str, *, context_port: ProjectContextPort = None,
     planning = pport.get_plan_snapshot(project_id, snapshot_id)
     notes = context_notes(ctx)
     caveats = freshness_caveats(ctx)
+    align = check_alignment(ctx, planning)
+
+    run_id = new_run_id()
+    unified = make_unified(
+        project_id=project_id or notes["project_id"],
+        run_id=run_id,
+        snapshot_id=snapshot_id or planning.get("snapshot_id") or notes["snapshot_id"],
+        plan_id=(sorted({str(s.get("plan_id") or "")
+                         for s in (planning.get("steps") or [])
+                         if s.get("plan_id")}) or [""])[0],
+        version=align["context_version"],
+    )
 
     return {
         "project_id": project_id,
-        "snapshot_id": snapshot_id or planning.get("snapshot_id") or notes["snapshot_id"],
+        "snapshot_id": unified["snapshot_id"],
+        "run_id": run_id,
+        "unified": unified,
         "context_source": cport.source,
         "planning_source": pport.source,
         "data_as_of": notes["data_as_of"] or planning.get("as_of") or "",
         "planning": planning,
         "context": ctx,
         "context_notes": notes,
-        "caveats": caveats,
+        "alignment": align,
+        "caveats": caveats + [{"code": i["code"], "message": i["message"],
+                               "ref": i.get("ref", "")}
+                              for i in align["items"]
+                              if i["severity"] == "error"],
         "assumptions": ASSUMPTIONS,
         "generated_at": _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
     }

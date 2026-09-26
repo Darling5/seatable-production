@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime as _dt
 
 from . import schema as S
+from . import alignment as ALIGN
 from .backtest import backtest as _backtest
 from .calendar import WorkCalendar, default_calendar, from_dict as cal_from_dict
 from .ports import (ASSUMPTIONS, MockPlanningSnapshotPort, PlanningSnapshotPort,
@@ -33,14 +34,21 @@ class DecisionSupport:
     """本期算法门面。构造一次，可反复问不同的问题（全部只读）。"""
 
     def __init__(self, snapshot: dict, calendar: WorkCalendar = None,
-                 context: dict = None, ledger: SimulationLedger = None):
+                 context: dict = None, ledger: SimulationLedger = None,
+                 run_id: str = ""):
         self.snapshot = dict(snapshot or {})
         self.calendar = calendar or (cal_from_dict(self.snapshot.get("calendar") or {})
                                      if self.snapshot.get("calendar") else default_calendar())
         self.context = dict(context or {})
         self.ledger = ledger or SimulationLedger(SimulationWriter())
+        # 本次运行的编号：结论要能被追溯（哪一次、按哪个版本算的）
+        self.run_id = run_id or ALIGN.new_run_id()
         self._cpm = None
         self._res = None
+
+    def _plan_ids(self) -> set:
+        return {str(s.get("plan_id") or "") for s in (self.snapshot.get("steps") or [])
+                if s.get("plan_id")}
 
     # ── 内部：跑一次并存住结果（同一份快照不重复算）──
     def _run(self, force: bool = False):
@@ -59,6 +67,19 @@ class DecisionSupport:
         cpm, res = self._run()
         notes = context_notes(self.context)
         caveats = freshness_caveats(self.context) if self.context else []
+        align = (ALIGN.check_alignment(self.context, self.snapshot)
+                 if self.context else {"ok": True, "items": [], "warnings": [],
+                                       "errors": [], "summary": {}, "context_version": 0})
+        # 二期上下文里由**人**给出的预测，转成与模型预测同构的记录 —— 分开存放，
+        # 复盘时才不会把「人的判断」与「算法的输出」混成一个准确率。
+        human_preds = ALIGN.human_prediction_records(self.context) if self.context else []
+        unified = ALIGN.make_unified(
+            project_id=self.snapshot.get("project_id") or notes.get("project_id") or "",
+            run_id=self.run_id,
+            snapshot_id=self.snapshot.get("snapshot_id") or notes.get("snapshot_id") or "",
+            plan_id=(sorted(self._plan_ids()) or [""])[0],
+            version=align.get("context_version") or notes.get("version") or 0,
+        )
         return {
             "contract_version": S.DS_CONTRACT_VERSION,
             "rules_version": S.RULES_VERSION,
@@ -67,6 +88,8 @@ class DecisionSupport:
             "snapshot_id": self.snapshot.get("snapshot_id") or "",
             "as_of": self.snapshot.get("as_of") or "",
             "data_as_of": notes.get("data_as_of") or self.snapshot.get("as_of") or "",
+            "unified": unified,
+            "alignment": align,
             "calendar": self.calendar.describe(),
 
             # 三种日期分开放：合同 / 内部计划 / 预测。谁都不覆盖谁。
@@ -98,11 +121,16 @@ class DecisionSupport:
             "evidence": {
                 "evidence_ids": notes.get("evidence_ids") or [],
                 "decision_ids": notes.get("decision_ids") or [],
+                "action_ids": notes.get("action_ids") or [],
                 "unresolved_conflicts": notes.get("unresolved_conflicts") or [],
                 "missing_info": notes.get("missing_info") or [],
                 "note": "证据索引只做引用，事实本体在二期 project-brain-v1，本期不复制。",
             },
+            # 二期里**人**说的预测（原样转成复盘记录，不改一个字段、不补日期）。
+            # 与本期 forecast_date（算法算的）并列存放，复盘时分开统计。
+            "human_predictions": human_preds,
             "authorization_note": S.AUTH_NOTE,
+            "execution_gate": ALIGN.EXECUTION_GATE,
         }
 
     # ── 2) 方案比较 ───────────────────────────────

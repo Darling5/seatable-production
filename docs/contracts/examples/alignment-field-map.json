@@ -1,0 +1,204 @@
+{
+  "align_version": "p2p3-align-v1",
+  "brain_contract": "project-brain-v1",
+  "ds_contract": "decision-support-v1",
+  "unified_fields": [
+    "project_id",
+    "plan_id",
+    "action_id",
+    "evidence_id",
+    "decision_id",
+    "run_id",
+    "snapshot_id",
+    "version"
+  ],
+  "source_fields": [
+    "source_system",
+    "source_base",
+    "source_table",
+    "source_row_id",
+    "source_message_id"
+  ],
+  "semantic_splits": [
+    {
+      "term": "预测",
+      "brain_side": "predictions（kind=prediction）：**人**对未来的判断，带 actor / rationale / confidence / aspect_key",
+      "ds_side": "forecast_date：**算法**由工序/依赖/日历算出的日期，带 rules_version / forecast_status",
+      "ruling": "两者都保留，复盘时必须按 prediction_source 分开统计；禁止把人说的预测与模型算的预测合并成一个「准确率」。",
+      "guard": "records 必须带 prediction_source ∈ {model, human}；human 记录必须带 source_ref 指回二期 memory_id。"
+    },
+    {
+      "term": "决策",
+      "brain_side": "decisions（kind=decision）：**人**做的决策记录，decision_id 即其 memory_id，含 rationale",
+      "ds_side": "方案比较只产出候选与所需批准（required_approvals），**不产出 decision_id**",
+      "ruling": "方案选择 ≠ 决策已定 ≠ 执行授权。候选方案被人采纳后，由二期经第一期闸门写入决策库；三期永不写决策。",
+      "guard": "check_no_authored_decision_id()：三期产出里出现的 decision_id 必须全部来自二期上下文，否则报错。"
+    },
+    {
+      "term": "状态",
+      "brain_side": "action.status ∈ {candidate, pending_confirm, ready, in_progress, blocked, pending_acceptance, closed, cancelled}",
+      "ds_side": "step.status ∈ {planned, in_progress, done}；forecast_status ∈ {determined, conditional, undetermined}",
+      "ruling": "三套词表各管一段：行动归二期，工序与预测确定性归三期。不得互相赋值（例如把 conditional 写成 pending_confirm）。",
+      "guard": "字段名不同名（status 分属不同层级对象），测试断言互不赋值。"
+    },
+    {
+      "term": "as_of / data_as_of",
+      "brain_side": "data_as_of：上下文里**最晚一条记录**的采集时间",
+      "ds_side": "as_of：计划快照的时点；data_as_of 回填二期值",
+      "ruling": "两者都指「这批数据截至什么时候」，但口径不同，因此并列存放、不互相覆盖；不一致时报 as_of_mismatch。",
+      "guard": "check_alignment 比较两者，差异超过阈值给 warning。"
+    },
+    {
+      "term": "version",
+      "brain_side": "顶层 version = 所有记录 version 之和（单调增，粗粒度护栏）；单条记录 version = 乐观锁依据",
+      "ds_side": "只回填、只读比对；执行前必须重查版本",
+      "ruling": "三期的任何产出都必须带 context_version（当时的顶层 version）。未来执行前比对：不一致即拒绝，不用旧版本结论去写库。",
+      "guard": "make_unified 强制带 version；compare_versions() 给一致性判定。"
+    }
+  ],
+  "field_map": [
+    {
+      "field": "contract_version",
+      "brain_path": "contract_version",
+      "ds_path": "contract_version",
+      "direction": "r",
+      "required": true,
+      "note": "固定 project-brain-v1；不一致即 context_version_mismatch"
+    },
+    {
+      "field": "project_id",
+      "brain_path": "project_id",
+      "ds_path": "unified.project_id",
+      "direction": "rw",
+      "required": true,
+      "note": "PRJ-YYYYMMDD-XXXX；两期必须指向同一个项目"
+    },
+    {
+      "field": "plan_id",
+      "brain_path": "*.plan_id（记忆/行动/证据行）",
+      "ds_path": "unified.plan_id / steps[*].plan_id",
+      "direction": "rw",
+      "required": true,
+      "note": "PLN-YYYYMMDD-XXXX；三期快照的 plan_id 必须在二期上下文里被引用过"
+    },
+    {
+      "field": "action_id",
+      "brain_path": "actions[].action_id",
+      "ds_path": "evidence.action_ids（引用）",
+      "direction": "r",
+      "required": false,
+      "note": "三期只引用，不新增行动"
+    },
+    {
+      "field": "evidence_id",
+      "brain_path": "evidence_refs[].evidence_id",
+      "ds_path": "evidence.evidence_ids",
+      "direction": "r",
+      "required": false,
+      "note": "只引用；事实本体在二期，三期不复制"
+    },
+    {
+      "field": "decision_id",
+      "brain_path": "decisions[].decision_id",
+      "ds_path": "evidence.decision_ids（只读引用）",
+      "direction": "r",
+      "required": false,
+      "note": "三期永不产出 decision_id（见 SEMANTIC_SPLITS）"
+    },
+    {
+      "field": "run_id",
+      "brain_path": "actions[].run_id / 记忆行 run_id",
+      "ds_path": "unified.run_id",
+      "direction": "w",
+      "required": true,
+      "note": "RUN-YYYYMMDD-XXXX；三期自己的运行编号，供二期按 run_id 追溯算法运行"
+    },
+    {
+      "field": "snapshot_id",
+      "brain_path": "snapshot_id",
+      "ds_path": "unified.snapshot_id",
+      "direction": "rw",
+      "required": true,
+      "note": "SNP-YYYYMMDD-XXXX；两期必须指向同一个快照，否则结论不可复现"
+    },
+    {
+      "field": "version",
+      "brain_path": "version（顶层）",
+      "ds_path": "unified.version",
+      "direction": "r",
+      "required": true,
+      "note": "回填当时的二期顶层 version，作为「执行前重查版本」的比对基准"
+    },
+    {
+      "field": "source_system",
+      "brain_path": "*.source_system",
+      "ds_path": "（透传，不参与算法）",
+      "direction": "r",
+      "required": false,
+      "note": "仅用于溯源展示；名称类字段一律不作关联键"
+    },
+    {
+      "field": "source_table",
+      "brain_path": "*.source_table",
+      "ds_path": "（透传，不参与算法）",
+      "direction": "r",
+      "required": false,
+      "note": "同上；关联一律用 source_row_id"
+    },
+    {
+      "field": "data_as_of",
+      "brain_path": "data_as_of",
+      "ds_path": "data_as_of",
+      "direction": "r",
+      "required": false,
+      "note": "结论的数据截至时间，不是脚本运行时间"
+    },
+    {
+      "field": "source_freshness",
+      "brain_path": "source_freshness[]",
+      "ds_path": "caveats[]（转成 GAP_STALE_SNAPSHOT）",
+      "direction": "r",
+      "required": false,
+      "note": "stale=true 的来源必须转成「结论待复核」"
+    },
+    {
+      "field": "missing_info",
+      "brain_path": "missing_info[]",
+      "ds_path": "evidence.missing_info",
+      "direction": "r",
+      "required": false,
+      "note": "结构 {code, message, ref, subject, as_of}"
+    },
+    {
+      "field": "conflicts",
+      "brain_path": "conflicts[]",
+      "ds_path": "evidence.unresolved_conflicts + conditions_from_context()",
+      "direction": "r",
+      "required": false,
+      "note": "未解决冲突 → 条件按 unknown 处理，不放行；程序不替人裁决"
+    },
+    {
+      "field": "predictions",
+      "brain_path": "predictions[]",
+      "ds_path": "human_prediction_records() → 复盘记录（prediction_source=human）",
+      "direction": "r",
+      "required": false,
+      "note": "与人无关的算法预测走 prediction_source=model，两者不合并"
+    }
+  ],
+  "execution_gate": {
+    "gate_module": "application.authorization",
+    "rule": "方案选择不等于执行授权；任何落库都必须先过第一期 WriteGrant。",
+    "pre_execution": "执行前用 compare_versions() 重查二期顶层 version，不一致即拒绝（旧版本结论不得写库）。",
+    "ds_writes_business_tables": false,
+    "forbidden_tables": [
+      "项目",
+      "来源消息",
+      "证据",
+      "项目记忆",
+      "行动项",
+      "行动事件",
+      "提醒"
+    ]
+  }
+}

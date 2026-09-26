@@ -1,7 +1,7 @@
 {
   "contract_version": "decision-support-v1",
   "rules_version": "ds-rules-1.0.0",
-  "generated_at": "2026-09-26T11:16:28",
+  "generated_at": "2026-09-26T11:33:35",
   "project_id": "PRJ-20260928-0001",
   "snapshot_id": "SNP-20260928-0830",
   "as_of": "2026-09-28T08:30:00",
@@ -18,7 +18,7 @@
       ],
       "completion": [
         {
-          "plan_id": "PLN-20260928-A",
+          "plan_id": "PLN-20260928-A001",
           "name": "A 批",
           "forecast_date": "2026-10-01",
           "forecast_status": "determined",
@@ -29,7 +29,7 @@
           "vs_contract_days": -8
         },
         {
-          "plan_id": "PLN-20260928-B",
+          "plan_id": "PLN-20260928-B001",
           "name": "B 批",
           "forecast_date": "2026-09-29",
           "forecast_status": "determined",
@@ -40,7 +40,7 @@
           "vs_contract_days": -10
         },
         {
-          "plan_id": "PLN-20260928-C",
+          "plan_id": "PLN-20260928-C001",
           "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
           "forecast_date": null,
           "forecast_status": "undetermined",
@@ -134,7 +134,7 @@
         ],
         "plans": [
           {
-            "plan_id": "PLN-20260928-A",
+            "plan_id": "PLN-20260928-A001",
             "name": "A 批",
             "forecast_date": "2026-10-01",
             "forecast_status": "determined",
@@ -147,7 +147,7 @@
             ]
           },
           {
-            "plan_id": "PLN-20260928-B",
+            "plan_id": "PLN-20260928-B001",
             "name": "B 批",
             "forecast_date": "2026-09-29",
             "forecast_status": "determined",
@@ -160,7 +160,7 @@
             ]
           },
           {
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
             "forecast_date": null,
             "forecast_status": "undetermined",
@@ -176,7 +176,7 @@
         "steps": [
           {
             "step_id": "STP-A-ASM",
-            "plan_id": "PLN-20260928-A",
+            "plan_id": "PLN-20260928-A001",
             "name": "A 批 组装",
             "process": "组装",
             "status": "not_started",
@@ -199,7 +199,7 @@
           },
           {
             "step_id": "STP-A-TEST",
-            "plan_id": "PLN-20260928-A",
+            "plan_id": "PLN-20260928-A001",
             "name": "A 批 测试",
             "process": "测试",
             "status": "not_started",
@@ -222,7 +222,7 @@
           },
           {
             "step_id": "STP-B-ASM",
-            "plan_id": "PLN-20260928-B",
+            "plan_id": "PLN-20260928-B001",
             "name": "B 批 组装",
             "process": "组装",
             "status": "not_started",
@@ -245,7 +245,7 @@
           },
           {
             "step_id": "STP-B-TEST",
-            "plan_id": "PLN-20260928-B",
+            "plan_id": "PLN-20260928-B001",
             "name": "B 批 测试",
             "process": "测试",
             "status": "not_started",
@@ -268,7 +268,7 @@
           },
           {
             "step_id": "STP-C-ASM",
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "name": "C 批 组装",
             "process": "组装",
             "status": "not_started",
@@ -295,7 +295,7 @@
           },
           {
             "step_id": "STP-C-TEST",
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "name": "C 批 测试",
             "process": "测试",
             "status": "not_started",
@@ -393,13 +393,13 @@
         "unresolved": [
           {
             "step_id": "STP-C-ASM",
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "reason": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
             "reason_code": "unconfirmed_precondition"
           },
           {
             "step_id": "STP-C-TEST",
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "reason": "工期未知，无法推算日期",
             "reason_code": "unknown_duration"
           }
@@ -432,7 +432,7 @@
       ],
       "completion": [
         {
-          "plan_id": "PLN-20260928-A",
+          "plan_id": "PLN-20260928-A001",
           "name": "A 批",
           "forecast_date": "2026-09-30",
           "forecast_status": "conditional",
@@ -443,7 +443,7 @@
           "vs_contract_days": -9
         },
         {
-          "plan_id": "PLN-20260928-B",
+          "plan_id": "PLN-20260928-B001",
           "name": "B 批",
           "forecast_date": "2026-09-29",
           "forecast_status": "determined",
@@ -454,7 +454,7 @@
           "vs_contract_days": -10
         },
         {
-          "plan_id": "PLN-20260928-C",
+          "plan_id": "PLN-20260928-C001",
           "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
           "forecast_date": null,
           "forecast_status": "undetermined",
@@ -484,7 +484,7 @@
       },
       "affected_projects": [
         {
-          "plan_id": "PLN-20260928-A",
+          "plan_id": "PLN-20260928-A001",
           "name": "A 批",
           "delta_days": -1,
           "from": "2026-10-01",
@@ -581,7 +581,7 @@
         ],
         "plans": [
           {
-            "plan_id": "PLN-20260928-A",
+            "plan_id": "PLN-20260928-A001",
             "name": "A 批",
             "forecast_date": "2026-09-30",
             "forecast_status": "conditional",
@@ -594,7 +594,7 @@
             ]
           },
           {
-            "plan_id": "PLN-20260928-B",
+            "plan_id": "PLN-20260928-B001",
             "name": "B 批",
             "forecast_date": "2026-09-29",
             "forecast_status": "determined",
@@ -607,7 +607,7 @@
             ]
           },
           {
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
             "forecast_date": null,
             "forecast_status": "undetermined",
@@ -623,7 +623,7 @@
         "steps": [
           {
             "step_id": "STP-A-ASM",
-            "plan_id": "PLN-20260928-A",
+            "plan_id": "PLN-20260928-A001",
             "name": "A 批 组装",
             "process": "组装",
             "status": "not_started",
@@ -646,7 +646,7 @@
           },
           {
             "step_id": "STP-A-TEST",
-            "plan_id": "PLN-20260928-A",
+            "plan_id": "PLN-20260928-A001",
             "name": "A 批 测试",
             "process": "测试",
             "status": "not_started",
@@ -669,7 +669,7 @@
           },
           {
             "step_id": "STP-B-ASM",
-            "plan_id": "PLN-20260928-B",
+            "plan_id": "PLN-20260928-B001",
             "name": "B 批 组装",
             "process": "组装",
             "status": "not_started",
@@ -692,7 +692,7 @@
           },
           {
             "step_id": "STP-B-TEST",
-            "plan_id": "PLN-20260928-B",
+            "plan_id": "PLN-20260928-B001",
             "name": "B 批 测试",
             "process": "测试",
             "status": "not_started",
@@ -715,7 +715,7 @@
           },
           {
             "step_id": "STP-C-ASM",
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "name": "C 批 组装",
             "process": "组装",
             "status": "not_started",
@@ -742,7 +742,7 @@
           },
           {
             "step_id": "STP-C-TEST",
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "name": "C 批 测试",
             "process": "测试",
             "status": "not_started",
@@ -840,13 +840,13 @@
         "unresolved": [
           {
             "step_id": "STP-C-ASM",
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "reason": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
             "reason_code": "unconfirmed_precondition"
           },
           {
             "step_id": "STP-C-TEST",
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "reason": "工期未知，无法推算日期",
             "reason_code": "unknown_duration"
           }
@@ -876,7 +876,7 @@
       ],
       "completion": [
         {
-          "plan_id": "PLN-20260928-A",
+          "plan_id": "PLN-20260928-A001",
           "name": "A 批",
           "forecast_date": "2026-10-01",
           "forecast_status": "determined",
@@ -887,7 +887,7 @@
           "vs_contract_days": -8
         },
         {
-          "plan_id": "PLN-20260928-B",
+          "plan_id": "PLN-20260928-B001",
           "name": "B 批",
           "forecast_date": "2026-09-29",
           "forecast_status": "determined",
@@ -898,7 +898,7 @@
           "vs_contract_days": -10
         },
         {
-          "plan_id": "PLN-20260928-C",
+          "plan_id": "PLN-20260928-C001",
           "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
           "forecast_date": null,
           "forecast_status": "undetermined",
@@ -1021,7 +1021,7 @@
         ],
         "plans": [
           {
-            "plan_id": "PLN-20260928-A",
+            "plan_id": "PLN-20260928-A001",
             "name": "A 批",
             "forecast_date": "2026-10-01",
             "forecast_status": "determined",
@@ -1034,7 +1034,7 @@
             ]
           },
           {
-            "plan_id": "PLN-20260928-B",
+            "plan_id": "PLN-20260928-B001",
             "name": "B 批",
             "forecast_date": "2026-09-29",
             "forecast_status": "determined",
@@ -1047,7 +1047,7 @@
             ]
           },
           {
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "name": "C 批（用于演示「不可确定」：未收款 + 工期未知）",
             "forecast_date": null,
             "forecast_status": "undetermined",
@@ -1063,7 +1063,7 @@
         "steps": [
           {
             "step_id": "STP-A-ASM",
-            "plan_id": "PLN-20260928-A",
+            "plan_id": "PLN-20260928-A001",
             "name": "A 批 组装",
             "process": "组装",
             "status": "not_started",
@@ -1086,7 +1086,7 @@
           },
           {
             "step_id": "STP-A-TEST",
-            "plan_id": "PLN-20260928-A",
+            "plan_id": "PLN-20260928-A001",
             "name": "A 批 测试",
             "process": "测试",
             "status": "not_started",
@@ -1109,7 +1109,7 @@
           },
           {
             "step_id": "STP-B-ASM",
-            "plan_id": "PLN-20260928-B",
+            "plan_id": "PLN-20260928-B001",
             "name": "B 批 组装",
             "process": "组装",
             "status": "not_started",
@@ -1132,7 +1132,7 @@
           },
           {
             "step_id": "STP-B-TEST",
-            "plan_id": "PLN-20260928-B",
+            "plan_id": "PLN-20260928-B001",
             "name": "B 批 测试",
             "process": "测试",
             "status": "not_started",
@@ -1155,7 +1155,7 @@
           },
           {
             "step_id": "STP-C-ASM",
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "name": "C 批 组装",
             "process": "组装",
             "status": "not_started",
@@ -1182,7 +1182,7 @@
           },
           {
             "step_id": "STP-C-TEST",
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "name": "C 批 测试",
             "process": "测试",
             "status": "not_started",
@@ -1289,13 +1289,13 @@
         "unresolved": [
           {
             "step_id": "STP-C-ASM",
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "reason": "前置条件未确认（如未收款/物料未核实到货），不得当作确定日期",
             "reason_code": "unconfirmed_precondition"
           },
           {
             "step_id": "STP-C-TEST",
-            "plan_id": "PLN-20260928-C",
+            "plan_id": "PLN-20260928-C001",
             "reason": "工期未知，无法推算日期",
             "reason_code": "unknown_duration"
           }
