@@ -123,12 +123,21 @@ def push_markdown(content, chat_id=None):
 
 def cmd_check():
     print("== 企微推送通道体检 ==")
-    print("  CLI 路径: %s" % (_CLI_JS if os.path.exists(_CLI_JS) else "(PATH 中查找)"))
+    # 显示的是 run_cli 里**实际会用到**的调用入口：先 cli-connector-packages 下的
+    # shim（.cmd），其次回退 node 直跑 wecom.js。原来固定打印 _CLI_JS，会让人误以为
+    # 首选入口是 node 直跑那条，体检结论与现实不符。
+    if os.path.exists(_WECOM_CLI):
+        print("  CLI 入口: %s" % _WECOM_CLI)
+    elif os.path.exists(_CLI_JS) and os.path.exists(_NODE_EXE):
+        print("  CLI 入口: %s（node 直跑）" % _CLI_JS)
+    else:
+        print("  CLI 入口: PATH 中的 wecom-cli（未找到本机安装）")
     print("  凭证目录: %s -> %s" % (WECOM_HOME, "存在" if os.path.isdir(WECOM_HOME) else "不存在（未授权）"))
     ok, out = run_cli(["--version"], timeout=15)
     print("  CLI 版本: %s" % (out.strip().splitlines()[0] if ok else "不可用"))
-    print("  授权状态: %s" % ("✅ 已授权" if is_authorized() else "❌ 未授权（跑 wecom-cli auth init 扫码）"))
-    if not is_authorized():
+    authed = is_authorized()          # 只探一次，避免重复起进程
+    print("  授权状态: %s" % ("✅ 已授权" if authed else "❌ 未授权（跑 wecom-cli auth init 扫码）"))
+    if not authed:
         print("\n[!] 授权指引：")
         print("    1) 确保手机装了企业微信 App 并登录")
         print("    2) 运行: python wecom_push.py authorize")
