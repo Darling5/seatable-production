@@ -159,7 +159,7 @@ def _handle_message(msg, group_names, member_names, st, notify_hot=True):
     cat = _classify(text)
     su = msg.get("sender_username") or ""
     # 别名映射优先（config.yaml wechat.sender_aliases）：同一人多账号/多昵称
-    # 统一成一个名字（如 demo_account 昵称 示例昵称-刘 -> 示例员工），便于推送里一眼认人
+    # 统一成一个名字（如 demo_account 昵称 示例昵称 -> 示例员工），便于推送里一眼认人
     aliases = (wi.load_config().get("wechat") or {}).get("sender_aliases") or {}
     sender = aliases.get(su) or member_names.get(su) or (su if su else "群友")
     ts = msg.get("create_time") or 0

@@ -65,6 +65,23 @@ MATCH_PATH = os.path.join(DATA, "核对结果.csv")
 MATCH_COLS = ["核对编号", "日期", "类型", "信号来源", "信号内容", "匹配结果",
               "匹配项目", "建议动作", "预填意图", "置信度", "状态"]
 
+
+def local_entities():
+    """读本地主体表：config.yaml → entities.*（该文件已 gitignore，含真实供应链/客户名）。
+
+    为什么外置：真实主体名一旦硬编码进代码，就会随仓库公开而泄露供应链与客户名单。
+    因此代码里只留**泛化示例**，真实值放本地 config.yaml；没有该段时一切照旧。
+    """
+    try:
+        import yaml
+        fp = os.path.join(HERE, "config.yaml")
+        if not os.path.exists(fp):
+            return {}
+        with open(fp, "r", encoding="utf-8") as fh:
+            return (yaml.safe_load(fh) or {}).get("entities") or {}
+    except Exception:
+        return {}
+
 # ─────────────────────────────────────────────── 信号识别
 # 收款：钱的动作 + 金额。误报主要来自「付款方式讨论」「发票金额」——
 # 用「动作在前」的短语锚定，纯数字/发票号不触发。
@@ -210,7 +227,10 @@ _PROD_PAT = re.compile(
     r"物联网卡|4G大卡|RTK|网关|报警器|充电柜|定位系统|防爆|温湿度")
 
 # 我方公司主体名（合同是「我方名义的采购合同」——按供应商核对，见 _load_purchase_rows）
-OWN_COMPANY_PAT = re.compile(r"示例科技|示例集团|示例贸易")
+# 真实主体名不入库：放 config.yaml → entities.own_company（列表，按正则片段拼接）。
+_OWN_COMPANY = local_entities().get("own_company") or ["示例科技", "示例集团", "示例贸易"]
+OWN_COMPANY_PAT = re.compile("|".join(_OWN_COMPANY) if isinstance(_OWN_COMPANY, list)
+                             else str(_OWN_COMPANY))
 
 
 # ─────────────────────────────────────────────── 供应商合同核对（采购对账）
@@ -241,11 +261,10 @@ def _load_purchase_rows():
 
 
 # 供应商名别名：合同文件名写法 ↔ SeaTable 采购表写法（一字之差/简称）。
-# 实测：合同写「示例供应商AO」，表里是「示例供应商AP」。发现新差异往这里加。
-SUPPLIER_ALIASES = {
-    "示例供应商AO": "示例供应商AP", "示例供应商AO": "示例供应商AP",
-    "示例供应商N示例供应商O": "示例供应商N/示例供应商O", "示例供应商AJ": "示例供应商AI",
-    "示例供应商I": "示例供应商I",
+# 真实名单不入库：放 config.yaml → entities.supplier_aliases（有则整体替换下面的示例）。
+# 示例：合同写「示例供应商AO」、表里是「示例供应商AP」。
+SUPPLIER_ALIASES = local_entities().get("supplier_aliases") or {
+    "示例供应商AO": "示例供应商AP",
 }
 
 

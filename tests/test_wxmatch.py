@@ -8,12 +8,18 @@ test_wxmatch.py — wxmatch.py 核对引擎离线回归测试。
 """
 import csv
 import os
+import re
 import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 模块在上一级
 sys.path.insert(0, HERE)
 from wx import wxmatch as wm  # noqa: E402
+
+# 别名表 / 我方主体表的内容随本地 config.yaml 而变（真实主体名不入库、外置在配置里），
+# 所以这里自备一份泛化值，只验证**机制**本身，结果不随环境漂移。
+wm.OWN_COMPANY_PAT = re.compile(r"示例科技|示例集团|示例贸易")
+wm.SUPPLIER_ALIASES = {"示例供应商AO": "示例供应商AP"}
 
 TMP = tempfile.gettempdir()
 FAILED = []
