@@ -1,0 +1,373 @@
+{
+  "scenario_version": "project-brain-v1",
+  "description": "合成项目：UWB 手环定位信标（燃煤电厂）——覆盖五类记忆、行动全状态迁移、四条关闭硬规则、跨天滚动、提醒去重与失败恢复。全部为虚构数据，不含任何真实客户/供应商信息。",
+  "project": {
+    "project_id": "PRJ-20260926-0001",
+    "plan_id": "PLN-20260926-0001",
+    "name": "示例项目：UWB 定位信标（合成）"
+  },
+  "steps": [
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-1001",
+        "message_time": "2026-09-14 09:12",
+        "captured_at": "2026-09-14 09:20:00",
+        "source_system": "wechat",
+        "source_base": "",
+        "source_table": "群聊·供应商",
+        "sender": "老王",
+        "project_id": "PRJ-20260926-0001",
+        "plan_id": "PLN-20260926-0001",
+        "text": "UWB 标签 410 块下周五发货，走顺丰",
+        "items": [
+          {
+            "kind": "observation",
+            "text": "供应商老王称 410 块 UWB 标签下周五发货",
+            "aspect_key": "shipment_schedule",
+            "value": "2026-09-25",
+            "actor": "老王",
+            "relative_date": "下周五",
+            "action": {
+              "title": "UWB 标签齐套到货",
+              "kind": "kitting",
+              "owner": "李工",
+              "due_relative": "下周五",
+              "acceptance_criteria": "410 块全部到货，抽检合格并完成入库"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-1002",
+        "message_time": "2026-09-22 14:03",
+        "captured_at": "2026-09-22 14:15:00",
+        "source_system": "email",
+        "source_base": "",
+        "source_table": "供应商邮件",
+        "sender": "采购-王",
+        "project_id": "PRJ-20260926-0001",
+        "plan_id": "PLN-20260926-0001",
+        "text": "标签已发出，顺丰单号 SF1234567890",
+        "items": [
+          {
+            "kind": "observation",
+            "text": "采购转述：410 块标签已发出，顺丰单号 SF1234567890",
+            "aspect_key": "shipment_status",
+            "value": "已发货",
+            "actor": "采购-王"
+          }
+        ]
+      }
+    },
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-1003",
+        "message_time": "2026-09-23 10:20",
+        "captured_at": "2026-09-23 10:25:00",
+        "source_system": "wechat",
+        "source_table": "群聊·项目决策",
+        "sender": "老板",
+        "project_id": "PRJ-20260926-0001",
+        "text": "尾程改 DHL 空运加急，多出的运费我们承担",
+        "items": [
+          {
+            "kind": "decision",
+            "text": "尾程改用 DHL 空运加急，超出的运费由我方承担",
+            "rationale": "客户要求 9/30 前必须开箱验收，海运赶不上",
+            "actor": "老板",
+            "confidence": ""
+          }
+        ]
+      }
+    },
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-1004",
+        "message_time": "2026-09-24 08:05",
+        "captured_at": "2026-09-24 08:10:00",
+        "source_system": "wechat",
+        "source_table": "群聊·生产",
+        "sender": "生产-张",
+        "project_id": "PRJ-20260926-0001",
+        "text": "按顺丰空运时效，估计 9/29 能到现场",
+        "items": [
+          {
+            "kind": "prediction",
+            "text": "预计 2026-09-29 到现场",
+            "aspect_key": "arrival_forecast",
+            "value": "2026-09-29",
+            "confidence": 0.7,
+            "rationale": "按顺丰空运时效 + 清关 1 天估算",
+            "actor": "生产-张"
+          }
+        ]
+      }
+    },
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-1005",
+        "message_time": "2026-09-21 16:40",
+        "captured_at": "2026-09-21 16:50:00",
+        "source_system": "wechat",
+        "source_table": "群聊·现场",
+        "sender": "张工",
+        "project_id": "PRJ-20260926-0001",
+        "text": "到货后本月内把 12 个信标都装完调完",
+        "items": [
+          {
+            "kind": "commitment",
+            "text": "张工承诺本月内完成 12 个信标的安装与调试",
+            "actor": "张工",
+            "action": {
+              "title": "现场安装调试排期",
+              "kind": "general",
+              "owner": "张工",
+              "due_relative": "本月内",
+              "acceptance_criteria": "12 个信标全部上线，定位精度抽检 ≤30cm"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-1006",
+        "message_time": "2026-09-21 17:05",
+        "captured_at": "2026-09-21 17:12:00",
+        "source_system": "wechat",
+        "source_table": "群聊·现场",
+        "sender": "张工",
+        "project_id": "PRJ-20260926-0001",
+        "text": "电子围栏图纸 3 天后要交",
+        "items": [
+          {
+            "kind": "observation",
+            "text": "现场需要交电子围栏图纸",
+            "actor": "张工",
+            "action": {
+              "title": "补充电子围栏图纸",
+              "kind": "general",
+              "owner": "",
+              "due_relative": "3天后",
+              "acceptance_criteria": "图纸经现场确认可用于围栏标定"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-1007",
+        "message_time": "2026-09-24 09:30",
+        "captured_at": "2026-09-24 09:35:00",
+        "source_system": "wechat",
+        "source_table": "群聊·设计",
+        "sender": "张工",
+        "project_id": "PRJ-20260926-0001",
+        "text": "围栏图由结构组出",
+        "items": [
+          {
+            "kind": "observation",
+            "text": "张工认为电子围栏图纸应由结构组出",
+            "aspect_key": "fence_drawing_owner",
+            "value": "结构组",
+            "actor": "张工"
+          }
+        ]
+      }
+    },
+    {
+      "op": "ingest",
+      "message": {
+        "message_id": "msg-1008",
+        "message_time": "2026-09-24 11:10",
+        "captured_at": "2026-09-24 11:20:00",
+        "source_system": "wechat",
+        "source_table": "群聊·设计",
+        "sender": "设计-刘",
+        "project_id": "PRJ-20260926-0001",
+        "text": "围栏图归电气组，结构组不碰这块",
+        "items": [
+          {
+            "kind": "observation",
+            "text": "设计-刘认为电子围栏图纸应由电气组出",
+            "aspect_key": "fence_drawing_owner",
+            "value": "电气组",
+            "actor": "设计-刘"
+          }
+        ]
+      }
+    },
+    {
+      "op": "evidence",
+      "ref": "ev-shipment",
+      "kind": "shipment",
+      "claim_type": "shipped",
+      "action_title": "UWB 标签齐套到货",
+      "summary": "顺丰 SF1234567890 已发出 410 块",
+      "quantity": 410,
+      "quantity_total": 410,
+      "occurred_at": "2026-09-22T14:03:00",
+      "captured_at": "2026-09-22T14:15:00",
+      "source_system": "email",
+      "source_table": "供应商邮件",
+      "source_message_id": "msg-1002"
+    },
+    {
+      "op": "verify",
+      "memory_kind": "observation",
+      "memory_text": "采购转述：410 块标签已发出，顺丰单号 SF1234567890",
+      "evidence_ref": "ev-shipment",
+      "verified_by": "李工",
+      "reason": "已与顺丰官网单号核对一致"
+    },
+    {
+      "op": "transition",
+      "action_title": "UWB 标签齐套到货",
+      "to": "pending_confirm",
+      "reason": "需求与数量已确认"
+    },
+    {
+      "op": "transition",
+      "action_title": "UWB 标签齐套到货",
+      "to": "ready",
+      "reason": "供应商已接单，进入待执行"
+    },
+    {
+      "op": "transition",
+      "action_title": "UWB 标签齐套到货",
+      "to": "in_progress",
+      "reason": "已发货在途"
+    },
+    {
+      "op": "transition",
+      "action_title": "UWB 标签齐套到货",
+      "to": "blocked",
+      "reason": "现场签收人休假",
+      "blocked_reason": "客户现场原签收人休假，无人签收",
+      "blocked_owner": "客户·现场主管"
+    },
+    {
+      "op": "transition",
+      "action_title": "UWB 标签齐套到货",
+      "to": "in_progress",
+      "reason": "客户已安排替补签收人"
+    },
+    {
+      "op": "transition",
+      "action_title": "UWB 标签齐套到货",
+      "to": "pending_acceptance",
+      "reason": "到货后待验收"
+    },
+    {
+      "op": "close",
+      "action_title": "UWB 标签齐套到货",
+      "evidence_ref": "ev-shipment",
+      "reason": "试图仅凭发货单关闭（应被拒绝）"
+    },
+    {
+      "op": "evidence",
+      "ref": "ev-partial",
+      "kind": "arrival",
+      "claim_type": "partial",
+      "action_title": "UWB 标签齐套到货",
+      "summary": "现场实收 200 块，其余 210 块仍在途",
+      "quantity": 200,
+      "quantity_total": 410,
+      "occurred_at": "2026-09-24T16:00:00",
+      "captured_at": "2026-09-24T16:30:00",
+      "source_system": "seatable",
+      "source_base": "production",
+      "source_table": "发货清单",
+      "source_row_id": "row-abc123"
+    },
+    {
+      "op": "close",
+      "action_title": "UWB 标签齐套到货",
+      "evidence_ref": "ev-partial",
+      "reason": "试图用部分到货关闭齐套（应被拒绝）"
+    },
+    {
+      "op": "evidence",
+      "ref": "ev-arrived",
+      "kind": "arrival",
+      "claim_type": "full",
+      "action_title": "UWB 标签齐套到货",
+      "summary": "410 块全部到货并完成抽检",
+      "quantity": 410,
+      "quantity_total": 410,
+      "occurred_at": "2026-09-25T11:00:00",
+      "captured_at": "2026-09-25T11:20:00",
+      "source_system": "seatable",
+      "source_base": "production",
+      "source_table": "发货清单",
+      "source_row_id": "row-abc123",
+      "verified": true,
+      "verified_by": "李工"
+    },
+    {
+      "op": "evidence",
+      "ref": "ev-accept",
+      "kind": "acceptance",
+      "claim_type": "accepted",
+      "action_title": "UWB 标签齐套到货",
+      "summary": "客户现场签收 410 块，抽检合格",
+      "occurred_at": "2026-09-25T15:00:00",
+      "captured_at": "2026-09-25T15:30:00",
+      "source_system": "seatable",
+      "source_base": "production",
+      "source_table": "发货清单",
+      "source_row_id": "row-abc123",
+      "verified": true,
+      "verified_by": "客户·现场主管",
+      "criteria_met": true
+    },
+    {
+      "op": "close",
+      "action_title": "UWB 标签齐套到货",
+      "evidence_ref": "ev-accept",
+      "reason": "齐套到货 + 客户验收通过"
+    },
+    {
+      "op": "transition",
+      "action_title": "补充电子围栏图纸",
+      "to": "pending_confirm",
+      "reason": "现场提出图纸缺口"
+    },
+    {
+      "op": "transition",
+      "action_title": "补充电子围栏图纸",
+      "to": "ready",
+      "reason": "确认需要补图，等待指派负责人"
+    },
+    {
+      "op": "rollover",
+      "as_of": "2026-09-26"
+    },
+    {
+      "op": "rollover",
+      "as_of": "2026-09-26"
+    },
+    {
+      "op": "reminders",
+      "as_of": "2026-09-26"
+    },
+    {
+      "op": "snapshot",
+      "snapshot_id": "SNP-20260926-0001"
+    },
+    {
+      "op": "context",
+      "snapshot_id": "SNP-20260926-0001"
+    }
+  ]
+}
