@@ -22,10 +22,25 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from application import contracts as C   # noqa: E402
-from workflows.daily_refresh import WORKFLOWS, run_workflow  # noqa: E402
+from application.runner import WorkflowRunner  # noqa: E402
+from workflows import daily_refresh, evening_full  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS_DIR = os.path.join(HERE, "data", "runs")
+
+# 工作流注册表：
+#   daily   09:00 轻同步（保持原样：补增量、不重建、不发布）
+#   evening 19:00 全量（采集→OCR→核对→授权写入→快照→风险→生成发布）
+WORKFLOWS: dict = {}
+for _m in (daily_refresh, evening_full):
+    WORKFLOWS.update(_m.WORKFLOWS)
+
+
+def run_workflow(name: str, ctx: C.RunContext) -> C.RunResult:
+    if name not in WORKFLOWS:
+        raise SystemExit("[错误] 未知工作流：%r（可选：%s）"
+                         % (name, "|".join(sorted(WORKFLOWS))))
+    return WorkflowRunner(ctx, WORKFLOWS[name]()).run()
 
 
 def _ctx(args) -> C.RunContext:
@@ -83,6 +98,78 @@ def cmd_list(_args):
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
         print("%-28s %-8s %s" % (rid, d.get("status"), d.get("summary", {})))
+    return 0
+
+
+# ── gate：发布门禁（可信执行层 v1）────────────────────────
+# 一条原则：账本里没证明过的，不许对外发布。判定逻辑在
+# application/gates.py；publish.py --gate 复用同一份判定，不会两边各说各话。
+
+def cmd_gate(args):
+    from application.gates import evaluate
+    g = evaluate(args.run_id, getattr(args, "runs_dir", "") or "")
+    print(g.render())
+    if not g.allowed:
+        print("\n已拒绝发布（未上传任何内容）。修完问题重跑工作流，"
+              "或复核账本后用 python publish.py --gate <run_id> 再试。")
+        return 1
+    print("\n可以用以下命令发布：python publish.py --gate %s"
+          % (g.run_id or args.run_id))
+    return 0
+
+
+# ── note：AI 语义步骤补记账本（可信执行层 v1）──────────────
+# AI 步骤（微信事件登记、群聊总结）跑在 DAG 之外，由自动化 Prompt 完成。
+# 但「跑了没有 / 跑成什么样」不能只留在 AI 的记忆里 —— 必须落进同一本账，
+# 否则播报与门禁都只能靠复述。本命令就是那条留痕通道。
+
+NOTE_STATUSES = ("success", "skipped", "failed", "blocked")
+
+
+def cmd_note(args):
+    import datetime as _dt
+    run_dir = os.path.join(RUNS_DIR, args.run_id)
+    final = os.path.join(run_dir, "final.json")
+    if not os.path.exists(final):
+        print("（找不到运行账本 %s）" % final)
+        return 1
+    if args.status not in NOTE_STATUSES:
+        print("（status 只能是 %s）" % "/".join(NOTE_STATUSES))
+        return 1
+    with open(final, encoding="utf-8") as f:
+        data = json.load(f)
+    steps = data.setdefault("steps", [])
+    rec = {
+        "step_id": args.step, "status": args.status,
+        "started_at": "", "finished_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "counts": {}, "artifacts": [args.artifact] if args.artifact else [],
+        "warnings": [], "writes": [],
+        "error": args.detail if args.status == "failed" else None,
+    }
+    if args.detail and args.status != "failed":
+        rec["counts"] = {"detail": args.detail[:200]}
+    for i, s in enumerate(steps):        # 同名步骤 → 覆盖（重跑幂等）
+        if s.get("step_id") == args.step:
+            steps[i] = rec
+            break
+    else:
+        steps.append(rec)
+    data["summary"] = C.RunResult(run_id=data.get("run_id", ""),
+                                  workflow=data.get("workflow", ""),
+                                  steps=steps).summary
+    data["status"] = (C.STATUS_SUCCESS if steps and all(
+        s.get("status") in (C.STATUS_SUCCESS, C.STATUS_SKIPPED) for s in steps)
+        else C.STATUS_FAILED)
+    with open(final, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        with open(os.path.join(run_dir, "%02d_%s.json" % (len(steps), args.step)),
+                  "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+    print("[ok] 已记账本：run=%s step=%s status=%s %s"
+          % (args.run_id, args.step, args.status, args.detail or ""))
     return 0
 
 
@@ -238,6 +325,19 @@ def main():
     p = sub.add_parser("verify", help="验收一次运行：步骤状态 + 产物新鲜度 + 安全检查")
     p.add_argument("run_id", help="要验收的 run_id（最新一次可用 latest）")
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("gate", help="发布门禁：判定某次运行是否允许对外发布")
+    p.add_argument("run_id", nargs="?", default="latest", help="run_id 或 latest")
+    p.add_argument("--runs-dir", dest="runs_dir", default="", help="运行账本目录")
+    p.set_defaults(func=cmd_gate)
+
+    p = sub.add_parser("note", help="给 DAG 之外的 AI 语义步骤补记账本")
+    p.add_argument("run_id")
+    p.add_argument("--step", required=True, help="步骤 ID，如 ai_summary / ai_event_register")
+    p.add_argument("--status", default="success", choices=NOTE_STATUSES)
+    p.add_argument("--detail", default="", help="简述（如 12 个群 / 38 条待办）")
+    p.add_argument("--artifact", default="", help="产物路径")
+    p.set_defaults(func=cmd_note)
 
     args = ap.parse_args()
     raise SystemExit(args.func(args))

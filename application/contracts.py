@@ -129,6 +129,8 @@ class StepSpec:
             return False, "destructive 步骤需要显式 --yes"
         if self.side_effect in (SIDE_ONLINE_WRITE, SIDE_DESTRUCTIVE) and not ctx.is_apply:
             return False, "写入/删除类步骤在 preview 模式下被拦截（用 --mode apply）"
+        if self.side_effect == SIDE_PUBLISH and not ctx.is_apply:
+            return False, "发布类步骤在 preview 模式下被拦截（用 --mode apply）"
         if self.side_effect == SIDE_ONLINE_WRITE and self.write_mode == WRITE_APPROVAL_REQUIRED \
                 and not ctx.yes:
             return False, "approval_required 写入需要人工确认（--yes 或改走候选队列）"

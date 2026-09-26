@@ -18,8 +18,13 @@ publish.py — 把本地驾驶舱 HTML 发布/覆盖更新到 WorkBuddy 团队�
 通过环境变量 WB_TOKEN 传入；或用 --token-stdin。没有 token 时提示需要
 在 WorkBuddy 会话中执行。
 
-失败语义：上传失败不抛异常退出码 2，提示本地 HTML 仍可用作兜底；每日
-自动化不因发布失败而中断其它步骤。
+失败语义（退出码）：
+  0  发布成功
+  1  发布门禁未通过（--gate 判定账本关键阶段失败）—— **未上传任何内容**
+  2  上传失败（网络/服务端），不抛异常；本地 HTML 仍可用作兜底
+  3  环境不具备（无 token / 非 WorkBuddy 环境）→ 跳过，不算失败
+
+每日自动化不因发布失败而中断其它步骤；但门禁通过是发布的前置条件。
 """
 import argparse
 import json
@@ -119,6 +124,11 @@ def main():
     ap.add_argument("--space-id", dest="space_id", help="首次发布指定目标空间")
     ap.add_argument("--status", action="store_true", help="只看配置不上传")
     ap.add_argument("--token-stdin", dest="token_stdin", action="store_true")
+    ap.add_argument("--gate", default="",
+                    help="发布门禁（可信执行层 v1）：指定 run_id 或 latest；"
+                         "账本里关键阶段失败/读回失败则拒绝发布")
+    ap.add_argument("--runs-dir", dest="runs_dir", default="",
+                    help="运行账本目录（默认 <技能目录>/data/runs）")
     a = ap.parse_args()
 
     pcfg = _load_publish_cfg()
@@ -132,6 +142,19 @@ def main():
         print("[publish] 文件: %s" % os.path.join(SKILL_DIR, pcfg.get("html", "项目管理驾驶舱.html")))
         return 0
 
+    # ── 发布门禁（可信执行层 v1）：账本没证明过的，不许对外发布 ──
+    # 放在所有上传动作之前：门禁不过就根本不碰远端。
+    if a.gate:
+        sys.path.insert(0, SKILL_DIR)
+        from application.gates import evaluate as _gate_eval
+        g = _gate_eval(a.gate, a.runs_dir)
+        if not g.allowed:
+            print("[blocked] %s" % g.render())
+            print("[blocked] 已拒绝发布（本次未上传任何内容）。"
+                  "修完问题重跑工作流，或用 --gate 指定另一次运行。")
+            return 1
+        print("[gate] %s" % g.render())
+
     html = a.html if os.path.isabs(a.html) else os.path.join(SKILL_DIR, a.html)
     if not os.path.exists(html):
         print("[error] HTML 不存在：%s（先运行 cockpit.py 生成）" % html)
@@ -139,8 +162,9 @@ def main():
 
     lib = _find_lib_dir()
     if not lib:
-        print("[error] 未找到 WorkBuddy 资料库 skill（skill-library）。发布步骤需要在 WorkBuddy 环境内执行。")
-        return 2
+        print("[skip] 未找到 WorkBuddy 资料库 skill（skill-library）——"
+              "本机不在 WorkBuddy 环境内，发布跳过（本地 HTML 仍可用作兜底）。")
+        return 3
 
     # token：--token-stdin 或 WB_TOKEN 环境变量
     token = ""
@@ -148,9 +172,10 @@ def main():
         token = sys.stdin.readline().strip()
     token = token or os.environ.get("WB_TOKEN", "").strip()
     if not token:
-        print("[error] 缺少 open platform token。请在 WorkBuddy 会话中执行，"
-              "由 AI 调 connect_open_platform 取得后通过 --token-stdin 或 WB_TOKEN 传入。")
-        return 2
+        print("[skip] 缺少 open platform token —— 发布跳过（本地 HTML 仍可用作兜底）。"
+              "需要发布时在 WorkBuddy 会话中执行，由 AI 调 connect_open_platform "
+              "取得后通过 --token-stdin 或 WB_TOKEN 传入。")
+        return 3
 
     space_id = a.space_id or pcfg.get("space_id")
     node_id = pcfg.get("node_id")
