@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional
 
 from . import contracts as C
+from . import authorization as AUTH
 
 # ────────────────────────────────────────────────────────────────────
 # 数据结构
@@ -43,6 +44,9 @@ class WriteRequest:
     actor: str = ""                     # 谁发起（automation / 人名）
     reason: str = ""                    # 业务依据（微信原话/合同号…）
     verify_fields: tuple = ()           # 读回验证的字段（默认验证全部标量列）
+    # 显式写库授权（可信执行层 v1）。production/tasks 路由在 apply 模式下
+    # **必须**带上它，否则一律阻断 —— 置信度再高也不能替代它。
+    grant: Optional[AUTH.WriteGrant] = None
 
 
 @dataclass
@@ -84,14 +88,23 @@ class DataService:
         if policy is None:
             return WriteResult("blocked", message="未知路由 %r（合法：production/tasks/crm）" % req.route)
 
-        # 候选制路由（production/tasks）：任何模式下都不直接写，产出候选供人工确认
+        # 候选制路由（production/tasks）：
+        #   preview → 只出候选；
+        #   apply   → **必须持有显式授权**才放行，否则阻断。
+        # 「高置信」不在此处出现，也永远不该出现——置信度是算法自评，
+        # 授权是人给的（见 application/authorization.py）。
         if policy == C.WRITE_APPROVAL_REQUIRED:
             if mode != C.MODE_APPLY:
                 # preview 连候选都可以直接返回（上层渲染用）
                 return WriteResult("candidate", message="preview：候选（未写）",
                                    evidence=dict(req.row))
-            return WriteResult("candidate", message="候选制路由：等待人工 approve 后由 intake.py 执行",
-                               evidence=dict(req.row))
+            granted, why = AUTH.authorize_write(req.grant, req.table, req.action)
+            if not granted:
+                return WriteResult("blocked", message=why,
+                                   evidence={"table": req.table, "action": req.action,
+                                             "idem_key": req.idem_key,
+                                             "grant": req.grant.grant_id if req.grant else ""})
+            # 授权通过 → 落到下面的统一写入流程（幂等 + 读回验证 + 台账）
 
         # crm 路由：preview 不写；apply 才写
         if mode != C.MODE_APPLY:
@@ -118,6 +131,10 @@ class DataService:
         except Exception as e:  # 写入异常统一收口，不向上炸
             return WriteResult("verify_failed", verified=False,
                                message="写入异常：%s" % e)
+
+        # 云端已接受这次写入 → 消耗一次授权（仅 max_uses>0 的授权计数；
+        # 读回失败时授权同样算用掉，避免自动化靠重试绕过一次性授权）
+        self._consume_grant(req)
 
         # 读回验证：中文列名写错时 SeaTable 会 HTTP 200 静默丢列，必须核对
         verified, detail = self.verify_readback(adapter, req, rid)
@@ -207,6 +224,15 @@ class DataService:
             return a
         return self._factory(route)
 
+    def _consume_grant(self, req: WriteRequest) -> None:
+        """一次真实写入尝试消耗一次授权（只对 max_uses>0 的授权计数）。"""
+        if req.grant is None or not req.grant.max_uses:
+            return
+        try:
+            AUTH.GrantStore(os.path.join(self.data_dir, AUTH.GRANTS_DIR_NAME)).consume(req.grant)
+        except OSError:
+            pass  # 凭证回写失败不影响业务写入，下次授权自然按旧计数继续
+
     def _ledger_path(self) -> str:
         return os.path.join(self.data_dir, LEDGER_FILE_NAME)
 
@@ -229,7 +255,9 @@ class DataService:
             if new_file:
                 w.writerow(LEDGER_FIELDS)
             summary = "; ".join("%s=%s" % kv for kv in list(req.row.items())[:3])
+            # 备注列前置授权编号：审计时一眼看出「这次写入是谁批的」
+            grant_tag = "[%s] " % req.grant.grant_id if req.grant else "[无授权] "
             w.writerow([_dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         req.route, req.action, req.table, rid, req.idem_key,
                         "通过" if verified else "失败", summary[:120],
-                        req.actor, (req.reason or detail)[:80]])
+                        req.actor, (grant_tag + (req.reason or detail))[:80]])

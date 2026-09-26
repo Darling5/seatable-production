@@ -17,7 +17,7 @@ wxmatch.py — 群消息 ↔ SeaTable 业务核对引擎。
      → 项目表「合同」列比对：同名 = 已登记；项目有收款但合同列为空 = 提示补登记。
 
 数据源（全部本地只读，零凭证零外联）：
-  - data/���信事件.csv           wechat_intake.py 登记的事件（含 AI 从 summary 提取的）
+  - data/微信事件.csv           wechat_intake.py 登记的事件（含 AI 从 summary 提取的）
   - data/项目.csv               SeaTable 同步下来的项目表（客户/合同/实收/待收）
   - 微信 msg/file/月份/          接收的文件（按 mtime 过滤时间窗）
   - wxengine 探测的数据根目录    auto_detect_db_dir()（v1.6.2 起支持 APPDATA 缺失兜底）
@@ -29,14 +29,22 @@ wxmatch.py — 群消息 ↔ SeaTable 业务核对引擎。
 v1.9（2026-09-15，当日复盘升级）：
   4. 到货/发货信号：群消息「XX到货/已发货」↔ 采购表「已下单/已付款-未到货」
      在途行匹配（供应商名含别名唯一命中=高置信，生成 状态→已到货 更新意图）。
-  5. apply 子命令：把「待确认」的**高置信**预填意图自动写入 SeaTable
-     （用户决策：高置信自动写 + 低置信待确认）。幂等——状态 != 待确认 的行
-     永不重写；写失败回退待确认明晚重试；中低置信项仍走人工确认。
+
+v1.10（2026-09-26，可信执行层 v1）：
+  5. apply 子命令改为**授权写入**：不带 --grant-file 时只产「待授权清单」，
+     一个字都不写；带 --grant-file 时读人亲手写的授权文件，逐条经
+     DataService 写入（幂等 + 读回验证 + write_ledger.csv 台账）。
+     **高置信 ≠ 授权** —— 置信度只决定「哪些条目进入待授权清单」，
+     永远不决定「是否放行」。
+     幂等：同一核对编号 + 同一意图序号 = 同一幂等键，重复跑不写第二遍；
+     写失败 / 读回失败的行保持「待确认」，明晚可再试。
 
 铁律：
-  - scan 保持**只读**，绝不自动写 SeaTable；自动写只发生在显式的
-    `python wxmatch.py apply` 命令里，且只碰高置信项。
-  - 金额/日期匹配是**启发式**，置信度写进结果列，低置信度的只提示不预填。
+  - scan 保持**只读**，绝不写 SeaTable。
+  - 写库只有一条路：显式 `python wxmatch.py apply --grant-file <授权.json>`；
+    不给授权文件时，该命令只列清单、不落任何写入。
+  - 金额/日期匹配是**启发式**，置信度写进结果列，低置信度的只提示不预填；
+    但置信度**不构成**写入授权（2026-09-26 起）。
   - 微信文件名是**隐私数据**，核对结果 CSV 落 data/（gitignore），绝不入库。
 """
 import argparse
@@ -296,7 +304,7 @@ def scan_events(days=7):
                 for p in cust_hits[:2]:
                     out.append(_mk(d, "收款", sig, text, cust_hits, p,
                                    "消息含收款词但未识别金额；该客户有待收项目",
-                                   "", "低"))
+                                   "", "", "低"))
             elif amounts:
                 amt = max(a[0] for a in amounts)   # 多个数字取最大的当主金额
                 amt_hits = _match_amount(amt, cust_hits or projects)
@@ -510,13 +518,18 @@ def scan_arrivals(days=7):
     return out
 
 
-# ─────────────────────────────────────────────── apply：高置信意图自动写库（v1.9）
-# 设计边界（2026-09-15 用户决策）：
-#   高置信（金额±2%吻合的唯一收款匹配 / 供应商名唯一的在途到货）→ 自动写；
-#   中低置信 → 保持待确认，只在复盘播报里列清单。
-# 写库链路复用 wechat_intake.py 的 Intent + adapter（update/append/log），
-# 不复制业务逻辑；每条写完读回验证由 adapter.update_row 的 SeaTable 实现
-# 自带（列名错抛异常）保证。台账留痕：核对结果.csv 状态列回填「已自动写入」。
+# ─────────────────────────────────────────────── apply：授权写入（可信执行层 v1，2026-09-26）
+# 业主口径：**高置信 ≠ 授权。**
+#   旧实现（v1.9）把「高置信」直接当成写入许可 —— 引擎一命中就改真实业务表，
+#   等于用算法自评替代了人的决定；而且那条路径完全绕过 DataService，
+#   连读回验证都没有（旧注释以为「列名错会抛异常」，但 SeaTable 实际是
+#   HTTP 200 静默丢列，SKILL.md §12 有明确记载）。
+#   新实现把「授权」和「置信」彻底分开：
+#     ① 不带 --grant-file：只产「待授权清单」，一行都不写；
+#     ② 带 --grant-file：读人亲手写的授权文件，逐条经 DataService 写入
+#        （幂等键 + 读回验证 + write_ledger.csv 台账）；任一读回失败即判失败，
+#        该行保持「待确认」。
+#   置信度只决定「哪些条目进入待授权清单」，永远不决定「是否放行」。
 
 def _get_business_adapter():
     """复用 wechat_intake 的业务 Base adapter 初始化（不 import 整个模块避免副作用）。"""
@@ -533,75 +546,108 @@ def _get_business_adapter():
                            base_name=biz.get("base_name", "business")), "seatable"
 
 
-def cmd_apply(dry=False):
-    """把核对台账里「待确认」的高置信预填意图自动写入 SeaTable。
+def cmd_apply(dry=False, grant_file=""):
+    """把核对台账里「待确认」的高置信项写库 —— 但高置信不是授权。
 
-    幂等：状态 != 待确认 的行永不重写；写入失败该行保持待确认。
-    dry=True 只打印将写什么，不落库（晚间自动化先 dry 看一遍再实写）。
+    可信执行层 v1（2026-09-26）：
+      - 不带 --grant-file：只列「待授权写入清单」，一个字都不写；
+      - 带 --grant-file：读人亲手写的授权文件，逐条经 DataService 写入
+        （幂等 + 读回验证 + write_ledger.csv 台账）。
+
+    幂等：同一条核对编号 + 同一条意图序号 → 同一个幂等键，
+    重复跑 apply 不会把同一件事写两遍；未通过的行保持「待确认」，明晚可再试。
     """
     rows = _read_csv(MATCH_PATH)
     todo = [r for r in rows
             if r.get("状态") == "待确认" and r.get("置信度") == "高"
             and (r.get("预填意图") or "").strip()]
     if not todo:
-        print("[ok] 无待自动写入的高置信核对项（%d 条待确认中置信均≤中）"
+        print("[ok] 无待授权写入的核对项（%d 条待确认中置信均≤中或无预填意图）"
               % sum(1 for r in rows if r.get("状态") == "待确认"))
         return []
-    print("── 自动写入高置信核对项（%d 条）──" % len(todo))
+
+    # ── ① 无授权：只产清单，一行都不写 ─────────────────────
+    if not grant_file:
+        print("── 待授权写入清单（%d 条；本轮未写入任何数据）──" % len(todo))
+        for r in todo:
+            print("  · %s [%s] %s" % (r["核对编号"], r["类型"], r["匹配结果"][:60]))
+            print("     拟写：%s" % r["预填意图"][:120])
+        print("[hold] 高置信只是匹配算法的自评，不等于授权。")
+        print("       人工核对无误后写授权文件，再执行：")
+        print("       python wxmatch.py apply --grant-file <授权.json>")
+        return []
+
+    # ── ② 持授权：经 DataService 写入（幂等 + 读回验证 + 台账）──
+    from application import authorization as AUTH
+    from application import contracts as C
+    from application.dataservice import DataService, WriteRequest
+
+    grant = AUTH.GrantStore.load_file(grant_file)
+    if grant is None:
+        print("[blocked] 授权文件读不到或格式非法：%s（未写入任何数据）" % grant_file)
+        return []
+    print("── 授权写入（授权 %s · 授权人 %s）──"
+          % (grant.grant_id, grant.actor or "(未署名)"))
     if dry:
         for r in todo:
-            print("  [dry] %s %s → %s" % (r["核对编号"], r["类型"], r["匹配结果"][:50]))
-            print("         意图: %s" % (r["预填意图"][:120]))
+            print("  [dry] %s %s → %s" % (r["核对编号"], r["类型"], r["预填意图"][:100]))
         return todo
-    adapter, where = _get_business_adapter()
-    print("  写入目标：%s" % where)
-    from intake import Intent
+
+    ds = DataService(lambda _name: _get_business_adapter()[0], data_dir=DATA)
     results = {}
     for r in todo:
         try:
             intents = json.loads(r["预填意图"])
-            if isinstance(intents, dict):
-                intents = [intents]
-            msgs = []
-            for it in intents:
-                obj = Intent(it.get("op", "log"), it.get("table", "工作日志"),
-                             it.get("data") or {}, it.get("row_id"), it.get("reason", ""))
-                if obj.op == "update":
-                    if not obj.row_id:
-                        msgs.append("跳过：缺 row_id")
-                        continue
-                    adapter.update_row(obj.table, obj.row_id, obj.data)
-                    msgs.append("已更新「%s」%s：%s" % (obj.table, obj.row_id,
-                                                      ",".join(obj.data.keys())))
-                elif obj.op == "append":
-                    rid = adapter.append_row(obj.table, obj.data)
-                    msgs.append("已写入「%s」row=%s" % (obj.table, rid))
-                elif obj.op == "log":
-                    rid = adapter.append_row("工作日志", obj.data or
-                                             {"日期": datetime.now().strftime("%Y-%m-%d"),
-                                              "原话": r.get("信号内容", ""), "类型": "核对"})
-                    msgs.append("已记工作日志 row=%s" % rid)
-                else:
-                    msgs.append("未知 op=%s 跳过" % obj.op)
-            results[r["核对编号"]] = "；".join(msgs)[:400]
         except Exception as e:
-            results[r["核对编号"]] = "失败：%s" % e
-    # 回填台账
+            results[r["核对编号"]] = "失败：预填意图 JSON 解析失败 %s" % e
+            continue
+        if isinstance(intents, dict):
+            intents = [intents]
+        msgs = []
+        for i, it in enumerate(intents):
+            op = (it.get("op") or "log").strip()
+            if op == "log":
+                table = "工作日志"
+                data = it.get("data") or {
+                    "日期": datetime.now().strftime("%Y-%m-%d"),
+                    "原话": r.get("信号内容", ""), "类型": "核对"}
+                action, row_id = "append", ""
+            elif op in ("append", "update"):
+                table = it.get("table") or ""
+                data = it.get("data") or {}
+                action, row_id = op, (it.get("row_id") or "")
+                if op == "update" and not row_id:
+                    msgs.append("跳过：update 缺 row_id（禁止凭印象猜行号）")
+                    continue
+            else:
+                msgs.append("跳过：未知 op=%s" % op)
+                continue
+            res = ds.write(WriteRequest(
+                table=table, row=data, route="production", action=action,
+                row_id=row_id,
+                idem_key="wxmatch:%s:%d" % (r.get("核对编号") or "", i),
+                actor=grant.actor or "wxmatch",
+                reason="%s｜授权 %s" % ((r.get("匹配结果") or "")[:60], grant.grant_id),
+                grant=grant), mode=C.MODE_APPLY)
+            msgs.append("%s：%s" % (res.status, res.message))
+        results[r["核对编号"]] = "；".join(msgs)[:400]
+
+    # 回填台账：只有真写成功（written，且无 verify_failed）才算处置完
     for r in rows:
         res = results.get(r.get("核对编号"))
         if res is None:
             continue
-        if res.startswith("失败"):
-            r["状态"] = "待确认"            # 失败回退，明晚重试
-            r["建议动作"] = (r.get("建议动作", "") + "；自动写入失败待重试")[:200]
+        if "written" in res and "verify_failed" not in res:
+            r["状态"] = "已授权写入"
         else:
-            r["状态"] = "已自动写入"
+            r["状态"] = "待确认"
+            r["建议动作"] = (r.get("建议动作", "") + "；授权写入未通过，待处理")[:200]
         r["匹配结果"] = (r.get("匹配结果", "") + "｜" + res)[:400]
     _write_csv(MATCH_PATH, MATCH_COLS, rows)
-    ok = sum(1 for v in results.values() if not v.startswith("失败"))
+    ok = sum(1 for v in results.values() if "written" in v and "verify_failed" not in v)
     for k, v in results.items():
         print("  · %s %s" % (k, v))
-    print("[ok] 自动写入完成：成功 %d / 失败 %d（失败项保持待确认）"
+    print("[ok] 授权写入完成：成功 %d / 未通过 %d（未通过项保持待确认）"
           % (ok, len(results) - ok))
     return todo
 
@@ -723,8 +769,10 @@ def main():
     p.add_argument("--note", default="")
     sub.add_parser("intent", help="打印某项的预填意图 JSON")
     p.add_argument("no")
-    p = sub.add_parser("apply", help="自动写入高置信待确认项（金额±2%唯一匹配/在途到货唯一匹配）")
+    p = sub.add_parser("apply", help="授权写入待确认项（无 --grant-file 只列清单、不写库）")
     p.add_argument("--dry", action="store_true", help="只打印将写什么，不落库")
+    p.add_argument("--grant-file", dest="grant_file", default="",
+                   help="人工授权文件（JSON）。缺省 = 只列待授权清单，一个字都不写")
     a = ap.parse_args()
     if a.cmd == "scan":
         cmd_scan(a.days, a.pdf_days, write=not a.no_write)
@@ -735,7 +783,7 @@ def main():
     elif a.cmd == "intent":
         cmd_export_intent(a.no)
     elif a.cmd == "apply":
-        cmd_apply(a.dry)
+        cmd_apply(a.dry, a.grant_file)
 
 
 if __name__ == "__main__":

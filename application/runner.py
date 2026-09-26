@@ -174,12 +174,18 @@ def make_step(cmd: Sequence[str], step_id: str, name: str, **kw) -> C.StepSpec:
       3        → skipped（数据源不可用/开关关闭，产物不刷新是正常结果，
                   不是失败也不是成功——验收器不查其产物新鲜度）
       其他非 0 → failed（retry 生效）
+
+    参数里可用占位符 ``{run_id}`` / ``{skill_dir}``（运行时替换），
+    供「发布门禁」这类需要知道本次运行编号的步骤使用。
     """
     def _run(ctx: C.RunContext) -> C.StepResult:
         import subprocess
         import sys
         res = C.StepResult(step_id=step_id)
-        proc = subprocess.run(list(cmd), cwd=ctx.skill_dir or None,
+        argv = [str(a).replace("{run_id}", ctx.run_id)
+                     .replace("{skill_dir}", ctx.skill_dir or "")
+                for a in cmd]
+        proc = subprocess.run(argv, cwd=ctx.skill_dir or None,
                               capture_output=True, text=True,
                               encoding="utf-8", errors="replace",
                               env={**os.environ, "PYTHONIOENCODING": "utf-8"})

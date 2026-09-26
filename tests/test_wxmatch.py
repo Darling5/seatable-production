@@ -186,12 +186,21 @@ check("到货意图含目标表和 row_id", arrivals and "pur-a" in (arrivals[0]
 check("到货意图更新状态", arrivals and "已到货" in (arrivals[0]["预填意图"] or ""), True)
 check("预计到货问句排除", any("预计到货提醒" in r["信号内容"] for r in arrivals), False)
 
-# ---------------------------------------------------------------- 测试 8：apply 自动写入边界与幂等
+# ---------------------------------------------------------------- 测试 8：apply 授权写入（可信执行层 v1）
 print()
 print("=" * 70)
-print("测试 8：cmd_apply（仅高置信待确认项；成功标记已自动写入）")
+print("测试 8：cmd_apply（高置信≠授权：无授权只列清单；有授权才写并读回）")
 print("=" * 70)
+import json  # noqa: E402
+from application import authorization as AUTH  # noqa: E402
+
 tmp_match = os.path.join(TMP, "wxmatch_test_apply.csv")
+tmp_ledger = os.path.join(TMP, "write_ledger.csv")
+for _p in (tmp_match, tmp_ledger):
+    try:
+        os.remove(_p)
+    except OSError:
+        pass
 apply_rows = [
     {"核对编号": "WX-A-001", "日期": _d_recent, "类型": "到货", "信号来源": "采购群|供应商",
      "信号内容": "禾电讯已到货", "匹配结果": "在途唯一", "匹配项目": "", "建议动作": "确认到货",
@@ -203,37 +212,75 @@ apply_rows = [
     {"核对编号": "WX-A-003", "日期": _d_recent, "类型": "收款", "信号来源": "客户群|张三",
      "信号内容": "已打款", "匹配结果": "已写入", "匹配项目": "项目A", "建议动作": "",
      "预填意图": '[{"op":"update","table":"项目","row_id":"already","data":{"实收":"100"}}]',
-     "置信度": "高", "状态": "已自动写入"},
+     "置信度": "高", "状态": "已授权写入"},
 ]
 with open(tmp_match, "w", encoding="utf-8-sig", newline="") as f:
     w = csv.DictWriter(f, fieldnames=wm.MATCH_COLS)
     w.writeheader()
     w.writerows(apply_rows)
+
+
 class _ApplyAdapter:
+    """带 list_rows 的假适配器 —— 读回验证需要它。
+
+    旧版 fake 只有 update_row/append_row，所以「每条写完读回验证由
+    adapter 自带」这句话在测试里从没被验证过；新链路显式需要 list_rows。
+    """
+
     def __init__(self):
         self.calls = []
+        self.rows = {}
+
     def update_row(self, table, row_id, data):
         self.calls.append((table, row_id, dict(data)))
+        self.rows[row_id] = dict(data)
+        self.rows[row_id]["__row_id__"] = row_id
+
     def append_row(self, table, data):
+        rid = "new-row"
         self.calls.append((table, "append", dict(data)))
-        return "new-row"
-old_match = wm.MATCH_PATH
+        self.rows[rid] = dict(data)
+        self.rows[rid]["__row_id__"] = rid
+        return rid
+
+    def list_rows(self, table):
+        return [dict(r) for r in self.rows.values()]
+
+
+old_match, old_data = wm.MATCH_PATH, wm.DATA
 old_get_adapter = wm._get_business_adapter
 stub = _ApplyAdapter()
-wm.MATCH_PATH = tmp_match
+wm.MATCH_PATH, wm.DATA = tmp_match, TMP
 wm._get_business_adapter = lambda: (stub, "stub")
+
+# ① 无授权：高置信也不行，只列清单、一条都不写
 try:
-    applied = wm.cmd_apply()
+    wm.cmd_apply()
+    no_grant_rows = {r["核对编号"]: r for r in wm._read_csv(tmp_match)}
+finally:
+    pass
+check("高置信 + 无授权 → 一条都不写", len(stub.calls), 0)
+check("无授权时状态保持待确认", no_grant_rows["WX-A-001"]["状态"], "待确认")
+
+# ② 带人工授权文件：写入 + 读回验证
+grant = AUTH.manual_grant(tables=("IC采购记录",), actions=("update",),
+                          actor="老板", reason="人工核对无误")
+grant_file = os.path.join(TMP, "wxmatch_test_grant.json")
+with open(grant_file, "w", encoding="utf-8") as f:
+    json.dump(grant.to_dict(), f, ensure_ascii=False)
+try:
+    wm.cmd_apply(grant_file=grant_file)
     after_apply = wm._read_csv(tmp_match)
 finally:
-    wm.MATCH_PATH, wm._get_business_adapter = old_match, old_get_adapter
-by_no = {r["核对编号"]: r for r in after_apply}
-check("只写 1 条高置信待确认", len(stub.calls), 1)
-check("写入目标正确", stub.calls and stub.calls[0][0:2], ("IC采购记录", "pur-a"))
-check("成功回填已自动写入", by_no["WX-A-001"]["状态"], "已自动写入")
-check("中置信不被写入", by_no["WX-A-002"]["状态"], "待确认")
-check("已处理高置信不重复写", by_no["WX-A-003"]["状态"], "已自动写入")
+    wm.MATCH_PATH, wm.DATA = old_match, old_data
+    wm._get_business_adapter = old_get_adapter
 
+by_no = {r["核对编号"]: r for r in after_apply}
+check("授权后写入 1 条", len(stub.calls), 1)
+check("写入目标正确", stub.calls and stub.calls[0][0:2], ("IC采购记录", "pur-a"))
+check("读回通过后回填已授权写入", by_no["WX-A-001"]["状态"], "已授权写入")
+check("中置信不被写入", by_no["WX-A-002"]["状态"], "待确认")
+check("已处理项不重复写", by_no["WX-A-003"]["状态"], "已授权写入")
 # ---------------------------------------------------------------- 收尾
 print()
 print("=" * 70)

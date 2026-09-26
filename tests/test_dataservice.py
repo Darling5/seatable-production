@@ -3,7 +3,8 @@
 """application/dataservice.py（v2.0 P0-4）的单元测试。
 
 零网络：StubAdapter 模拟 SeaTable 行为，重点覆盖：
-  1. 路由策略：production/tasks 永远出候选不直写；crm 在 apply 下自动写
+  1. 路由策略：production/tasks 在 preview 出候选、
+     apply 必须持显式授权（无授权 → blocked，高置信度不算授权）；crm 在 apply 下自动写
   2. preview 模式：任何路由都不落写入
   3. 读回验证：字段一致通过；中文列名静默丢列（HTTP 200 但读回缺失）被抓住
   4. 幂等键：同键重写 -> skipped_reuse
@@ -68,7 +69,7 @@ class TestRoutePolicies(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="ds_test_")
         self.stub = StubAdapter()
-        self.stub.valid_cols = {"客户名称", "联系人", "跟进状态"}
+        self.stub.valid_cols = {"客户名称", "联系人", "跟进状态", "生产产品"}
         self.ds = _ds(self.tmp, self.stub)
 
     def test_crm_write_in_apply(self):
@@ -82,14 +83,38 @@ class TestRoutePolicies(unittest.TestCase):
         self.assertEqual(r.status, "candidate")
         self.assertEqual(len(self.stub.rows), 0)
 
-    def test_production_always_candidate(self):
-        r = self.ds.write(_req(route="production"), mode=C.MODE_APPLY)
+    def test_production_preview_candidate(self):
+        """preview 下 production 只出候选，不写。"""
+        r = self.ds.write(_req(route="production"), mode=C.MODE_PREVIEW)
         self.assertEqual(r.status, "candidate")
         self.assertEqual(len(self.stub.rows), 0)   # 没写
 
-    def test_tasks_always_candidate(self):
+    def test_production_apply_without_grant_blocked(self):
+        """可信执行层 v1：apply 模式下无显式授权 → 阻断，一个字都不写。
+
+        旧行为是「返回 candidate」，但那只是没写而已，语义上仍暗示
+        「等 approve 就能写」；现在 explicit grant 缺失一律 blocked。
+        """
+        r = self.ds.write(_req(route="production"), mode=C.MODE_APPLY)
+        self.assertEqual(r.status, "blocked")
+        self.assertIn("授权", r.message)
+        self.assertEqual(len(self.stub.rows), 0)
+
+    def test_production_apply_with_grant_writes(self):
+        """持有效授权 → 放行，并照常走读回验证。"""
+        from application import authorization as AUTH
+        grant = AUTH.manual_grant(tables=("生产计划",), actions=("append",),
+                                  actor="老板", reason="确认写入")
+        r = self.ds.write(
+            WriteRequest(table="生产计划", row={"生产产品": "4G小卡"},
+                         route="production", actor="test", grant=grant),
+            mode=C.MODE_APPLY)
+        self.assertEqual(r.status, "written")
+        self.assertTrue(r.verified)
+
+    def test_tasks_apply_without_grant_blocked(self):
         r = self.ds.write(_req(route="tasks"), mode=C.MODE_APPLY)
-        self.assertEqual(r.status, "candidate")
+        self.assertEqual(r.status, "blocked")
 
     def test_unknown_route_blocked(self):
         r = self.ds.write(_req(route=" nowhere"), mode=C.MODE_APPLY)
