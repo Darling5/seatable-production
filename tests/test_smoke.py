@@ -13,9 +13,12 @@ test_smoke.py — 零依赖冒烟测试（不需要 pytest，直接 python test_
 强制在临时目录跑，绝不读写真实 data/。
 """
 import datetime
+import io
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -33,6 +36,46 @@ def check(cond, msg):
     else:
         _FAIL.append(msg)
         print("  FAIL: " + msg)
+
+
+# 文本类扩展名才做去敏扫描；二进制/图片直接跳过
+_BINARY_EXT = (".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".xlsx", ".xls",
+               ".zip", ".bundle", ".woff", ".woff2", ".ttf")
+
+
+def _tracked_text_files():
+    """返回「会被提交的文本文件」绝对路径列表。
+
+    优先 `git ls-files`（精确等于入库面，天然排除 config.yaml / data/ 等
+    gitignore 项）；无 git 时退化为目录遍历 + 跳过本地文件。
+    """
+    try:
+        out = subprocess.run(["git", "-C", _HERE, "ls-files"],
+                             capture_output=True, timeout=60)
+        if out.returncode == 0 and out.stdout.strip():
+            res = []
+            for p in out.stdout.decode("utf-8", "replace").splitlines():
+                p = p.strip()
+                if not p or p.endswith(_BINARY_EXT):
+                    continue
+                fp = os.path.join(_HERE, p)
+                if os.path.isfile(fp):
+                    res.append(fp)
+            if res:
+                return res
+    except Exception:
+        pass
+    _skip = {".git", "data", "__pycache__", ".venv", "node_modules", ".workbuddy"}
+    res = []
+    for root, dirs, files in os.walk(_HERE):
+        dirs[:] = [d for d in dirs if d not in _skip]
+        for fn in files:
+            if fn.endswith(_BINARY_EXT):
+                continue
+            if fn.startswith("config") and fn.endswith((".yaml", ".yml")):
+                continue
+            res.append(os.path.join(root, fn))
+    return res
 
 
 def main():
@@ -194,16 +237,82 @@ def main():
                                         {"defaults": {"外壳采购记录": {"供应商": "张三厂"}}})
             check(md.get("供应商") == "张三厂", "config 的 defaults 未生效")
             check(md.get("采购时间") == "__TODAY__", "覆盖 defaults 时把内置默认值弄丢了")
-            # SKILL.md 里也不该再有成串的真实供应商名
-            _sk = os.path.join(_HERE, "SKILL.md")
-            if os.path.exists(_sk):
-                _txt = open(_sk, encoding="utf-8").read()
-                for _leak in ("示例供应商AJ", "示例供应商AK", "示例供应商AC", "示例供应商AE", "示例供应商AF",
-                               "示例供应商AG", "示例供应商AH", "示例供应商AI", "客户B", "客户F", "客户X",
-                               "示例科技", "示例集团", "示例供应商AO", "示例供应商AP"):
-                    # 演示数据/文档用泛化名（示例电子A/示例组装厂），真实供应链与客户名一律不得入库
-                    check(_leak not in _txt,
-                          "SKILL.md 仍写着真实供应商『%s』（泄露供应链且不可移植）" % _leak)
+            # ── 去敏守卫：抓形态 + 扫全量 + 用真值表反向覆盖 ────────────
+            # 历史教训（2026-09-26 复盘）：旧守卫是「15 个硬编码真名的黑名单
+            # + 只扫 SKILL.md」，仓库里 28 个被跟踪文件、287 行真名全部漏过，
+            # 而 CI 一路绿灯 —— 名单外的东西压根不在射程内，守卫自己还把
+            # 真名提交进了仓库。现在：① 抓形态不抓名单 ② 扫入库面全量
+            # ③ 真值表反向覆盖（新增真名只改 config，守卫自动生效）。
+            print("[09b] 去敏守卫（全仓库）")
+            _files = _tracked_text_files()
+            check(len(_files) > 50, "守卫只扫到 %d 个文件，明显偏少（目录解析错？）" % len(_files))
+            _corpus = {}
+            for _f in _files:
+                try:
+                    _rel = os.path.relpath(_f, _HERE).replace("\\", "/")
+                    _corpus[_rel] = io.open(_f, encoding="utf-8").read()
+                except Exception:
+                    pass  # 非 UTF-8 文本直接跳过
+
+            # (1) 手机号形态（测试占位号放行）
+            _TEL_OK = ("13800000000", "13711111111", "13911111111")
+            _bad = []
+            for _rel, _t in _corpus.items():
+                for _m in sorted(set(re.findall(r"(?<!\d)1[3-9]\d{9}(?!\d)", _t))):
+                    if _m not in _TEL_OK:
+                        _bad.append("%s→%s" % (_rel, _m[:3] + "****" + _m[-2:]))
+            check(not _bad, "出现真实手机号：%s" % "；".join(_bad[:5]))
+
+            # (2) 未泛化的完整企业名
+            #     放行：含「示例/某/测试」的占位串、以及纯后缀词表项
+            #     （`股份有限公司`/`科技有限公司` 等是匹配词表，不是主体名）
+            _CORP_OK = re.compile(r"示例|某|测试")
+            _SUFFIX_ONLY = re.compile(
+                r"^(?:股份|有限责任|科技|电子|实业|贸易|网络|信息|智能|材料)?有限公司$")
+            _bad = []
+            for _rel, _t in _corpus.items():
+                for _m in sorted(set(re.findall(r"[\u4e00-\u9fa5]{2,14}(?:有限公司|股份有限公司)", _t))):
+                    if _CORP_OK.search(_m) or _SUFFIX_ONLY.match(_m):
+                        continue
+                    _bad.append("%s→%s" % (_rel, _m))
+            check(not _bad, "出现未泛化企业名：%s" % "；".join(_bad[:5]))
+
+            # (3) 真值表反向覆盖：config.yaml（已 gitignore）里的真实主体名
+            #     一个都不该出现在被跟踪文件里。CI 上无此文件 → 自动跳过。
+            _cfg = os.path.join(_HERE, "config.yaml")
+            if not os.path.exists(_cfg):
+                print("       （无本地 config.yaml，跳过真值表检查）")
+            else:
+                _ent = {}
+                try:
+                    import yaml
+                    _ent = (yaml.safe_load(io.open(_cfg, encoding="utf-8").read())
+                            or {}).get("entities") or {}
+                except Exception as _e:
+                    print("       config.yaml 解析失败，跳过：%s" % _e)
+                _ok = set(_ent.get("generic_ok") or [])
+                _needles = set()
+                _stack = [_v for _k, _v in _ent.items() if _k != "generic_ok"]
+                while _stack:
+                    _x = _stack.pop()
+                    if isinstance(_x, dict):
+                        _stack.extend(_x.keys())
+                        _stack.extend(_x.values())
+                    elif isinstance(_x, list):
+                        _stack.extend(_x)
+                    else:
+                        _s = str(_x).strip()
+                        # generic_ok 是「通用描述词」白名单：允许出现在文档里
+                        if len(_s) >= 2 and _s not in _ok and _s[0] not in "①②③":
+                            _needles.add(_s)
+                if _ent:
+                    check(len(_needles) >= 20,
+                          "真值表只解析出 %d 条 needle，entities 结构可能已变" % len(_needles))
+                    _hit = sorted(_rel for _rel, _t in _corpus.items()
+                                  if any(_n in _t for _n in _needles))
+                    check(not _hit, "被跟踪文件里出现真实主体名：%s" % "；".join(_hit[:5]))
+                    print("       真值表 %d 条 × %d 文件 → %d 命中"
+                          % (len(_needles), len(_corpus), len(_hit)))
 
             print("[10] 开局体检 doctor")
             f_empty = _doc.check_inventory({})
