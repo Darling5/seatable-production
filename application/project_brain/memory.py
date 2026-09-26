@@ -178,14 +178,23 @@ def find_conflicts(rows: Iterable[Mapping[str, Any]]) -> list[dict]:
             "aspect_key": items[0].get("aspect_key", ""),
             "values": sorted(values),
             "members": [
+                # 统一字段照抄，冲突成员也要能联到计划/证据
+                # （合同 §1：任何记忆记录都必须携带八个统一字段）
                 {"memory_id": i.get("memory_id"), "kind": i.get("kind"),
                  "kind_cn": i.get("kind_cn"), "value": i.get("value"),
                  "text": i.get("text"), "occurred_at": i.get("occurred_at"),
                  "captured_at": i.get("captured_at"),
+                 "project_id": i.get("project_id", ""),
+                 "plan_id": i.get("plan_id", ""),
+                 "action_id": i.get("action_id", ""),
+                 "evidence_id": i.get("evidence_id", ""),
+                 "decision_id": i.get("decision_id", ""),
+                 "run_id": i.get("run_id", ""),
+                 "snapshot_id": i.get("snapshot_id", ""),
+                 "version": i.get("version", i.get("__version__", 1)),
                  "source_system": i.get("source_system"),
                  "source_table": i.get("source_table"),
-                 "source_row_id": i.get("source_row_id"),
-                 "evidence_id": i.get("evidence_id")}
+                 "source_row_id": i.get("source_row_id")}
                 for i in items
             ],
             "resolved": False,
