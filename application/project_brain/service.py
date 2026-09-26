@@ -438,7 +438,8 @@ class ProjectBrain:
     # ════════════════════════════════════════════════════════════════
     def add_evidence(self, *, project_id: str, kind: str, claim_type: str,
                      mode: str, grant: Optional[AUTH.WriteGrant] = None,
-                     action_id: str = "", summary: str = "", subject: str = "",
+                     plan_id: str = "", action_id: str = "", summary: str = "",
+                     subject: str = "",
                      quantity: Any = "", quantity_total: Any = "",
                      occurred_at: str = "", captured_at: str = "",
                      source_system: str = "", source_base: str = "",
@@ -449,6 +450,10 @@ class ProjectBrain:
                      snapshot_id: str = "") -> dict:
         row = EV.build_evidence_row(
             project_id=project_id, kind=kind, claim_type=claim_type,
+            # plan_id 必须往下传：构建器一直支持它，但这里漏了一步，
+            # 结果是所有证据行的 plan_id 恒为空 —— 「证据↔生产计划」在契约层断链
+            # （合同 §1 要求每条记录都带八个统一字段）。
+            plan_id=plan_id,
             summary=summary, action_id=action_id, subject=subject,
             quantity=quantity, quantity_total=quantity_total,
             occurred_at=occurred_at, captured_at=captured_at,

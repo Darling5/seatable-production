@@ -167,6 +167,14 @@ def build_context(*, adapter: Any, project_id: str,
                           + [a.get("updated_at"), a.get("created_at")])
         item = {
             "action_id": aid,
+            # 八个统一字段（合同 §1）—— 行动必须能直接联到生产计划与产生它的运行
+            "project_id": a.get("project_id", ""),
+            "plan_id": a.get("plan_id", ""),
+            "evidence_id": a.get("evidence_id", ""),
+            "decision_id": a.get("decision_id", ""),
+            "run_id": a.get("run_id", ""),
+            "snapshot_id": a.get("snapshot_id", ""),
+            "version": a.get(S.F_VERSION, a.get("version", 1)),
             "title": a.get("title", ""),
             "kind": a.get("kind", ""),
             "kind_cn": a.get("kind_cn", ""),
@@ -183,13 +191,14 @@ def build_context(*, adapter: Any, project_id: str,
             "blocked_since": a.get("blocked_since", ""),
             "evidence_ids": [str(e.get("evidence_id")) for e in ev],
             "as_of": as_of_a or as_of_iso,
-            "version": a.get(S.F_VERSION, 1),
         }
         actions_out.append(item)
 
         if str(a.get("status")) == S.ST_BLOCKED:
             blockers.append({
                 "action_id": aid, "title": a.get("title", ""),
+                "project_id": a.get("project_id", ""),
+                "plan_id": a.get("plan_id", ""),
                 "owner": a.get("owner", ""),
                 "blocked_owner": a.get("blocked_owner", ""),
                 "reason": a.get("blocked_reason", ""),
@@ -244,9 +253,16 @@ def build_context(*, adapter: Any, project_id: str,
         "snapshot_id": snapshot_id,
         "version": version,
         "generated_at": as_of_iso,
+        # data_as_of = **数据截至时间**，口径是「最晚一条**采集**时间」——
+        # 也就是「这批数据到此为止，之后的事我们还不知道」。
+        #   · 不用 generated_at（那是「现在几点」）；
+        #   · 不用 action.updated_at（系统写入时刻，会把 data_as_of 顶成「现在」，
+        #     于是「数据有多旧」在契约层看不出来，三期对齐计划快照时会误判成一样新）；
+        #   · 不用 occurred_at（那可能是**将来**的业务日期，例如「下周三到货」，
+        #     会把 data_as_of 顶到未来，直接破坏「截至时间」的含义）。
         "data_as_of": _max_ts(
-            [r.get("captured_at") for r in evidence_rows + memory_rows + message_rows]
-            + [a.get("updated_at") for a in action_rows]) or as_of_iso,
+            [r.get("captured_at") for r in evidence_rows + memory_rows
+             + message_rows]) or as_of_iso,
         "source_freshness": freshness,
         "facts": _brief(by_kind.get(S.KIND_FACT, [])),
         "observations": _brief(by_kind.get(S.KIND_OBSERVATION, [])),
@@ -279,6 +295,14 @@ def build_context(*, adapter: Any, project_id: str,
 
 
 def _brief(rows: Sequence[Mapping[str, Any]]) -> list[dict]:
+    """记忆行投影。
+
+    八个统一字段**一个都不能少**（合同第 1 节）：早期版本只投影了
+    `project_id` / `action_id` / `evidence_id` / `decision_id`，
+    把 `plan_id` / `run_id` / `snapshot_id` / `version` 丢了 ——
+    结果是「记忆/行动与生产计划联表」在契约层就断链，
+    下游只能拿名称去猜（而合同第 1.1 节明令禁止用名称做键）。
+    """
     out = []
     for m in rows:
         out.append({
@@ -292,8 +316,16 @@ def _brief(rows: Sequence[Mapping[str, Any]]) -> list[dict]:
             "aspect_key": m.get("aspect_key", ""),
             "due_date": m.get("due_date", ""),
             "confidence": m.get("confidence", ""),
+            # ── 八个统一字段（合同 §1，缺一不可）──
+            "project_id": m.get("project_id", ""),
+            "plan_id": m.get("plan_id", ""),
+            "action_id": m.get("action_id", ""),
             "evidence_id": m.get("evidence_id", ""),
             "decision_id": m.get("decision_id", ""),
+            "run_id": m.get("run_id", ""),
+            "snapshot_id": m.get("snapshot_id", ""),
+            "version": m.get("version", m.get(S.F_VERSION, 1)),
+            # ── 时间与来源 ──
             "occurred_at": m.get("occurred_at", ""),
             "captured_at": m.get("captured_at", ""),
             "source_system": m.get("source_system", ""),

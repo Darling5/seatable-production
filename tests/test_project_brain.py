@@ -871,5 +871,162 @@ class TestStoreInvariants(unittest.TestCase):
             self.assertTrue(IDS.validate_id(kind, value), value)
 
 
+class UnifiedFieldsRegressionTest(unittest.TestCase):
+    """契约 §1 的**实测**回归：八个统一字段必须真的在每条记录上。
+
+    这组用例来自真实的跨期对齐事故（2026-09-26，与第三期窗口联合对齐时发现）：
+
+      · `_brief()` 投影时漏掉 `plan_id` / `run_id` / `snapshot_id` / `version`
+        → 记忆与生产计划在契约层断链，下游只能拿名称去猜，
+          而合同 §1.1 恰恰**禁止**名称做键；
+      · `actions_out` / `blockers` 同样漏 `plan_id`；
+      · `add_evidence()` 没把 `plan_id` 传给构建器 → 证据行 `plan_id` 恒空；
+      · `data_as_of` 把 `action.updated_at`（系统写入时刻）算了进来
+        → 它恒等于「现在」，与合同「不是「现在几点」」直接矛盾。
+
+    单看第二期自己的测试，上面四条一条都测不出来 —— 因为缺的是**跨期联表键**。
+    期望值是手写的字段名，不用 `S.UNIFIED_FIELDS` 反推，免得实现改了就一起改。
+    """
+
+    EIGHT = ("project_id", "plan_id", "action_id", "evidence_id",
+             "decision_id", "run_id", "snapshot_id", "version")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="p2_uf_")
+        cls.brain = make_brain(cls.tmp)
+        with open(SAMPLE, encoding="utf-8") as f:
+            cls.scenario = json.load(f)
+        rep = replay(cls.brain, cls.scenario, mode=C.MODE_APPLY, grant=grant(),
+                     actor="统一字段回归")
+        assert rep["ok"], [e for e in rep["log"] if e.get("status") == "error"]
+        cls.ctx = cls.brain.context(PID)
+
+    def _assert_all_eight(self, bucket, row, key):
+        for f in self.EIGHT:
+            self.assertIn(f, row, "%s.%s 缺统一字段 %s"
+                          % (bucket, row.get(key) or "?", f))
+
+    def test_memory_projections_carry_all_eight(self):
+        for bucket in ("observations", "facts", "commitments", "decisions",
+                       "predictions"):
+            rows = self.ctx.get(bucket) or []
+            self.assertTrue(rows, "样例应产出 %s" % bucket)
+            for r in rows:
+                self._assert_all_eight(bucket, r, "memory_id")
+
+    def test_actions_carry_all_eight(self):
+        """八个字段都得在。`plan_id` **可以为空** —— 样例里「电子围栏图纸」
+        那条消息本就没挂生产计划；空值本身合法，**字段缺失**才是缺陷。
+        """
+        self.assertTrue(self.ctx["actions"])
+        for a in self.ctx["actions"]:
+            self._assert_all_eight("actions", a, "action_id")
+        by_plan = {a["title"]: a["plan_id"] for a in self.ctx["actions"]}
+        # 来自挂了计划的消息 → 必须带计划
+        self.assertEqual(by_plan.get("UWB 标签齐套到货"), "PLN-20260926-0001")
+        # 来自没挂计划的消息 → 空，且不编一个
+        self.assertEqual(by_plan.get("补充电子围栏图纸"), "")
+
+    def test_plan_id_propagates_message_to_memory_action_evidence(self):
+        """消息带 plan_id 时，派生出来的记忆/行动/证据必须都带上它。
+
+        这就是「联表键」的正例 —— `_brief()` 丢字段时，这条会挂。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            b = make_brain(tmp)
+            msg = {"message_id": "m-plan", "text": "A 批物料到了",
+                   "message_time": "2026-09-24 09:00",
+                   "captured_at": "2026-09-24 09:05:00",
+                   "source_system": "wechat", "source_table": "群聊·A批",
+                   "project_id": PID, "plan_id": "PLN-20260926-0001",
+                   "items": [{"kind": "observation", "text": "A 批物料已到",
+                              "aspect_key": "a_mat", "value": "已到",
+                              "action": {"title": "A 批物料检验", "kind": "delivery",
+                                         "owner": "李工",
+                                         "acceptance_criteria": "检验合格并入库"}}]}
+            b.ingest([msg], mode=C.MODE_APPLY, grant=grant(), actor="t")
+            ctx = b.context(PID)
+            act = next(a for a in ctx["actions"] if a["title"] == "A 批物料检验")
+            self.assertEqual(act["plan_id"], "PLN-20260926-0001")
+            self.assertEqual(ctx["observations"][0]["plan_id"], "PLN-20260926-0001")
+            ev = b.add_evidence(project_id=PID, kind="arrival", claim_type="arrived",
+                                plan_id=act["plan_id"], action_id=act["action_id"],
+                                summary="A 批物料已到货", captured_at="2026-09-24T10:00:00",
+                                mode=C.MODE_APPLY, grant=grant(), actor="t")
+            self.assertEqual(ev["row"]["plan_id"], "PLN-20260926-0001")
+            ctx2 = b.context(PID)
+            self.assertEqual(ctx2["evidence_refs"][0]["plan_id"],
+                             "PLN-20260926-0001")
+
+    def test_evidence_carries_all_eight_and_plan_id(self):
+        rows = self.ctx["evidence_refs"]
+        self.assertTrue(rows)
+        for e in rows:
+            self._assert_all_eight("evidence_refs", e, "evidence_id")
+            self.assertEqual(e["plan_id"], "PLN-20260926-0001",
+                             "证据必须能联到计划 —— add_evidence 曾把 plan_id 丢掉")
+
+    def test_conflict_members_carry_all_eight(self):
+        """冲突成员也要带统一字段（含 plan_id 键本身，空值合法但不许缺键）。"""
+        conflicts = self.ctx["conflicts"]
+        self.assertTrue(conflicts)
+        for c in conflicts:
+            self.assertTrue(c["members"])
+            for m in c["members"]:
+                for f in self.EIGHT:
+                    self.assertIn(f, m, "冲突成员缺统一字段 %s" % f)
+
+    def test_blockers_carry_plan_id(self):
+        for b in self.ctx["blockers"]:
+            self.assertIn("plan_id", b)
+            self.assertEqual(b["plan_id"], "PLN-20260926-0001")
+
+    def test_plan_id_passes_own_validator(self):
+        from application.project_brain import ids as IDS
+        seen = {r.get("plan_id") for bucket in
+                ("observations", "facts", "commitments", "decisions", "predictions",
+                 "actions", "evidence_refs")
+                for r in (self.ctx.get(bucket) or []) if r.get("plan_id")}
+        self.assertTrue(seen)
+        for pid in sorted(seen):
+            self.assertTrue(IDS.validate_id("plan", pid), pid)
+
+    def test_data_as_of_is_capture_cutoff_not_now(self):
+        """含 verify 步骤（会当场写一条 fact）时 data_as_of 必然等于写入时刻 ——
+        本用例只断言它与 generated_at 同为「不早于最晚采集时间」，
+        以及**绝不会**被 `occurred_at`（可能是将来的业务日期）顶到未来。
+        """
+        ctx = self.ctx
+        captured = [r.get("captured_at") for bucket in
+                    ("observations", "facts", "commitments", "decisions",
+                     "predictions", "evidence_refs")
+                    for r in (ctx.get(bucket) or []) if r.get("captured_at")]
+        self.assertTrue(captured)
+        self.assertGreaterEqual(str(ctx["data_as_of"]), max(str(c) for c in captured))
+        self.assertLessEqual(ctx["data_as_of"], ctx["generated_at"])
+        # occurred_at 里有"2026-09-30"这类**将来**的业务日期，不得被当成数据截止
+        occurred = [r.get("occurred_at") for r in (ctx.get("observations") or [])
+                    if r.get("occurred_at")]
+        if occurred:
+            self.assertLessEqual(ctx["data_as_of"], ctx["generated_at"])
+
+    def test_capture_cutoff_ignores_future_business_dates(self):
+        """直接构造：唯一一条记录的 occurred_at 在未来，data_as_of 不得跟过去。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            b = make_brain(tmp)
+            msg = {"message_id": "m-future", "text": "下周三到货",
+                   "message_time": "2026-09-24 09:00",
+                   "captured_at": "2026-09-24 09:05:00",
+                   "source_system": "wechat", "source_table": "群聊",
+                   "project_id": PID, "plan_id": "PLN-20260926-0001",
+                   "items": [{"kind": "observation", "text": "称下周三到货",
+                              "value": "2026-09-30", "relative_date": "下周三"}]}
+            b.ingest([msg], mode=C.MODE_APPLY, grant=grant(), actor="t")
+            ctx = b.context(PID)
+            self.assertEqual(ctx["data_as_of"], "2026-09-24 09:05:00")
+            self.assertLess(ctx["data_as_of"], "2026-09-30")   # 没被将来的日期顶走
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

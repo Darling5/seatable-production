@@ -85,7 +85,8 @@ def _run_step(brain: ProjectBrain, step: dict, *, op: str, pid: str, refs: dict,
         ev_kw = ("kind", "claim_type", "summary", "subject", "quantity",
                  "quantity_total", "occurred_at", "captured_at", "source_system",
                  "source_base", "source_table", "source_row_id",
-                 "source_message_id", "verified", "verified_by", "criteria_met")
+                 "source_message_id", "verified", "verified_by", "criteria_met",
+                 "plan_id")
         kw = {k: step[k] for k in ev_kw if k in step}
         title = str(step.get("action_title") or "")
         if title:
@@ -94,6 +95,9 @@ def _run_step(brain: ProjectBrain, step: dict, *, op: str, pid: str, refs: dict,
                 return {"op": op, "status": "error",
                         "detail": "证据指向的行动不存在：%s" % title}
             kw["action_id"] = a.get("action_id")
+            # 没显式给 plan_id 时，跟所指向的行动保持一致 —— 否则证据与计划断链
+            if not kw.get("plan_id"):
+                kw["plan_id"] = str(a.get("plan_id") or "")
         r = brain.add_evidence(project_id=pid, mode=mode, grant=grant,
                                actor=actor, **kw)
         if step.get("ref"):
