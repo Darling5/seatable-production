@@ -9,10 +9,10 @@ publish.py — 把本地驾驶舱 HTML 发布/覆盖更新到 WorkBuddy 团队�
   每日更新自动留版本历史。
 
 用法：
-  python publish.py                    # 发布/覆盖更新到 config.yaml publish 段的节点
-  python publish.py --html 路径.html    # 指定其他 HTML（默认 项目管理驾驶舱.html）
-  python publish.py --setup            # 首次发布：在指定空间创建节点并回写 node_id
-  python publish.py --status           # 只看当前发布配置，不上传
+  python cockpit/publish.py            # 发布/覆盖更新到 config.yaml publish 段的节点
+  python cockpit/publish.py --html 路径.html  # 指定其他 HTML（默认 项目管理驾驶舱.html）
+  python cockpit/publish.py --setup    # 首次发布：在指定空间创建节点并回写 node_id
+  python cockpit/publish.py --status   # 只看当前发布配置，不上传
 
 鉴权：WorkBuddy 客户端模式下由 AI（自动化任务）先取 open platform token，
 通过环境变量 WB_TOKEN 传入；或用 --token-stdin。没有 token 时提示需要
@@ -124,9 +124,10 @@ def main():
     ap.add_argument("--space-id", dest="space_id", help="首次发布指定目标空间")
     ap.add_argument("--status", action="store_true", help="只看配置不上传")
     ap.add_argument("--token-stdin", dest="token_stdin", action="store_true")
-    ap.add_argument("--gate", default="",
-                    help="发布门禁（可信执行层 v1）：指定 run_id 或 latest；"
-                         "账本里关键阶段失败/读回失败则拒绝发布")
+    ap.add_argument("--gate", default="latest",
+                    help="发布门禁（可信执行层 v1）：run_id 或 latest（默认 latest）。"
+                         "账本里关键阶段失败/读回失败，或待发布文件与该次运行无法绑定，"
+                         "一律拒绝发布且不上传任何内容。**没有关闭门禁的开关。**")
     ap.add_argument("--runs-dir", dest="runs_dir", default="",
                     help="运行账本目录（默认 <技能目录>/data/runs）")
     a = ap.parse_args()
@@ -142,23 +143,24 @@ def main():
         print("[publish] 文件: %s" % os.path.join(SKILL_DIR, pcfg.get("html", "项目管理驾驶舱.html")))
         return 0
 
-    # ── 发布门禁（可信执行层 v1）：账本没证明过的，不许对外发布 ──
-    # 放在所有上传动作之前：门禁不过就根本不碰远端。
-    if a.gate:
-        sys.path.insert(0, SKILL_DIR)
-        from application.gates import evaluate as _gate_eval
-        g = _gate_eval(a.gate, a.runs_dir)
-        if not g.allowed:
-            print("[blocked] %s" % g.render())
-            print("[blocked] 已拒绝发布（本次未上传任何内容）。"
-                  "修完问题重跑工作流，或用 --gate 指定另一次运行。")
-            return 1
-        print("[gate] %s" % g.render())
-
     html = a.html if os.path.isabs(a.html) else os.path.join(SKILL_DIR, a.html)
     if not os.path.exists(html):
         print("[error] HTML 不存在：%s（先运行 cockpit.py 生成）" % html)
         return 1
+
+    # ── 发布门禁（可信执行层 v1）：账本没证明过的，不许对外发布 ──
+    # 放在所有上传动作之前，且**无条件执行**（默认 latest）：门禁不过就根本不碰远端。
+    # 除「关键阶段没跑成」外，还要求待上传文件与本 run 的账本哈希绑定，
+    # 防止「拿旧账本放行一份改过/另生成的 HTML」。
+    sys.path.insert(0, SKILL_DIR)
+    from application.gates import evaluate as _gate_eval
+    g = _gate_eval(a.gate, a.runs_dir, artifact=html)
+    if not g.allowed:
+        print("[blocked] %s" % g.render())
+        print("[blocked] 已拒绝发布（本次未上传任何内容）。"
+              "修完问题重跑工作流，或用 --gate 指定另一次运行。")
+        return 1
+    print("[gate] %s" % g.render())
 
     lib = _find_lib_dir()
     if not lib:

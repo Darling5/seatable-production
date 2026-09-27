@@ -8,9 +8,9 @@
   由 AI 会话侧经 Agent Mail 推送（进程解耦，哨兵只管听和写，不碰网络 API）。
 
 命令：
-  python wxwatch.py once [--minutes 5]   # 单次扫描：过去 N 分钟的消息（测试/低频模式）
-  python wxwatch.py watch                # 常驻监听（Ctrl+C 退出），间隔走 config
-  python wxwatch.py status               # 查看哨兵状态（事件数/发件箱积压）
+  python wx/wxwatch.py once [--minutes 5]  # 单次扫描：过去 N 分钟的消息（测试/低频模式）
+  python wx/wxwatch.py watch             # 常驻监听（Ctrl+C 退出），间隔走 config
+  python wx/wxwatch.py status            # 查看哨兵状态（事件数/发件箱积压）
 
 关键词分两级：
   高危（立即通知）：交期、延期、推迟、涨价、涨价、停产、缺货、断供、催货、催料

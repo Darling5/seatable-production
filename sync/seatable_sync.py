@@ -13,9 +13,9 @@ SeaTable 云网关路径（已对照官方 seatable-api-python 源码核实）�
 其中 gateway = app-access-token 返回的 dtable_server（形如 https://cloud.seatable.cn/api-gateway/）。
 
 用法：
-  python seatable_sync.py                 # 全量同步
-  python seatable_sync.py --dry-run       # 只打印表与行数，不写文件
-  python seatable_sync.py --tables 项目,生产计划   # 只同步指定表
+  python sync/seatable_sync.py            # 全量同步
+  python sync/seatable_sync.py --dry-run  # 只打印表与行数，不写文件
+  python sync/seatable_sync.py --tables 项目,生产计划  # 只同步指定表
 """
 import argparse
 import csv
@@ -237,7 +237,7 @@ def sync(dry_run=False, only_tables=None):
         with open(META_PATH, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
         print(f"\n✅ 同步完成，写入 {META_PATH}")
-        print("   下一步：python cockpit.py  →  重生成真实驾驶舱")
+        print("   下一步：python cockpit/cockpit.py  →  重生成真实驾驶舱")
     return counts
 
 

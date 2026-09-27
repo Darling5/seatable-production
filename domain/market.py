@@ -7,20 +7,20 @@
   物料行情记录.csv  —— 行情快照，纯追加（日期/型号/渠道/单价/涨跌幅/生命周期/来源）
 
 命令：
-  python market.py watchlist [--refresh]   # 生成/刷新监控清单（--refresh 从采购记录重新提取合并）
-  python market.py add <型号> [--name 名称] [--category 类别] [--price 上次采购价]
-  python market.py remove <型号> [--yes]
-  python market.py enable <型号> 0|1        # 暂停/恢复监控
-  python market.py snapshot --model <型号> [--price 12.5] [--channel 立创]
+  python domain/market.py watchlist [--refresh]  # 生成/刷新监控清单（--refresh 从采购记录重新提取合并）
+  python domain/market.py add <型号> [--name 名称] [--category 类别] [--price 上次采购价]
+  python domain/market.py remove <型号> [--yes]
+  python domain/market.py enable <型号> 0|1  # 暂停/恢复监控
+  python domain/market.py snapshot --model <型号> [--price 12.5] [--channel 立创]
                              [--lifecycle 在产|NRND|EOL停产|未知]
                              [--source URL] [--note 备注]
                                           # 追加一条行情快照（涨跌幅自动对比上一条）
-  python market.py report                  # 打印各物料最新行情 vs 上次采购价
-  python market.py alerts                  # 打印告警（涨跌超阈值 / 停产·NRND）
-  python market.py lookup <型号> [--source digikey|mouser] [--qty 100]
+  python domain/market.py report           # 打印各物料最新行情 vs 上次采购价
+  python domain/market.py alerts           # 打印告警（涨跌超阈值 / 停产·NRND）
+  python domain/market.py lookup <型号> [--source digikey|mouser] [--qty 100]
                                           # 代理商官方 API 查价（**只查不写**）
-  python market.py compare <型号> [--qty 100]   # 多源比价，原价与人民币并列
-  python market.py sync [--source ...] [--force] [--dry-run] [--limit N]
+  python domain/market.py compare <型号> [--qty 100]  # 多源比价，原价与人民币并列
+  python domain/market.py sync [--source ...] [--force] [--dry-run] [--limit N]
                                           # 按自适应节奏批量拉价并写快照
 
 自适应节奏（省 API 配额）：
@@ -415,7 +415,7 @@ def _alerts(states=None):
 def cmd_report():
     states = _latest_state()
     if not states:
-        print("（监控清单为空，先 python market.py watchlist 生成）")
+        print("（监控清单为空，先 python domain/market.py watchlist 生成）")
         return
     print("%-28s %-10s %10s %10s %8s  %-8s %s" % (
         "物料型号", "类别", "上次采购价", "最新行情", "vs采购", "生命周期", "渠道/日期"))
@@ -554,7 +554,7 @@ def cmd_lookup(model, source=None, qty=1):
     srcs = [source] if source else sp.available_sources()
     if not srcs:
         print("没有已配置凭证的渠道：填 config.yaml 的 market.api_keys，"
-              "或先跑 python suppliers.py doctor")
+              "或先跑 python domain/suppliers.py doctor")
         return
     print("查价 %s（目标数量 %d）—— 只查不写\n" % (model, qty))
     for o in sp.lookup(model, sources=srcs, qty=qty):
@@ -683,7 +683,7 @@ def cmd_sync(source=None, force=False, dry_run=False, limit=None, qty=1):
         return
     models = _enabled_models()
     if not models:
-        print("监控清单为空：先跑 python market.py watchlist")
+        print("监控清单为空：先跑 python domain/market.py watchlist")
         return
     count, count_src = _part_count()
     interval, why = _cadence_days(count)

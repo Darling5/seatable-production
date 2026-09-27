@@ -95,7 +95,7 @@ def check_data(adapter):
         out.append(Finding(
             BLOCK, "数据库是空的，驾驶舱会显示全 0",
             "没有任何项目和生产计划，所有分析、建议、倒排都无从算起。",
-            "想先看效果：python seed_demo.py（灌演示数据）\n"
+            "想先看效果：python tools/seed_demo.pyemo.py（灌演示数据）\n"
             "        正式使用：把合同发给我，我帮你提取并录入"))
         return out
 
@@ -106,7 +106,7 @@ def check_data(adapter):
     if not plans:
         out.append(Finding(
             WARN, "「生产计划」表为空", "没有在制计划，产线流转和工时分析是空的。",
-            "python op.py apply-wizard  或直接用自然语言说「给 XX 建生产计划」"))
+            "python domain/op.pyn/op.py apply-wizard  或直接用自然语言说「给 XX 建生产计划」"))
 
     # 交期缺失：倒排的直接输入
     if projects:
@@ -115,7 +115,7 @@ def check_data(adapter):
             out.append(Finding(
                 WARN, "%d/%d 个项目没有合同交期" % (len(no_due), len(projects)),
                 "交期是倒排的起点，缺了就算不出「今天必须下单」。",
-                "补录：python op.py update 项目 <row_id> --set 合同交期=2026-09-30"))
+                "补录：python domain/op.pyn/op.py update 项目 <row_id> --set 合同交期=2026-09-30"))
     return out
 
 
@@ -205,7 +205,7 @@ def run(adapter, config):
 
 def render(findings):
     if not findings:
-        return "体检通过：表结构完整、数据齐全、库存源已配置。\n可以直接跑 python cockpit.py 看驾驶舱。"
+        return "体检通过：表结构完整、数据齐全、库存源已配置。\n可以直接跑 python cockpit/cockpit.py 看驾驶舱。"
 
     lines = []
     n_block = sum(1 for f in findings if f.level == BLOCK)
@@ -229,7 +229,7 @@ def render(findings):
         lines.append("有 %d 项严重问题，核心能力（库存核对 / 下一步建议）目前不可用。" % n_block)
         lines.append("建议先解决它们，再看驾驶舱 —— 否则看到的数是不完整的。")
     else:
-        lines.append("没有致命问题，可以开始用了：python cockpit.py")
+        lines.append("没有致命问题，可以开始用了：python cockpit/cockpit.py")
     return "\n".join(lines)
 
 

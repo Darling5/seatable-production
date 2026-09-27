@@ -9,10 +9,10 @@
   路2（人工）：--dump 拿到内容，自己复制到任何渠道。
 
 命令：
-  python notify.py dump [--all]      # 列出未发送通知（--all 含已发送，JSON 行）
-  python notify.py mark-sent --ids 1,2   # 标记已发送
-  python notify.py send --subject "..." --body "..."  # 手动追加一条到发件箱
-  python notify.py status            # 发件箱概览
+  python workflows/notify.py dump [--all]  # 列出未发送通知（--all 含已发送，JSON 行）
+  python workflows/notify.py mark-sent --ids 1,2  # 标记已发送
+  python workflows/notify.py send --subject "..." --body "..."  # 手动追加一条到发件箱
+  python workflows/notify.py status  # 发件箱概览
 
 发件箱条目：{id, subject, body, level(hot|warm|info), created_at, sent}
 """

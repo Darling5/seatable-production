@@ -2,9 +2,9 @@
 """backfill_seatable.py — 把缺失字段补录回 SeaTable 云端「生产」库。
 
 三个子命令：
-  python backfill_seatable.py gen        # 生成缺值模板 data/backfill_template.csv（带参考列 + 预填确定性值）
-  python backfill_seatable.py push       # 读取已填写的 data/backfill_template.csv，按行写回云端
-  python backfill_seatable.py push-json  # 读取从驾驶舱 HTML 复制回来的 data/backfill_submit.json，写回云端
+  python sync/backfill_seatable.py gen   # 生成缺值模板 data/backfill_template.csv（带参考列 + 预填确定性值）
+  python sync/backfill_seatable.py push  # 读取已填写的 data/backfill_template.csv，按行写回云端
+  python sync/backfill_seatable.py push-json  # 读取从驾驶舱 HTML 复制回来的 data/backfill_submit.json，写回云端
                                         #   （--yes 跳过交互确认，供确认后自动写回）
 
 安全说明：
@@ -237,7 +237,7 @@ def do_push(conn, updates, auto=False):
                    data={"table_name": tbl, "rows": items}, method="PUT")
         print(f"  [ok] {tbl}: 已更新 {len(items)} 行")
     print("\n✅ 写回完成。下一步：")
-    print("    python seatable_sync.py && python cockpit.py   # 重新拉取并渲染")
+    print("    python sync/seatable_sync.py && python cockpit/cockpit.py   # 重新拉取并渲染")
 
 
 def push_template(auto=False):

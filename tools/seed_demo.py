@@ -6,7 +6,7 @@ seed_demo.py — 向本地 data/ 写入一套连贯的「生产 + 项目」演�
 用途：让「项目管理驾驶舱」立刻有完整可看的效果。数据均为虚构示例，
 可随时用 op.py 清空后替换为真实数据：
 
-    python op.py delete 项目 row_1 row_2 ...   # 或逐个表清空
+    python domain/op.py delete 项目 row_1 row_2 ...  # 或逐个表清空
     # 更省事：直接删除 data/ 目录后重新 seed
 
 规则：
@@ -401,7 +401,7 @@ def main():
         adapter.append_row(table, data)
         n += 1
     print(f"[ok] 已写入 {n} 条演示数据到本地 data/（共 {len(set(t for t, _ in rows))} 张表）。")
-    print("      现在可以运行：python cockpit.py  生成驾驶舱 HTML。")
+    print("      现在可以运行：python cockpit/cockpit.py  生成驾驶舱 HTML。")
 
 
 if __name__ == "__main__":

@@ -3,13 +3,13 @@
 
 设计原则：人工审核关卡不可绕过；写 SeaTable 必须 --yes。
 
-  python run.py prepare  <run_id> --contract 合同.pdf --bom 示例产品=bom.xlsx
-  python run.py init                                  # 创建本地客户配置模板
-  python run.py audit    <run_id>                     # 使用已选库存源生成审核表（人工改）
-  python run.py plan     <run_id>                     # 读审核结果 → 采购预览
-  python run.py submit   <run_id> --plan 4G小卡 --yes  # 写 SeaTable + 双向关联
-  python run.py pdf      <run_id>                     # 生成采购订单 PDF
-  python run.py all      <run_id> --contract ... --bom ...   # 跑到审核关卡为止
+  python pipeline/run.py prepare  <run_id> --contract 合同.pdf --bom 示例产品=bom.xlsx
+  python pipeline/run.py init                         # 创建本地客户配置模板
+  python pipeline/run.py audit    <run_id>            # 使用已选库存源生成审核表（人工改）
+  python pipeline/run.py plan     <run_id>            # 读审核结果 → 采购预览
+  python pipeline/run.py submit   <run_id> --plan 4G小卡 --yes  # 写 SeaTable + 双向关联
+  python pipeline/run.py pdf      <run_id>            # 生成采购订单 PDF
+  python pipeline/run.py all      <run_id> --contract ... --bom ...  # 跑到审核关卡为止
 """
 import argparse
 import os
@@ -79,7 +79,7 @@ def main():
         prepare.run(a.run_id, a.contract, a.bom)
         inventory.run(a.run_id)
         print("\n>>> 已停在人工审核关卡。审核 库存审核表.csv 后执行："
-              f"\n    python run.py plan {a.run_id}")
+              f"\n    python pipeline/run.py plan {a.run_id}")
 
 
 if __name__ == "__main__":

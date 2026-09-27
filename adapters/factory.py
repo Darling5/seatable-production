@@ -64,7 +64,7 @@ def load_config(path: str = None) -> dict:
         # 没有配置文件 → 退回最安全的 local 默认
         if not getattr(load_config, "_hinted", False):
             load_config._hinted = True
-            print("[提示] 未发现 config.yaml，使用本地零配置；运行 `python setup.py` 可初始化或切换后端", file=sys.stderr)
+            print("[提示] 未发现 config.yaml，使用本地零配置；运行 `python tools/setup.py` 可初始化或切换后端", file=sys.stderr)
         return {"backend": "local", "local": {"data_dir": "data", "format": "csv"}}
     try:
         import yaml  # type: ignore
@@ -122,10 +122,10 @@ def get_base_config(config: dict = None, base_name: str = None):
     when present, preserving the historical flat config when no named Bases
     are configured.  ``None`` is returned when the requested Base is absent.
     """
-    config = config or load_config()
+    config = load_config() if config is None else config
     if not isinstance(config, dict):
         raise SystemExit("[错误] 配置文件格式不对（顶层应为 key: value）。"
-                         "请检查 config.yaml，或运行 python setup.py 重新生成。")
+                         "请检查 config.yaml，或运行 python tools/setup.py 重新生成。")
     sc = config.get("seatable") if isinstance(config.get("seatable"), dict) else {}
     bases = _seatable_bases(config)
     if not bases:
@@ -150,7 +150,7 @@ def get_adapters(config: dict = None):
     value is a separate adapter instance, so auth tokens and metadata caches
     can never leak between Bases.
     """
-    config = config or load_config()
+    config = load_config() if config is None else config
     backend = str(config.get("backend", "local") or "local").lower()
     if backend != "seatable":
         return {}
@@ -159,17 +159,32 @@ def get_adapters(config: dict = None):
             if get_base_config(config, name)}
 
 
-def get_adapter(config: dict = None, base_name: str = None):
-    config = config or load_config()
+def _fallback(strict: bool, why: str) -> None:
+    """SeaTable 不可用时：默认只告警退回 local；写入路径必须硬失败。"""
+    if strict:
+        raise RuntimeError("SeaTable 不可用，已拒绝退回 local 以免误写本地库：%s" % why)
+    print("[warn] %s，退回 local 模式" % why, file=sys.stderr)
+
+
+def get_adapter(config: dict = None, base_name: str = None, strict: bool = False):
+    """Build an adapter for one named Base.
+
+    ``strict`` is for write paths: when the configuration asks for SeaTable but
+    the Base/token is missing or initialisation fails, silently returning a
+    LocalAdapter would turn a requested online write into a local write and
+    still read back as "verified".  With ``strict=True`` we raise instead, so
+    the caller fails closed and reports a blocked/unverified outcome.
+    """
+    config = load_config() if config is None else config
     if not isinstance(config, dict):
         raise SystemExit("[错误] 配置文件格式不对（顶层应为 key: value）。"
-                         "请检查 config.yaml，或运行 python setup.py 重新生成。")
+                         "请检查 config.yaml，或运行 python tools/setup.py 重新生成。")
     backend = (config.get("backend") or "local").lower()
     if backend == "seatable":
         sc = config.get("seatable") if isinstance(config.get("seatable"), dict) else {}
         selected = get_base_config(config, base_name)
         if selected is None and base_name is not None and _seatable_bases(config):
-            print("[warn] 未配置 SeaTable Base「%s」，退回 local 模式" % base_name, file=sys.stderr)
+            _fallback(strict, "未配置 SeaTable Base「%s」" % base_name)
         if selected:
             token = selected.get("api_token") or ""
             uuid = selected.get("base_uuid") or ""
@@ -179,13 +194,13 @@ def get_adapter(config: dict = None, base_name: str = None):
                     from .seatable import SeaTableAdapter
                     return SeaTableAdapter(token, server, uuid, base_name=selected.get("name"))
                 except Exception as e:
-                    print(f"[warn] SeaTable 初始化失败，退回 local：{e}", file=sys.stderr)
+                    _fallback(strict, "SeaTable 初始化失败：%s" % e)
             else:
-                print("[warn] 未配置 SeaTable Base「%s」的 api_token/base_uuid，退回 local 模式" %
-                      (selected.get("name") or base_name or "default"), file=sys.stderr)
+                _fallback(strict, "Base「%s」缺 api_token/base_uuid" %
+                          (selected.get("name") or base_name or "default"))
         elif not _seatable_bases(config):
             # Keep the old diagnostic for a flat, empty seatable block.
-            print("[warn] 未配置 seatable.api_token/base_uuid，退回 local 模式", file=sys.stderr)
+            _fallback(strict, "未配置 seatable.api_token/base_uuid")
     # 默认 / 兜底：本地
     lc = config.get("local")
     if not isinstance(lc, dict):
@@ -203,7 +218,7 @@ def get_adapter(config: dict = None, base_name: str = None):
 
 
 def get_partdb(config: dict = None):
-    config = config or load_config()
+    config = load_config() if config is None else config
     pc = config.get("partdb") or {}
     if not pc.get("enabled"):
         return None

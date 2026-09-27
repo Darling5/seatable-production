@@ -122,6 +122,13 @@ class StepSpec:
     retry: int = 0
     failure_policy: str = "continue"       # continue / abort
     idempotency_key: Optional[str] = None  # 如 "wechat:{date}:{bookmark}"
+    # 该步失败是否应阻断依赖它的步骤与对外发布。默认 True（失败即阻断）；
+    # 只有「数据源偶发不可用、旧快照仍可用」这类步骤才显式声明 False，
+    # 让降级成为**真实生效**的降级，而不是嘴上说 continue、实际被门禁拦住。
+    blocking: bool = True
+    # 本步应当产出的文件（相对 skill_dir 或绝对路径）。runner 会核对存在性并
+    # 记录 sha256 到账本，供发布门禁把「要上传的文件」钉死到某一次运行。
+    expect_artifacts: Sequence[str] = ()
 
     def allowed_in(self, ctx: RunContext) -> tuple[bool, str]:
         """运行前统一裁决：mode / approval / destructive 三道闸。"""

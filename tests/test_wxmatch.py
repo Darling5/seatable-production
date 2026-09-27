@@ -9,6 +9,7 @@ test_wxmatch.py — wxmatch.py 核对引擎离线回归测试。
 import csv
 import os
 import re
+import shutil
 import sys
 import tempfile
 
@@ -22,6 +23,13 @@ wm.OWN_COMPANY_PAT = re.compile(r"示例科技|示例集团|示例贸易")
 wm.SUPPLIER_ALIASES = {"示例供应商AO": "示例供应商AP"}
 
 TMP = tempfile.gettempdir()
+# ⚠️ 写入链路的数据目录必须是**本测试独占**的：原先直接用系统临时目录当
+#    data_dir，而可信执行层会在 data_dir 里落 write_operations.sqlite3（操作状态），
+#    于是上一次跑留下的 verify_failed 记录会被下一次当成「已写过的同一操作」复用，
+#    导致断言随机失败（2026-09-27 实测）。这里给它一个干净子目录。
+APPLY_DIR = os.path.join(TMP, "wxmatch_test_apply_dir")
+shutil.rmtree(APPLY_DIR, ignore_errors=True)
+os.makedirs(APPLY_DIR, exist_ok=True)
 FAILED = []
 
 
@@ -200,8 +208,8 @@ print("=" * 70)
 import json  # noqa: E402
 from application import authorization as AUTH  # noqa: E402
 
-tmp_match = os.path.join(TMP, "wxmatch_test_apply.csv")
-tmp_ledger = os.path.join(TMP, "write_ledger.csv")
+tmp_match = os.path.join(APPLY_DIR, "核对结果.csv")
+tmp_ledger = os.path.join(APPLY_DIR, "write_ledger.csv")
 for _p in (tmp_match, tmp_ledger):
     try:
         os.remove(_p)
@@ -256,7 +264,7 @@ class _ApplyAdapter:
 old_match, old_data = wm.MATCH_PATH, wm.DATA
 old_get_adapter = wm._get_business_adapter
 stub = _ApplyAdapter()
-wm.MATCH_PATH, wm.DATA = tmp_match, TMP
+wm.MATCH_PATH, wm.DATA = tmp_match, APPLY_DIR
 wm._get_business_adapter = lambda: (stub, "stub")
 
 # ① 无授权：高置信也不行，只列清单、一条都不写
@@ -271,7 +279,7 @@ check("无授权时状态保持待确认", no_grant_rows["WX-A-001"]["状态"], 
 # ② 带人工授权文件：写入 + 读回验证
 grant = AUTH.manual_grant(tables=("IC采购记录",), actions=("update",),
                           actor="老板", reason="人工核对无误")
-grant_file = os.path.join(TMP, "wxmatch_test_grant.json")
+grant_file = os.path.join(APPLY_DIR, "wxmatch_test_grant.json")
 with open(grant_file, "w", encoding="utf-8") as f:
     json.dump(grant.to_dict(), f, ensure_ascii=False)
 try:

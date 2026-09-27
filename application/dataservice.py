@@ -1,32 +1,26 @@
 # -*- coding: utf-8 -*-
-"""application/dataservice.py — 统一写入服务（Phase 0 / P0-4）。
+"""统一写入口：显式授权、持久化预占、读回验证及审计台账。
 
-职责（对应 docs/avatar-loop-v2.md 的「执行层收口」）：
-  1. **统一入口**：所有 SeaTable 写入走 DataService.write()，不再各自调 adapter；
-  2. **路由策略**：按 contracts.ROUTE_POLICIES 决定真写还是出候选
-     （production/tasks → 候选制，必须人工 approve；crm → 自动写 + 台账）；
-  3. **读回验证**：写完立刻读回来核对关键字段（中文列名），不一致 = 写入失败
-     （2026-09-11 教训：中文列名写错会 HTTP 200 + 0 行更新，静默丢数据）；
-  4. **幂等键**：同键重写 → 复用，台账可追溯；
-  5. **台账**：每次自动写都记 data/write_ledger.csv。
-
-设计约束：本模块可离线单测 —— adapter 通过构造注入（惰性工厂），
-不在 import 时做任何 I/O。preview 模式只产草稿不落任何写入。
+有幂等键的请求在调用 adapter 前记录 sending。响应丢失、进程中断、空
+row_id 都属于 outcome_unknown，绝不盲目重发；已知 row_id 只读回核验。
+SQLite 负责跨进程串行化，CSV 是人工可读台账，不再充当成功判据。
 """
 from __future__ import annotations
 
 import csv
 import datetime as _dt
+import hashlib
+import json
+import math
 import os
-from dataclasses import dataclass, field
+import sqlite3
+import uuid
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Optional
 
 from . import contracts as C
 from . import authorization as AUTH
 
-# ────────────────────────────────────────────────────────────────────
-# 数据结构
-# ────────────────────────────────────────────────────────────────────
 LEDGER_FILE_NAME = "write_ledger.csv"
 LEDGER_FIELDS = ["时间", "路由", "动作", "表", "row_id", "幂等键",
                  "读回验证", "内容摘要", "执行者", "备注"]
@@ -34,25 +28,21 @@ LEDGER_FIELDS = ["时间", "路由", "动作", "表", "row_id", "幂等键",
 
 @dataclass
 class WriteRequest:
-    """一次写入请求。业务代码只管填这个，不碰 adapter。"""
-    table: str                          # 中文表名（写入目标）
-    row: Mapping[str, Any]              # 中文列名 -> 值
-    route: str = "production"           # production / tasks / crm（决定写策略）
-    action: str = "append"              # append / update（update 需带 row_id）
-    row_id: str = ""                    # update 目标
-    idem_key: str = ""                  # 幂等键；空 = 不查重（旧行为）
-    actor: str = ""                     # 谁发起（automation / 人名）
-    reason: str = ""                    # 业务依据（微信原话/合同号…）
-    verify_fields: tuple = ()           # 读回验证的字段（默认验证全部标量列）
-    # 显式写库授权（可信执行层 v1）。production/tasks 路由在 apply 模式下
-    # **必须**带上它，否则一律阻断 —— 置信度再高也不能替代它。
+    table: str
+    row: Mapping[str, Any]
+    route: str = "production"
+    action: str = "append"
+    row_id: str = ""
+    idem_key: str = ""  # 显式留空表示独立操作；自动化调用方必须提供稳定键
+    actor: str = ""
+    reason: str = ""
+    verify_fields: tuple = ()
     grant: Optional[AUTH.WriteGrant] = None
 
 
 @dataclass
 class WriteResult:
-    """写入结果。status 是唯一判定依据。"""
-    status: str                         # written / candidate / skipped_reuse / verify_failed / blocked
+    status: str
     row_id: str = ""
     verified: bool = False
     message: str = ""
@@ -60,137 +50,235 @@ class WriteResult:
 
     @property
     def ok(self) -> bool:
-        return self.status in ("written", "candidate", "skipped_reuse")
+        return self.status == "candidate" or (
+            self.status in ("written", "skipped_reuse") and self.verified)
 
 
-# ────────────────────────────────────────────────────────────────────
-# DataService
-# ────────────────────────────────────────────────────────────────────
 class DataService:
-    """统一写入服务。adapter_factory(base_name) -> adapter，惰性调用。
-
-    用法（apply 模式，crm 路由）：
-        ds = DataService(lambda name: get_adapter(load_config(), base_name=name))
-        res = ds.write(WriteRequest(table="销售线索表", row={...}, route="crm",
-                                    idem_key="crm-lead:...|客户A"))
-        assert res.status == "written" and res.verified
-    """
-
     def __init__(self, adapter_factory: Optional[Callable[[str], Any]] = None,
                  data_dir: str = ""):
         self._factory = adapter_factory
-        self.data_dir = data_dir or os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        self.data_dir = os.path.abspath(data_dir or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"))
 
-    # ── 对外主入口 ─────────────────────────────────────
     def write(self, req: WriteRequest, mode: str = C.MODE_PREVIEW) -> WriteResult:
-        policy = C.ROUTE_POLICIES.get(req.route)
-        if policy is None:
-            return WriteResult("blocked", message="未知路由 %r（合法：production/tasks/crm）" % req.route)
-
-        # 候选制路由（production/tasks）：
-        #   preview → 只出候选；
-        #   apply   → **必须持有显式授权**才放行，否则阻断。
-        # 「高置信」不在此处出现，也永远不该出现——置信度是算法自评，
-        # 授权是人给的（见 application/authorization.py）。
-        if policy == C.WRITE_APPROVAL_REQUIRED:
-            if mode != C.MODE_APPLY:
-                # preview 连候选都可以直接返回（上层渲染用）
-                return WriteResult("candidate", message="preview：候选（未写）",
-                                   evidence=dict(req.row))
-            granted, why = AUTH.authorize_write(req.grant, req.table, req.action)
-            if not granted:
-                return WriteResult("blocked", message=why,
-                                   evidence={"table": req.table, "action": req.action,
-                                             "idem_key": req.idem_key,
-                                             "grant": req.grant.grant_id if req.grant else ""})
-            # 授权通过 → 落到下面的统一写入流程（幂等 + 读回验证 + 台账）
-
-        # crm 路由：preview 不写；apply 才写
-        if mode != C.MODE_APPLY:
-            return WriteResult("candidate", message="preview：草稿（未写）",
-                               evidence=dict(req.row))
-
-        # 幂等检查
-        if req.idem_key and self._key_used(req.idem_key):
-            return WriteResult("skipped_reuse", message="幂等键已写入过，跳过",
-                               evidence={"idem_key": req.idem_key})
-
-        adapter = self._get_adapter(req.route)
+        if req.route not in C.ROUTE_POLICIES:
+            return WriteResult("blocked", message="未知路由 %r" % req.route)
+        if mode not in (C.MODE_PREVIEW, C.MODE_APPLY):
+            return WriteResult("blocked", message="未知运行模式 %r" % mode)
+        if req.action not in ("append", "update"):
+            return WriteResult("blocked", message="不支持的写入动作 %r" % req.action)
+        if not isinstance(req.table, str) or not req.table.strip():
+            return WriteResult("blocked", message="写入目标表不能为空")
+        if not isinstance(req.row, Mapping) or not req.row:
+            return WriteResult("blocked", message="写入载荷必须是非空对象")
+        if req.action == "update" and not req.row_id:
+            return WriteResult("blocked", message="update 需要 row_id")
+        if req.verify_fields and any(k not in req.row for k in req.verify_fields):
+            return WriteResult("blocked", message="verify_fields 包含载荷中不存在的字段")
         try:
-            if req.action == "update":
-                if not req.row_id:
-                    return WriteResult("blocked", message="update 需要 row_id")
-                adapter.update_row(req.table, req.row_id, dict(req.row))
-                rid = req.row_id
-            else:
-                rid = adapter.append_row(req.table, dict(req.row))
+            fingerprint = AUTH.payload_hash({"row": dict(req.row), "row_id": req.row_id,
+                                             "verify_fields": list(req.verify_fields)})
+        except (ValueError, TypeError):
+            return WriteResult("blocked", message="载荷不是有效的 JSON 数据")
+        if mode != C.MODE_APPLY:
+            return WriteResult("candidate", message="preview：候选（未写）", evidence=dict(req.row))
+        approval_required = C.ROUTE_POLICIES[req.route] == C.WRITE_APPROVAL_REQUIRED
+        if approval_required:
+            # 复用只读结果不消耗新次数；真正发送前由 reserve 重读并强校验。
+            ok, why = AUTH.authorize_write(req.grant, req.table, req.action,
+                                          route=req.route, row_id=req.row_id,
+                                          row=req.row, check_uses=False)
+            if not ok:
+                return WriteResult("blocked", message=why)
+        try:
+            adapter = self._get_adapter(req.route)
+        except Exception as exc:
+            return WriteResult("blocked", message="初始化目标后端失败（未发送写入）：%s" % exc)
+        target = self._target_identity(adapter, req.route)
+        operation_key = AUTH.payload_hash({"target": target, "route": req.route,
+                                           "table": req.table, "action": req.action,
+                                           "key": req.idem_key or uuid.uuid4().hex})
+        db = None
+        try:
+            db = self._connect()
+            # 从查重到完成记账保持同一排他事务，防止并发读回/CSV追加互相踩踏。
+            db.execute("BEGIN IMMEDIATE")
+            old = db.execute("SELECT * FROM operations WHERE operation_key=?",
+                             (operation_key,)).fetchone()
+            if old is not None:
+                if old["request_hash"] != fingerprint:
+                    return WriteResult("blocked", row_id=old["row_id"],
+                                       message="同一幂等键对应不同载荷，拒绝复用或重写")
+                return self._reconcile(db, old, req, adapter)
+            # 旧版本只有 CSV，没有请求摘要；保守地核验其 row_id，不自动重发。
+            legacy = self._legacy_entry(req)
+            if legacy is not None:
+                rid = legacy.get("row_id") or ""
+                state = "verify_failed" if rid else "outcome_unknown"
+                db.execute("INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?)",
+                           (operation_key, fingerprint, state, rid, "旧台账待核验", 1))
+                db.commit()
+                db.execute("BEGIN IMMEDIATE")
+                old = db.execute("SELECT * FROM operations WHERE operation_key=?",
+                                 (operation_key,)).fetchone()
+                return self._reconcile(db, old, req, adapter)
+            if approval_required:
+                try:
+                    reserved = AUTH.GrantStore(os.path.join(
+                        self.data_dir, AUTH.GRANTS_DIR_NAME)).reserve(
+                            req.grant, table=req.table, action=req.action,
+                            route=req.route, row_id=req.row_id, row=req.row)
+                    req = replace(req, grant=reserved)
+                except (OSError, sqlite3.Error, PermissionError, ValueError) as exc:
+                    return WriteResult("blocked", message="授权预占失败（未写）：%s" % exc)
+            # 先持久化 sending，再发请求。进程在任何后续位置中断也不会重复 append。
+            db.execute("INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?)",
+                       (operation_key, fingerprint, "sending", req.row_id if req.action == "update" else "",
+                        "写入结果尚未确认", 0))
+            db.commit()
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                if req.action == "update":
+                    adapter.update_row(req.table, req.row_id, dict(req.row))
+                    rid = req.row_id
+                else:
+                    rid = adapter.append_row(req.table, dict(req.row))
                 if not rid:
-                    return WriteResult("verify_failed", verified=False,
-                                       message="写入返回空 row_id")
-        except Exception as e:  # 写入异常统一收口，不向上炸
-            return WriteResult("verify_failed", verified=False,
-                               message="写入异常：%s" % e)
+                    return self._finish(db, operation_key, req, "outcome_unknown", "",
+                                        "写入返回空 row_id；禁止自动重发，需人工核对")
+            except Exception as exc:
+                return self._finish(db, operation_key, req, "outcome_unknown",
+                                    req.row_id if req.action == "update" else "",
+                                    "写入响应未知，禁止自动重发：%s" % exc)
+            # 先保存已知 row_id，读回/CSV失败后仍能定位原行。
+            db.execute("UPDATE operations SET state=?, row_id=? WHERE operation_key=?",
+                       ("verify_failed", str(rid), operation_key))
+            db.commit()
+            db.execute("BEGIN IMMEDIATE")
+            verified, detail = self.verify_readback(adapter, req, str(rid))
+            return self._finish(db, operation_key, req,
+                                "written" if verified else "verify_failed", str(rid), detail)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            # 持久化失败可能发生在写后，绝不能声称未写或让上层视为成功。
+            return WriteResult("outcome_unknown", message="写入状态无法可靠落盘，需核对：%s" % exc)
+        finally:
+            if db is not None:
+                db.close()  # 未提交的事务回滚，已提交的 sending 保留
 
-        # 云端已接受这次写入 → 消耗一次授权（仅 max_uses>0 的授权计数；
-        # 读回失败时授权同样算用掉，避免自动化靠重试绕过一次性授权）
-        self._consume_grant(req)
+    def _connect(self):
+        os.makedirs(self.data_dir, exist_ok=True)
+        db = sqlite3.connect(os.path.join(self.data_dir, "write_operations.sqlite3"), timeout=30)
+        db.row_factory = sqlite3.Row
+        db.execute("CREATE TABLE IF NOT EXISTS operations (operation_key TEXT PRIMARY KEY, "
+                   "request_hash TEXT NOT NULL, state TEXT NOT NULL, row_id TEXT NOT NULL, "
+                   "detail TEXT NOT NULL, accounted INTEGER NOT NULL)")
+        db.commit()
+        return db
 
-        # 读回验证：中文列名写错时 SeaTable 会 HTTP 200 静默丢列，必须核对
+    def _reconcile(self, db, old, req, adapter) -> WriteResult:
+        rid = old["row_id"]
+        if not rid:
+            return WriteResult("outcome_unknown", message=(
+                "上次请求结果未知且没有 row_id；禁止重发，需人工核对远端后处置"),
+                evidence={"idem_key": req.idem_key, "state": old["state"]})
         verified, detail = self.verify_readback(adapter, req, rid)
-        self._ledger(req, rid, verified, detail)
+        if verified:
+            if not old["accounted"] or old["state"] != "written":
+                result = self._finish(db, old["operation_key"], req, "written", rid, detail)
+                if not result.ok:
+                    return result
+            return WriteResult("skipped_reuse", row_id=rid, verified=True,
+                               message="复用原 row_id，重新读回验证通过（未重写）")
+        return self._finish(db, old["operation_key"], req, "verify_failed", rid, detail)
 
-        if not verified:
-            return WriteResult("verify_failed", row_id=rid, verified=False,
-                               message="读回验证失败：%s" % detail,
-                               evidence={"row_id": rid})
-        return WriteResult("written", row_id=rid, verified=True,
-                           message="已写入并读回验证通过", evidence={"row_id": rid})
+    def _finish(self, db, key, req, state: str, rid: str, detail: str) -> WriteResult:
+        verified = state == "written"
+        try:
+            self._ledger(req, rid, verified, detail)
+            accounted = 1
+        except OSError as exc:
+            state, verified, accounted = "outcome_unknown", False, 0
+            detail = "台账落盘失败；已有 row_id 只可核验，不得重写：%s" % exc
+        db.execute("UPDATE operations SET state=?, row_id=?, detail=?, accounted=? "
+                   "WHERE operation_key=?", (state, rid, detail, accounted, key))
+        db.commit()
+        prefix = "已写入并读回验证通过：" if verified else (
+            "读回验证失败：" if state == "verify_failed" else "")
+        return WriteResult(state, row_id=rid, verified=verified, message=prefix + detail,
+                           evidence={"row_id": rid, "idem_key": req.idem_key})
 
-    # ── 读回验证 ───────────────────────────────────────
-    def verify_readback(self, adapter: Any, req: WriteRequest,
-                        rid: str) -> tuple[bool, str]:
-        """重新拉表核对 row_id 存在且关键字段一致。
+    @staticmethod
+    def _target_identity(adapter: Any, route: str) -> str:
+        # 不包含 token；目标变化不允许借用另一 Base/本地库的历史成功结果。
+        identity = [type(adapter).__module__, type(adapter).__qualname__, route]
+        for name in ("server", "uuid", "base_name", "root", "data_dir"):
+            value = getattr(adapter, name, "")
+            if value:
+                identity.append("%s=%s" % (name, value))
+        return hashlib.sha256("|".join(identity).encode("utf-8")).hexdigest()
 
-        标量字段（str/int/float/bool）逐一比对；list/dict（链接列、多选）
-        跳过精确比对只查存在性 —— 云端会归一化这类值，硬比必误报。
-        """
+    def verify_readback(self, adapter: Any, req: WriteRequest, rid: str) -> tuple[bool, str]:
         rows = self._safe_list_rows(adapter, req.table)
-        if isinstance(rows, str):     # 异常说明
+        if isinstance(rows, str):
             return False, rows
-        target = None
-        for r in rows:
-            if r.get("__row_id__") == rid:
-                target = r
-                break
+        target = next((r for r in rows if str(r.get("__row_id__", "")) == str(rid)), None)
         if target is None:
             return False, "row_id=%s 在表「%s」读回后不存在" % (rid, req.table)
-
-        fields = req.verify_fields or tuple(
-            k for k, v in (req.row or {}).items()
-            if isinstance(v, (str, int, float, bool)))
+        # 控制字段不是业务列；结构化值必须比对，不能用行存在代替写入正确。
+        fields = req.verify_fields or tuple(k for k in req.row if k != "__expected_version__")
         mismatch = []
-        for k in fields:
-            want = req.row.get(k)
-            got = target.get(k)
-            # SeaTable 空列常返回 None / ""，等价处理
-            if (want or "") != ("" if got is None else str(got) if isinstance(want, str) else got):
-                if str(want or "") != str("" if got is None else got):
-                    mismatch.append("%s: 期望 %r 实得 %r" % (k, want, got))
+        for key in fields:
+            want = req.row[key]
+            got = target.get(key)
+            if not self._value_equal(want, got):
+                mismatch.append("%s: 期望 %r 实得 %r" % (key, want, got))
         if mismatch:
             return False, "字段不一致（%s）" % "; ".join(mismatch[:3])
+        if not fields:
+            return False, "没有可验证的业务字段"
         return True, "字段一致（%d 项）" % len(fields)
 
-    # ── 写入原语（供写链复用；不含策略/幂等/台账）──────
+    @staticmethod
+    def _value_equal(want, got) -> bool:
+        if want is None or want == "":
+            return got is None or got == ""
+        if isinstance(want, bool):
+            return (type(got) is bool and got is want) or (
+                isinstance(got, str) and got.strip().lower() == str(want).lower())
+        if isinstance(want, (int, float)):
+            if isinstance(got, bool) or got is None or got == "":
+                return False
+            try:
+                return math.isfinite(float(got)) and float(want) == float(got)
+            except (TypeError, ValueError, OverflowError):
+                return False
+        if isinstance(want, (list, tuple)):
+            # 多选/链接列：云端会归一化顺序，所以按集合比较（多一个少一个仍要抓）；
+            # 但绝不「只要行存在就算过」——那正是静默丢列能被放行的原因。
+            if not isinstance(got, (list, tuple)):
+                return False
+            try:
+                dump = lambda x: json.dumps(x, ensure_ascii=False, sort_keys=True)
+                return sorted(dump(x) for x in want) == sorted(dump(x) for x in got)
+            except (TypeError, ValueError):
+                return False
+        if isinstance(want, Mapping):
+            try:
+                if not isinstance(got, Mapping):
+                    return False
+                return (json.dumps(dict(want), ensure_ascii=False, sort_keys=True)
+                        == json.dumps(dict(got), ensure_ascii=False, sort_keys=True))
+            except (TypeError, ValueError):
+                return False
+        return str(want) == str(got) if got is not None else False
+
     @staticmethod
     def write_verified(adapter: Any, table: str, row: Mapping[str, Any],
                        action: str = "append", row_id: str = "") -> tuple[str, bool, str]:
-        """append/update + 读回验证一步完成。返回 (row_id, verified, detail)。
-
-        语义约定：row_id 返回值有意义当且仅当写入请求本身被云端接受
-        （append 拿到 rid / update 的目标 rid）；verified=False 说明字段
-        静默丢失（HTTP 200 但列没进表），调用方按写入失败处理。
-        """
+        """低层兼容原语，不提供授权/幂等；业务自动化应使用 write。"""
+        if action not in ("append", "update"):
+            return "", False, "不支持的写入动作"
         if action == "update":
             if not row_id:
                 return "", False, "update 需要 row_id"
@@ -199,65 +287,56 @@ class DataService:
         else:
             rid = adapter.append_row(table, dict(row))
             if not rid:
-                return "", False, "写入返回空 row_id"
-        # 读回验证（就地构造轻量 req，复用比对逻辑）
-        ds = DataService.__new__(DataService)   # 不走 __init__（避免无谓 I/O）
+                return "", False, "写入返回空 row_id，结果未知"
+        ds = DataService.__new__(DataService)
         verified, detail = ds.verify_readback(adapter, WriteRequest(
             table=table, row=row, action=action, row_id=rid), rid)
         return rid, verified, detail
 
-    # ── 内部 ───────────────────────────────────────────
     @staticmethod
     def _safe_list_rows(adapter: Any, table: str):
-        """list_rows 异常统一收口为字符串说明，不向上炸。"""
         try:
-            return adapter.list_rows(table)
-        except Exception as e:
-            return "读回 list_rows 异常：%s" % e
+            rows = adapter.list_rows(table)
+            if not isinstance(rows, (list, tuple)) or any(not isinstance(r, Mapping) for r in rows):
+                return "读回 list_rows 返回了非法结构"
+            return rows
+        except Exception as exc:
+            return "读回 list_rows 异常：%s" % exc
 
     def _get_adapter(self, route: str) -> Any:
         if self._factory is None:
             from adapters.factory import load_config, get_adapter
             cfg = load_config()
-            a = get_adapter(cfg, base_name=route)
-            a.auth()
-            return a
+            adapter = get_adapter(cfg, base_name=route, strict=True)
+            adapter.auth()
+            return adapter
         return self._factory(route)
-
-    def _consume_grant(self, req: WriteRequest) -> None:
-        """一次真实写入尝试消耗一次授权（只对 max_uses>0 的授权计数）。"""
-        if req.grant is None or not req.grant.max_uses:
-            return
-        try:
-            AUTH.GrantStore(os.path.join(self.data_dir, AUTH.GRANTS_DIR_NAME)).consume(req.grant)
-        except OSError:
-            pass  # 凭证回写失败不影响业务写入，下次授权自然按旧计数继续
 
     def _ledger_path(self) -> str:
         return os.path.join(self.data_dir, LEDGER_FILE_NAME)
 
-    def _key_used(self, key: str) -> bool:
-        path = self._ledger_path()
-        if not os.path.exists(path):
-            return False
-        with open(path, "r", encoding="utf-8-sig", newline="") as f:
-            for r in csv.DictReader(f):
-                if (r.get("幂等键") or "").strip() == key:
-                    return True
-        return False
+    def _legacy_entry(self, req: WriteRequest):
+        if not req.idem_key or not os.path.exists(self._ledger_path()):
+            return None
+        with open(self._ledger_path(), encoding="utf-8-sig", newline="") as f:
+            matches = [r for r in csv.DictReader(f)
+                       if r.get("幂等键") == req.idem_key and r.get("路由") == req.route
+                       and r.get("表") == req.table and r.get("动作") == req.action]
+        return matches[-1] if matches else None
 
     def _ledger(self, req: WriteRequest, rid: str, verified: bool, detail: str) -> None:
         os.makedirs(self.data_dir, exist_ok=True)
         path = self._ledger_path()
-        new_file = not os.path.exists(path)
+        new_file = not os.path.exists(path) or os.path.getsize(path) == 0
         with open(path, "a", encoding="utf-8-sig", newline="") as f:
-            w = csv.writer(f)
+            writer = csv.writer(f)
             if new_file:
-                w.writerow(LEDGER_FIELDS)
+                writer.writerow(LEDGER_FIELDS)
             summary = "; ".join("%s=%s" % kv for kv in list(req.row.items())[:3])
-            # 备注列前置授权编号：审计时一眼看出「这次写入是谁批的」
-            grant_tag = "[%s] " % req.grant.grant_id if req.grant else "[无授权] "
-            w.writerow([_dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        req.route, req.action, req.table, rid, req.idem_key,
-                        "通过" if verified else "失败", summary[:120],
-                        req.actor, (grant_tag + (req.reason or detail))[:80]])
+            grant_tag = "[%s] " % req.grant.grant_id if req.grant else "[自动策略] "
+            writer.writerow([_dt.datetime.now().isoformat(timespec="seconds"),
+                             req.route, req.action, req.table, rid, req.idem_key,
+                             "通过" if verified else "失败", summary[:120], req.actor,
+                             (grant_tag + detail + ("; " + req.reason if req.reason else ""))[:240]])
+            f.flush()
+            os.fsync(f.fileno())

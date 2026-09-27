@@ -20,7 +20,8 @@ def require(doc, *needles):
 def test_automation_contract():
     doc = text("automations/README.md")
     require(doc, "production", "tasks", "普通文件优先文本化", "超过 90 天", "--yes")
-    assert "每日任务不得运行 evidence.py prune ... --yes" in doc
+    # evidence.py 已归入 domain/（仓库结构整理 cb2bd63），此处断言需同步跟进新路径。
+    assert "每日任务不得运行 domain/evidence.py prune ... --yes" in doc
     assert "自动化只扫描和报告候选，永远不带 `--yes`" in doc
 
 
@@ -30,9 +31,12 @@ def test_summary_contract():
 
 
 def test_public_docs_contract():
-    for rel in ("README.md", "SKILL.md"):
-        doc = text(rel)
-        require(doc, "production", "tasks", "普通文件", "90 天", "--yes")
+    # v2.0.0（906b840）把 README 重写为「门面」，证据留存细节（普通文件优先文本化 /
+    # 90 天候选）下沉到 SKILL.md。契约因此分层，而不是两份文档抄同一串关键词：
+    #   README    —— 对外门面：双 Base 分流 + 破坏性操作必须显式 --yes
+    #   SKILL.md  —— 操作口径：分流 + 证据留存 + --yes 全套
+    require(text("README.md"), "production", "tasks", "--yes")
+    require(text("SKILL.md"), "production", "tasks", "普通文件", "90 天", "--yes")
 
 
 def test_command_help_is_offline_and_explicit():

@@ -4,10 +4,10 @@
 
 每日 9 点自动化从「Prompt 记 13 步」改为「跑一条命令」：
 
-  python workflow.py daily --mode preview   # 演练：online_write 全被拦截
-  python workflow.py daily --mode apply     # 真实执行
-  python workflow.py daily --resume <id>    # 断点续跑（成功步骤跳过）
-  python workflow.py status <run_id>        # 查看历史运行结果
+  python workflows/workflow.py daily --mode preview  # 演练：online_write 全被拦截
+  python workflows/workflow.py daily --mode apply  # 真实执行
+  python workflows/workflow.py daily --resume <id>  # 断点续跑（成功步骤跳过）
+  python workflows/workflow.py status <run_id>  # 查看历史运行结果
 
 输出：data/runs/<run_id>/final.json —— AI 播报与人工核对只读这个文件。
 """
@@ -111,9 +111,9 @@ def cmd_gate(args):
     print(g.render())
     if not g.allowed:
         print("\n已拒绝发布（未上传任何内容）。修完问题重跑工作流，"
-              "或复核账本后用 python publish.py --gate <run_id> 再试。")
+              "或复核账本后用 python cockpit/publish.py --gate <run_id> 再试。")
         return 1
-    print("\n可以用以下命令发布：python publish.py --gate %s"
+    print("\n可以用以下命令发布：python cockpit/publish.py --gate %s"
           % (g.run_id or args.run_id))
     return 0
 

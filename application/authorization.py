@@ -1,45 +1,34 @@
 # -*- coding: utf-8 -*-
-"""application/authorization.py — 写库授权闸门（可信执行层 v1，2026-09-26）。
+"""显式写库授权。文件决定授权范围，持久化预占决定剩余次数。
 
-━━ 这条规则为什么存在 ━━
-「高置信」是**匹配算法的自评**：金额差在 2% 以内、供应商名唯一命中。
-它回答的是「这条消息像不像真的」，**不是**「人同意这次写入吗」。
-一旦把置信度当授权用，算法的一次误判就会直接改掉真实业务表，
-而且全程没有任何人过目 —— 这正是本期改造要拆掉的东西。
-
-所以本模块把授权从置信度里**彻底摘出来**：
-  - 任何业务表（production / tasks）写入，必须携带一份 WriteGrant；
-  - WriteGrant 只有两个来源：
-      1. 人工审批通过的 ApprovalRequest（source=approval）；
-      2. 人亲手写下的授权文件（source=manual，经 --grant-file 传入）；
-  - 本模块**刻意不接收、不读取任何置信度字段** —— 高/中/低一视同仁。
-    置信度只允许影响「哪些条目进入待授权清单」，不允许影响「是否放行」。
-
-设计约束：纯数据结构 + 局部文件 I/O，不 import 任何线上适配器，可离线单测。
+置信度不构成授权。授权必须在发送写请求前预占；超时、读回失败和进程
+中断均不退还次数，避免用重试扩大一次性授权。SQLite 串行化跨进程预占，
+JSON 仍可人工核对/撤销（删除授权文件即撤销，旧对象不能复活它）。
 """
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import os
+import re
+import sqlite3
+import tempfile
 import uuid
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Mapping, Optional, Sequence
 
 GRANTS_DIR_NAME = "approvals"
-
-# 授权来源
-SOURCE_MANUAL = "manual"        # 人亲手写的授权文件
-SOURCE_APPROVAL = "approval"    # 人工审批通过的 ApprovalRequest
-
-# 动作通配符
+SOURCE_MANUAL = "manual"
+SOURCE_APPROVAL = "approval"
 ACTION_ANY = "any"
+_ACTIONS = {"append", "update", ACTION_ANY}
+_ROUTES = {"production", "tasks", "crm"}
 
 
 def new_grant_id(now: Optional[_dt.datetime] = None) -> str:
-    """GRT-YYYYMMDD-xxxxxx 形式的授权编号。"""
     now = now or _dt.datetime.now()
-    return "GRT-%s-%s" % (now.strftime("%Y%m%d"), uuid.uuid4().hex[:6])
+    return "GRT-%s-%s" % (now.strftime("%Y%m%d"), uuid.uuid4().hex[:12])
 
 
 def grants_dir(skill_dir: str) -> str:
@@ -47,221 +36,328 @@ def grants_dir(skill_dir: str) -> str:
 
 
 def _parse_dt(value: str) -> Optional[_dt.datetime]:
-    if not value:
-        return None
     try:
-        return _dt.datetime.fromisoformat(str(value).strip())
-    except ValueError:
+        value = _dt.datetime.fromisoformat(str(value).strip())
+        # 老文件的无时区时间按本机时区解释，与旧版 now() 的语义一致。
+        return value.astimezone(_dt.timezone.utc)
+    except (TypeError, ValueError, OverflowError):
         return None
+
+
+def payload_hash(row: Mapping[str, Any]) -> str:
+    """保留类型的规范化摘要；不把 False、0、空串等混为一谈。"""
+    raw = json.dumps(dict(row), ensure_ascii=False, sort_keys=True,
+                     separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
 class WriteGrant:
-    """一次写库的**显式**授权凭证。没有它，再高的置信度也写不进去。
-
-    tables / actions 为空元组表示「不限」——不限表只应在人工授权文件里
-    明确写出；程序化生成的授权（如审批转化）会强制限定范围。
-    """
     grant_id: str
-    tables: tuple = ()          # 允许写入的表名；空 = 不限表
-    actions: tuple = ()         # 允许的动作（append / update）；空 = 不限
-    actor: str = ""             # 授权人（谁点的头）
-    reason: str = ""            # 为什么批准
+    tables: tuple = ()
+    actions: tuple = ()
+    actor: str = ""
+    reason: str = ""
     issued_at: str = ""
-    expires_at: str = ""        # 空 = 不过期
-    max_uses: int = 0           # 0 = 不限次
-    used: int = 0               # 已消耗次数
+    expires_at: str = ""
+    max_uses: int = 0
+    used: int = 0
     source: str = SOURCE_MANUAL
-    approval_id: str = ""       # source=approval 时对应的审批编号
+    approval_id: str = ""
     note: str = ""
+    routes: tuple = ()
+    row_id: str = ""
+    payload_hash: str = ""
+    # 只在可信文件加载入口赋值，不接受 JSON 注入，也不写回授权内容。
+    _source_path: str = field(default="", repr=False, compare=False)
 
-    # ── 判定 ────────────────────────────────────────────────
+    def validate(self) -> tuple[bool, str]:
+        if not isinstance(self.grant_id, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", self.grant_id):
+            return False, "授权 grant_id 为空或包含非法路径字符"
+        for name in ("tables", "actions", "routes"):
+            values = getattr(self, name)
+            if not isinstance(values, (tuple, list)) or any(
+                    not isinstance(x, str) or not x.strip() for x in values):
+                return False, "授权 %s 必须是非空字符串的列表（不限范围请显式写 []）" % name
+        if any(x not in _ACTIONS for x in self.actions):
+            return False, "授权包含不支持的动作"
+        if any(x not in _ROUTES for x in self.routes):
+            return False, "授权包含未知路由"
+        for name in ("max_uses", "used"):
+            n = getattr(self, name)
+            if type(n) is not int or n < 0:
+                return False, "授权 %s 必须是非负整数" % name
+        if self.source not in (SOURCE_MANUAL, SOURCE_APPROVAL):
+            return False, "授权来源非法"
+        if not self.issued_at or _parse_dt(self.issued_at) is None:
+            return False, "授权 issued_at 无法解析"
+        if self.expires_at and _parse_dt(self.expires_at) is None:
+            return False, "授权 expires_at 无法解析"
+        if self.payload_hash and not re.fullmatch(r"[0-9a-f]{64}", self.payload_hash):
+            return False, "授权载荷摘要非法"
+        if self.source == SOURCE_APPROVAL and not (
+                self.approval_id and self.actor and len(self.tables) == 1
+                and len(self.routes) == 1 and len(self.actions) == 1
+                and self.actions[0] in ("append", "update") and self.payload_hash
+                and self.max_uses == 1
+                and (self.actions[0] != "update" or self.row_id)):
+            return False, "审批授权必须绑定单一路由、表、动作、目标与载荷，且仅限一次"
+        return True, ""
+
     def covers(self, table: str, action: str,
-               now: Optional[_dt.datetime] = None) -> tuple[bool, str]:
-        """这份授权是否覆盖 (table, action)。返回 (是否放行, 原因)。"""
-        now = now or _dt.datetime.now()
-        if self.expires_at:
-            exp = _parse_dt(self.expires_at)
-            if exp is None:
-                return False, "授权 %s 的 expires_at 无法解析：%r" % (
-                    self.grant_id, self.expires_at)
-            if now > exp:
-                return False, "授权 %s 已于 %s 过期" % (self.grant_id, self.expires_at)
-        if self.max_uses and self.used >= self.max_uses:
+               now: Optional[_dt.datetime] = None, *, route: str = "",
+               check_uses: bool = True) -> tuple[bool, str]:
+        valid, why = self.validate()
+        if not valid:
+            return False, why
+        if action not in ("append", "update"):
+            return False, "不支持的写入动作：%s" % action
+        now = (now or _dt.datetime.now().astimezone()).astimezone(_dt.timezone.utc)
+        if now < _parse_dt(self.issued_at):
+            return False, "授权尚未生效"
+        if self.expires_at and now >= _parse_dt(self.expires_at):
+            return False, "授权 %s 已于 %s 过期" % (self.grant_id, self.expires_at)
+        if check_uses and self.max_uses and self.used >= self.max_uses:
             return False, "授权 %s 已用尽（%d/%d 次）" % (
                 self.grant_id, self.used, self.max_uses)
         if self.tables and table not in self.tables:
-            return False, "授权 %s 不含表「%s」（仅限：%s）" % (
-                self.grant_id, table, "、".join(self.tables))
-        acts = tuple(a for a in self.actions if a)
-        if acts and ACTION_ANY not in acts and action not in acts:
-            return False, "授权 %s 不含动作「%s」（仅限：%s）" % (
-                self.grant_id, action, "、".join(acts))
+            return False, "授权 %s 不含表「%s」" % (self.grant_id, table)
+        if self.actions and ACTION_ANY not in self.actions and action not in self.actions:
+            return False, "授权 %s 不含动作「%s」" % (self.grant_id, action)
+        if route and self.routes and route not in self.routes:
+            return False, "授权 %s 不含路由「%s」" % (self.grant_id, route)
         return True, ""
 
     def consumed(self) -> "WriteGrant":
-        """用掉一次授权，返回新凭证（不落盘，由 GrantStore 负责回写）。"""
         return replace(self, used=self.used + 1)
 
     def to_dict(self) -> dict:
-        d = asdict(self)
-        d["tables"] = list(self.tables)
-        d["actions"] = list(self.actions)
-        return d
+        data = asdict(self)
+        data.pop("_source_path", None)
+        for name in ("tables", "actions", "routes"):
+            data[name] = list(data[name])
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "WriteGrant":
-        known = set(cls.__dataclass_fields__)
-        kw = {k: v for k, v in dict(data).items() if k in known}
-        kw["tables"] = tuple(kw.get("tables") or ())
-        kw["actions"] = tuple(kw.get("actions") or ())
-        kw["used"] = int(kw.get("used") or 0)
-        kw["max_uses"] = int(kw.get("max_uses") or 0)
-        kw.setdefault("grant_id", new_grant_id())
-        if not kw.get("issued_at"):
-            kw["issued_at"] = _dt.datetime.now().isoformat(timespec="seconds")
-        return cls(**kw)
+        required = {"grant_id", "tables", "actions", "issued_at", "expires_at", "max_uses"}
+        if not isinstance(data, Mapping) or not required.issubset(data):
+            raise ValueError("授权文件缺少显式编号、范围、有效期或次数；拒绝默认无限授权")
+        known = set(cls.__dataclass_fields__) - {"_source_path"}
+        kw = {k: v for k, v in data.items() if k in known}
+        for name in ("tables", "actions", "routes"):
+            values = kw.get(name, ())
+            if not isinstance(values, (list, tuple)):
+                raise ValueError("授权 %s 必须是列表" % name)
+            kw[name] = tuple(values)
+        grant = cls(**kw)
+        valid, why = grant.validate()
+        if not valid:
+            raise ValueError(why)
+        return grant
 
 
-# ────────────────────────────────────────────────────────────
-# 便捷构造
-# ────────────────────────────────────────────────────────────
 def manual_grant(tables: Sequence[str] = (), actions: Sequence[str] = (),
                  actor: str = "", reason: str = "", expires_at: str = "",
-                 max_uses: int = 0, note: str = "") -> WriteGrant:
-    """构造一份人工授权（对应 --grant-file 里的内容）。"""
-    return WriteGrant(
-        grant_id=new_grant_id(),
-        tables=tuple(t for t in tables if t),
-        actions=tuple(a for a in actions if a),
+                 max_uses: int = 0, note: str = "", *,
+                 routes: Sequence[str] = ()) -> WriteGrant:
+    grant = WriteGrant(
+        grant_id=new_grant_id(), tables=tuple(tables), actions=tuple(actions),
         actor=actor, reason=reason,
-        issued_at=_dt.datetime.now().isoformat(timespec="seconds"),
-        expires_at=expires_at, max_uses=int(max_uses or 0),
-        source=SOURCE_MANUAL, note=note,
-    )
+        issued_at=_dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        expires_at=expires_at, max_uses=max_uses, source=SOURCE_MANUAL,
+        note=note, routes=tuple(routes))
+    valid, why = grant.validate()
+    if not valid:
+        raise ValueError(why)
+    return grant
 
 
-def grant_from_approval(approval: Any, tables: Sequence[str] = ()) -> WriteGrant:
-    """把一条**已通过**的审批请求转成写库授权。
-
-    未通过的审批直接抛 PermissionError —— 这是唯一的用法错误，
-    必须让调用方立刻发现，而不是静默降级成「无授权」。
-    """
-    status = str(getattr(approval, "status", "") or "")
-    if status != "approved":
-        raise PermissionError(
-            "审批 %s 未通过（status=%r），不能转为写库授权"
-            % (getattr(approval, "approval_id", "?"), status))
-    return WriteGrant(
-        grant_id=new_grant_id(),
-        tables=tuple(t for t in tables if t),
-        actions=(ACTION_ANY,),
-        actor=getattr(approval, "approver", "") or "unknown",
-        reason=getattr(approval, "reason", "") or "",
-        issued_at=_dt.datetime.now().isoformat(timespec="seconds"),
+def grant_from_approval(approval: Any, tables: Sequence[str] = (), *,
+                        route: str = "production", action: str = "update") -> WriteGrant:
+    """审批不再转成不限动作/次数的通行证，必须绑定批准的 after 载荷。"""
+    if getattr(approval, "status", "") != "approved":
+        raise PermissionError("审批未通过，不能转为写库授权")
+    target_tables = tuple(tables) or (getattr(approval, "object_type", ""),)
+    after = getattr(approval, "after", None)
+    if not isinstance(after, Mapping) or not after:
+        raise PermissionError("审批未包含明确的 after 载荷")
+    grant = WriteGrant(
+        grant_id=new_grant_id(), tables=target_tables, actions=(action,),
+        routes=(route,), row_id=str(getattr(approval, "object_id", "") or ""),
+        payload_hash=payload_hash(after), max_uses=1,
+        actor=str(getattr(approval, "approver", "") or ""),
+        reason=str(getattr(approval, "reason", "") or ""),
+        issued_at=_dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         source=SOURCE_APPROVAL,
-        approval_id=getattr(approval, "approval_id", ""),
-    )
+        approval_id=str(getattr(approval, "approval_id", "") or ""))
+    valid, why = grant.validate()
+    if not valid:
+        raise PermissionError(why)
+    return grant
 
 
-# ────────────────────────────────────────────────────────────
-# 授权仓库
-# ────────────────────────────────────────────────────────────
 class GrantStore:
-    """授权凭证的本地仓库：data/approvals/<grant_id>.json。
-
-    刻意做成「一个授权一个文件」——便于人在文件管理器里肉眼核对、
-    单独撤销（删文件即失效），也天然留下时间戳证据。
-    """
-
     def __init__(self, data_dir: str = ""):
-        self.dir = data_dir or os.path.join(
+        self.dir = os.path.abspath(data_dir or os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "data", GRANTS_DIR_NAME)
+            "data", GRANTS_DIR_NAME))
 
     def path(self, grant_id: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", str(grant_id)):
+            raise ValueError("非法授权编号")
         return os.path.join(self.dir, "%s.json" % grant_id)
 
-    def save(self, grant: WriteGrant) -> str:
+    def _connect(self):
         os.makedirs(self.dir, exist_ok=True)
-        p = self.path(grant.grant_id)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(grant.to_dict(), f, ensure_ascii=False, indent=2)
-        return p
+        db = sqlite3.connect(os.path.join(self.dir, ".usage.sqlite3"), timeout=15)
+        db.execute("CREATE TABLE IF NOT EXISTS grants "
+                   "(grant_id TEXT PRIMARY KEY, path TEXT NOT NULL, used INTEGER NOT NULL)")
+        db.commit()
+        return db
+
+    @staticmethod
+    def _save_at(grant: WriteGrant, path: str) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".grant-", dir=os.path.dirname(path))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(grant.to_dict(), f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+    def save(self, grant: WriteGrant) -> str:
+        valid, why = grant.validate()
+        if not valid:
+            raise ValueError(why)
+        path = self.path(grant.grant_id)
+        db = self._connect()
+        try:
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                old = db.execute("SELECT path, used FROM grants WHERE grant_id=?",
+                                 (grant.grant_id,)).fetchone()
+                if old and os.path.normcase(old[0]) != os.path.normcase(path):
+                    raise PermissionError("同一授权编号不可更换来源路径")
+                used = max(grant.used, old[1] if old else 0)
+                self._save_at(replace(grant, used=used), path)
+                db.execute("INSERT OR REPLACE INTO grants VALUES (?, ?, ?)",
+                           (grant.grant_id, path, used))
+            return path
+        finally:
+            db.close()
 
     def load(self, grant_id: str) -> Optional[WriteGrant]:
-        return self.load_file(self.path(grant_id))
+        grant = self.load_file(self.path(grant_id))
+        return grant if grant is not None and grant.grant_id == grant_id else None
 
     @staticmethod
     def load_file(path: str) -> Optional[WriteGrant]:
-        """从人指定路径读授权文件（--grant-file）。读不到/格式错返回 None。"""
-        if not path or not os.path.exists(path):
+        if not path:
             return None
         try:
             with open(path, encoding="utf-8") as f:
-                return WriteGrant.from_dict(json.load(f))
-        except (OSError, ValueError):
+                grant = WriteGrant.from_dict(json.load(f))
+            return replace(grant, _source_path=os.path.abspath(path))
+        except (OSError, ValueError, TypeError):
             return None
 
     def list_all(self) -> list[WriteGrant]:
         if not os.path.isdir(self.dir):
             return []
-        out = []
-        for fn in sorted(os.listdir(self.dir)):
-            if fn.endswith(".json"):
-                g = self.load(fn[:-5])
-                if g is not None:
-                    out.append(g)
-        return out
+        return [g for fn in sorted(os.listdir(self.dir))
+                if fn.endswith(".json") and not fn.startswith(".")
+                for g in [self.load_file(os.path.join(self.dir, fn))] if g is not None]
 
     def find_valid(self, table: str, action: str,
                    now: Optional[_dt.datetime] = None) -> Optional[WriteGrant]:
-        """找一份当前有效的授权（用于晚间自动化「有授权才写」）。"""
-        for g in self.list_all():
-            ok, _ = g.covers(table, action, now=now)
-            if ok:
-                return g
-        return None
+        return next((g for g in self.list_all() if g.covers(table, action, now)[0]), None)
 
     def live_grants(self, now: Optional[_dt.datetime] = None) -> list[WriteGrant]:
-        """列出当前未过期、未用尽的授权（**不校验表/动作**）。
+        now = (now or _dt.datetime.now().astimezone()).astimezone(_dt.timezone.utc)
+        return [g for g in self.list_all()
+                if (not g.max_uses or g.used < g.max_uses)
+                and _parse_dt(g.issued_at) <= now
+                and (not g.expires_at or now < _parse_dt(g.expires_at))]
 
-        晚间链路用这个判断「今晚有没有给人批过的写入授权」；
-        具体某条写入能不能落到某张表，仍由 DataService 按表逐条裁决。
-        """
-        now = now or _dt.datetime.now()
-        out = []
-        for g in self.list_all():
-            if g.max_uses and g.used >= g.max_uses:
-                continue
-            if g.expires_at:
-                exp = _parse_dt(g.expires_at)
-                if exp is None or now > exp:
-                    continue
-            out.append(g)
-        return out
+    def reserve(self, grant: WriteGrant, *, table: str = "", action: str = "",
+                route: str = "", row_id: str = "",
+                row: Optional[Mapping[str, Any]] = None) -> WriteGrant:
+        """原子地重读授权并预占一次；任何持久化错误都在业务写入前抛出。"""
+        valid, why = grant.validate()
+        if not valid:
+            raise PermissionError(why)
+        source = os.path.abspath(grant._source_path) if grant._source_path else self.path(grant.grant_id)
+        # 同一外部授权在不同 DataService/data_dir 使用，也共享同一个次数仓库。
+        if os.path.normcase(os.path.dirname(source)) != os.path.normcase(self.dir):
+            return GrantStore(os.path.dirname(source)).reserve(
+                grant, table=table, action=action, route=route, row_id=row_id, row=row)
+        db = self._connect()
+        try:
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                previous = db.execute("SELECT path, used FROM grants WHERE grant_id=?",
+                                      (grant.grant_id,)).fetchone()
+                if previous and os.path.normcase(previous[0]) != os.path.normcase(source):
+                    raise PermissionError("授权编号的来源路径不一致")
+                current = self.load_file(source)
+                if current is None:
+                    if grant._source_path or previous or os.path.exists(source):
+                        raise PermissionError("授权文件已撤销、损坏或不可读")
+                    current = grant  # 可信调用方显式构造的首次内存授权
+                if current.grant_id != grant.grant_id:
+                    raise PermissionError("授权编号与来源文件不一致")
+                current = replace(current, used=max(current.used, previous[1] if previous else 0))
+                if table or action:
+                    ok, why = authorize_write(current, table, action, route=route,
+                                              row_id=row_id, row=row)
+                    if not ok:
+                        raise PermissionError(why)
+                elif current.max_uses and current.used >= current.max_uses:
+                    raise PermissionError("授权已用尽")
+                reserved = replace(current, used=current.used + 1, _source_path=source)
+                # 文件先 fsync；即使随后的数据库提交失败，次数也不会倒退。
+                self._save_at(reserved, source)
+                db.execute("INSERT OR REPLACE INTO grants VALUES (?, ?, ?)",
+                           (grant.grant_id, source, reserved.used))
+            return reserved
+        finally:
+            db.close()
 
     def consume(self, grant: WriteGrant) -> WriteGrant:
-        """消耗一次并回写（文件不存在则创建，方便手动造的授权被正确计数）。"""
-        nxt = grant.consumed()
-        self.save(nxt)
-        return nxt
+        """兼容旧调用；写链必须在发送前调用 reserve 并传完整请求范围。"""
+        return self.reserve(grant)
 
 
-# ────────────────────────────────────────────────────────────
-# 供 DataService 调用的统一裁决
-# ────────────────────────────────────────────────────────────
 def authorize_write(grant: Optional[WriteGrant], table: str, action: str,
-                    now: Optional[_dt.datetime] = None) -> tuple[bool, str]:
-    """统一裁决：没有授权一律拒绝，且原因里要说清「置信度不算数」。"""
+                    now: Optional[_dt.datetime] = None, *, route: str = "",
+                    row_id: str = "", row: Optional[Mapping[str, Any]] = None,
+                    check_uses: bool = True) -> tuple[bool, str]:
     if grant is None:
         return False, ("写库需要显式授权（高置信度不构成授权）："
                        "请走人工确认，或用 --grant-file 提供授权文件")
-    return grant.covers(table, action, now=now)
+    ok, why = grant.covers(table, action, now, route=route, check_uses=check_uses)
+    if not ok:
+        return False, why
+    if grant.routes and route not in grant.routes:
+        return False, "授权未覆盖该路由"
+    if grant.row_id and row_id != grant.row_id:
+        return False, "授权未覆盖该目标行"
+    if grant.payload_hash:
+        try:
+            same = row is not None and payload_hash(row) == grant.payload_hash
+        except (TypeError, ValueError):
+            same = False
+        if not same:
+            return False, "实际载荷与人工批准的内容不一致"
+    return True, ""
 
 
-__all__ = [
-    "GRANTS_DIR_NAME", "SOURCE_MANUAL", "SOURCE_APPROVAL", "ACTION_ANY",
-    "new_grant_id", "grants_dir", "WriteGrant", "GrantStore",
-    "manual_grant", "grant_from_approval", "authorize_write",
-]
+__all__ = ["GRANTS_DIR_NAME", "SOURCE_MANUAL", "SOURCE_APPROVAL", "ACTION_ANY",
+           "new_grant_id", "grants_dir", "WriteGrant", "GrantStore", "manual_grant",
+           "grant_from_approval", "authorize_write", "payload_hash"]

@@ -41,7 +41,7 @@ v1.10（2026-09-26，可信执行层 v1）：
 
 铁律：
   - scan 保持**只读**，绝不写 SeaTable。
-  - 写库只有一条路：显式 `python wxmatch.py apply --grant-file <授权.json>`；
+  - 写库只有一条路：显式 `python wx/wxmatch.py apply --grant-file <授权.json>`；
     不给授权文件时，该命令只列清单、不落任何写入。
   - 金额/日期匹配是**启发式**，置信度写进结果列，低置信度的只提示不预填；
     但置信度**不构成**写入授权（2026-09-26 起）。
@@ -550,19 +550,63 @@ def scan_arrivals(days=7):
 #        该行保持「待确认」。
 #   置信度只决定「哪些条目进入待授权清单」，永远不决定「是否放行」。
 
+# 业务 Base 适配器进程内缓存（避免每条写入都重新 auth + 重拉元数据）
+_BIZ_CACHE: dict = {}
+
+
 def _get_business_adapter():
-    """复用 wechat_intake 的业务 Base adapter 初始化（不 import 整个模块避免副作用）。"""
+    """复用 wechat_intake 的业务 Base adapter 初始化（不 import 整个模块避免副作用）。
+
+    ⚠️ 写路径**不许静默降级**（审计 2026-09-27）：配置写着 backend=seatable 却
+    拿不到业务 Base 凭证时，绝不退回 LocalAdapter —— 那会把「写 SeaTable」
+    变成「写本地 CSV」，读回还照样「通过」。这种配置下直接抛错，由调用方
+    记成 blocked，而不是伪造成功。
+    """
     import yaml
     cfg_path = os.path.join(HERE, "config.yaml")
+    if not os.path.exists(cfg_path):
+        raise RuntimeError("缺少 config.yaml，无法确定写入目标（拒绝退回本地库）")
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
     biz = (cfg.get("seatable") or {}).get("business") or {}
-    if not (biz.get("api_token") and biz.get("server") and biz.get("base_uuid")):
-        from adapters.local import LocalAdapter
-        return LocalAdapter(os.path.join(HERE, "data"), cfg), "local"
-    from adapters.seatable import SeaTableAdapter
-    return SeaTableAdapter(biz["api_token"], biz["server"], biz["base_uuid"],
-                           base_name=biz.get("base_name", "business")), "seatable"
+    backend = str(cfg.get("backend") or "local").lower()
+    has_biz = bool(biz.get("api_token") and biz.get("server") and biz.get("base_uuid"))
+    if has_biz:
+        # 进程内复用同一实例：SeaTableAdapter 的 _server 要 auth() 之后才有值，
+        # 且列选项映射有缓存 —— 每条写入都新建实例会既慢又白拉元数据。
+        key = (biz["server"], biz["base_uuid"], biz.get("base_name", "business"))
+        if _BIZ_CACHE.get("key") != key:
+            from adapters.seatable import SeaTableAdapter
+            adapter = SeaTableAdapter(biz["api_token"], biz["server"], biz["base_uuid"],
+                                      base_name=biz.get("base_name", "business"))
+            adapter.auth()   # ← 必须：不 auth 则 _server=None，写入必定抛异常
+            _BIZ_CACHE["key"], _BIZ_CACHE["adapter"] = key, adapter
+        return _BIZ_CACHE["adapter"], "seatable"
+    if backend == "seatable":
+        raise RuntimeError(
+            "backend=seatable 但 seatable.business 的 api_token/server/base_uuid "
+            "不完整 —— 拒绝退回本地库（否则会把线上写入变成写本地 CSV）")
+    from adapters.local import LocalAdapter
+    return LocalAdapter(os.path.join(HERE, "data"), cfg), "local"
+
+
+def _summary(todo, per_no, *, wrote_nothing=False, dry=False, reason="") -> dict:
+    """把逐条意图的**结构化**结果汇总成供上游判定退出码的摘要。"""
+    ok = sum(1 for items in per_no.values() if items and all(i["ok"] for i in items))
+    flat = [i for items in per_no.values() for i in items]
+    return {
+        "todo": todo,
+        "results": per_no,
+        "items": len(flat),
+        "ok": ok,
+        "failed": sum(1 for items in per_no.values()
+                      if not (items and all(i["ok"] for i in items))),
+        "blocked": sum(1 for i in flat if i["stage"] == "blocked"),
+        "unknown": sum(1 for i in flat if i["stage"] == "unknown"),
+        "wrote_nothing": wrote_nothing,
+        "dry": dry,
+        "reason": reason,
+    }
 
 
 def cmd_apply(dry=False, grant_file=""):
@@ -583,7 +627,7 @@ def cmd_apply(dry=False, grant_file=""):
     if not todo:
         print("[ok] 无待授权写入的核对项（%d 条待确认中置信均≤中或无预填意图）"
               % sum(1 for r in rows if r.get("状态") == "待确认"))
-        return []
+        return _summary(todo, {}, wrote_nothing=True, reason="no_todo")
 
     # ── ① 无授权：只产清单，一行都不写 ─────────────────────
     if not grant_file:
@@ -593,8 +637,8 @@ def cmd_apply(dry=False, grant_file=""):
             print("     拟写：%s" % r["预填意图"][:120])
         print("[hold] 高置信只是匹配算法的自评，不等于授权。")
         print("       人工核对无误后写授权文件，再执行：")
-        print("       python wxmatch.py apply --grant-file <授权.json>")
-        return []
+        print("       python wx/wxmatch.py apply --grant-file <授权.json>")
+        return _summary(todo, {}, wrote_nothing=True, reason="no_grant")
 
     # ── ② 持授权：经 DataService 写入（幂等 + 读回验证 + 台账）──
     from application import authorization as AUTH
@@ -604,25 +648,30 @@ def cmd_apply(dry=False, grant_file=""):
     grant = AUTH.GrantStore.load_file(grant_file)
     if grant is None:
         print("[blocked] 授权文件读不到或格式非法：%s（未写入任何数据）" % grant_file)
-        return []
+        return _summary(todo, {}, wrote_nothing=True, reason="bad_grant")
     print("── 授权写入（授权 %s · 授权人 %s）──"
           % (grant.grant_id, grant.actor or "(未署名)"))
     if dry:
         for r in todo:
             print("  [dry] %s %s → %s" % (r["核对编号"], r["类型"], r["预填意图"][:100]))
-        return todo
+        return _summary(todo, {}, wrote_nothing=True, dry=True, reason="dry")
 
     ds = DataService(lambda _name: _get_business_adapter()[0], data_dir=DATA)
-    results = {}
+    # 逐条意图记录**结构化**结果：只用 WriteResult.status 判定成败，
+    # 不再用「字符串里有没有 written」这种子串把戏（审计 2026-09-27：
+    # 一条 written + 一条 blocked 会被子串判成「整条已完成」）。
+    per_no: dict = {}
     for r in todo:
+        no = r.get("核对编号") or ""
         try:
             intents = json.loads(r["预填意图"])
         except Exception as e:
-            results[r["核对编号"]] = "失败：预填意图 JSON 解析失败 %s" % e
+            per_no[no] = [{"ok": False, "stage": "failed",
+                           "msg": "预填意图 JSON 解析失败 %s" % e}]
             continue
         if isinstance(intents, dict):
             intents = [intents]
-        msgs = []
+        items = []
         for i, it in enumerate(intents):
             op = (it.get("op") or "log").strip()
             if op == "log":
@@ -636,39 +685,56 @@ def cmd_apply(dry=False, grant_file=""):
                 data = it.get("data") or {}
                 action, row_id = op, (it.get("row_id") or "")
                 if op == "update" and not row_id:
-                    msgs.append("跳过：update 缺 row_id（禁止凭印象猜行号）")
+                    items.append({"ok": False, "stage": "failed",
+                                  "msg": "跳过：update 缺 row_id（禁止凭印象猜行号）"})
                     continue
             else:
-                msgs.append("跳过：未知 op=%s" % op)
+                items.append({"ok": False, "stage": "failed",
+                              "msg": "跳过：未知 op=%s" % op})
                 continue
             res = ds.write(WriteRequest(
                 table=table, row=data, route="production", action=action,
                 row_id=row_id,
-                idem_key="wxmatch:%s:%d" % (r.get("核对编号") or "", i),
+                idem_key="wxmatch:%s:%d" % (no, i),
                 actor=grant.actor or "wxmatch",
                 reason="%s｜授权 %s" % ((r.get("匹配结果") or "")[:60], grant.grant_id),
                 grant=grant), mode=C.MODE_APPLY)
-            msgs.append("%s：%s" % (res.status, res.message))
-        results[r["核对编号"]] = "；".join(msgs)[:400]
+            if res.status in ("written", "skipped_reuse") and res.verified:
+                stage, ok = res.status, True
+            elif res.status == "blocked":
+                stage, ok = "blocked", False
+            elif res.status == "outcome_unknown":
+                stage, ok = "unknown", False
+            else:
+                stage, ok = "failed", False
+            items.append({"ok": ok, "stage": stage,
+                          "msg": "%s：%s" % (res.status, res.message)})
+        per_no[no] = items
 
-    # 回填台账：只有真写成功（written，且无 verify_failed）才算处置完
+    # 回填台账：**整条全部意图都通过**才算处置完；一条不过就保持待确认
     for r in rows:
-        res = results.get(r.get("核对编号"))
-        if res is None:
+        items = per_no.get(r.get("核对编号"))
+        if items is None:
             continue
-        if "written" in res and "verify_failed" not in res:
+        text = "；".join(i["msg"] for i in items)[:400]
+        if items and all(i["ok"] for i in items):
             r["状态"] = "已授权写入"
         else:
             r["状态"] = "待确认"
-            r["建议动作"] = (r.get("建议动作", "") + "；授权写入未通过，待处理")[:200]
-        r["匹配结果"] = (r.get("匹配结果", "") + "｜" + res)[:400]
+            bad = "、".join(sorted({i["stage"] for i in items if not i["ok"]})) or "未知"
+            r["建议动作"] = (r.get("建议动作", "") + "；授权写入未通过（%s），待处理" % bad)[:200]
+        r["匹配结果"] = (r.get("匹配结果", "") + "｜" + text)[:400]
     _write_csv(MATCH_PATH, MATCH_COLS, rows)
-    ok = sum(1 for v in results.values() if "written" in v and "verify_failed" not in v)
-    for k, v in results.items():
-        print("  · %s %s" % (k, v))
+
+    summary = _summary(todo, per_no)
+    for no, items in per_no.items():
+        print("  · %s %s" % (no, "；".join(i["msg"] for i in items)[:300]))
     print("[ok] 授权写入完成：成功 %d / 未通过 %d（未通过项保持待确认）"
-          % (ok, len(results) - ok))
-    return todo
+          % (summary["ok"], len(per_no) - summary["ok"]))
+    if summary["unknown"]:
+        print("[warn] 有 %d 条写入结果**未知**（响应丢失/落盘失败）——"
+              "已按「不可重发」处置，请人工核对远端后再决定。" % summary["unknown"])
+    return summary
 
 
 def _fmt(v):
@@ -726,7 +792,7 @@ def _report(rows):
     print("\n" + "-" * 66)
     print("共 %d 条：高置信 %d（可一键确认写入）· 中 %d（需人工判断）· 低 %d"
           % (len(rows), hi, mid, len(rows) - hi - mid))
-    print("处置：python wxmatch.py done WX-M-xxx-001  或在对话里逐条确认。")
+    print("处置：python wx/wxmatch.py done WX-M-xxx-001  或在对话里逐条确认。")
     print("铁律：引擎只读核对不写库；高置信项也必须人确认后才写 SeaTable。")
 
 
@@ -774,7 +840,7 @@ def cmd_export_intent(no):
     print("[skip] 没有核对项 %s" % no)
 
 
-def main():
+def main() -> int:
     ap = argparse.ArgumentParser(description="群消息 ↔ SeaTable 业务核对引擎")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("scan", help="扫描核对（事件/到货 7 天 + 合同PDF 30 天，只读）")
@@ -786,7 +852,9 @@ def main():
     p = sub.add_parser("done", help="标记已处置")
     p.add_argument("no")
     p.add_argument("--note", default="")
-    sub.add_parser("intent", help="打印某项的预填意图 JSON")
+    # ⚠️ 2026-09-27 修：原先这里漏了 p = sub.add_parser("intent")，于是 "intent"
+    #    子命令没有 no 参数（执行即报错），而多出来的 no 被挂到了 "done" 上。
+    p = sub.add_parser("intent", help="打印某项的预填意图 JSON")
     p.add_argument("no")
     p = sub.add_parser("apply", help="授权写入待确认项（无 --grant-file 只列清单、不写库）")
     p.add_argument("--dry", action="store_true", help="只打印将写什么，不落库")
@@ -802,8 +870,18 @@ def main():
     elif a.cmd == "intent":
         cmd_export_intent(a.no)
     elif a.cmd == "apply":
-        cmd_apply(a.dry, a.grant_file)
+        s = cmd_apply(a.dry, a.grant_file)
+        # 自动化靠退出码判定：有未通过/结果未知 → 非 0，别让「跑完了」被当成「写成功了」
+        if s.get("wrote_nothing"):
+            return 0
+        if s.get("failed") or s.get("unknown") or s.get("blocked"):
+            return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    raise SystemExit(main())

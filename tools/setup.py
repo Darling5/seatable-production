@@ -9,9 +9,9 @@ setup.py — 生产交付协同助手 · 引导式安装向导
   而不是让你自己翻 config.yaml.example 改。本向导就是把"问 token"补上。
 
 用法：
-  交互：      python setup.py
-  零配置：    python setup.py --local
-  SeaTable：  python setup.py --seatable --token XXX --uuid YYY [--server URL]
+  交互：      python tools/setup.py
+  零配置：    python tools/setup.py --local
+  SeaTable：  python tools/setup.py --seatable --token XXX --uuid YYY [--server URL]
   库存：      首次运行 python pipeline/run.py init 后，在 config.yaml 选择 PartDB 或 Excel/CSV
 
 写出的 config.yaml 含凭证，按 .gitignore 排除，不会提交到公开仓库。
@@ -143,8 +143,8 @@ def main():
         f.write(_dump(cfg))
     print(f"[ok] 已写入配置：{CONFIG}")
     print("下一步：")
-    print("  python seed_demo.py   # 写入演示数据（可选，真实数据请走 seatable_sync.py）")
-    print("  python cockpit.py      # 生成 项目管理驾驶舱.html")
+    print("  python tools/seed_demo.py  # 写入演示数据（可选，真实数据请走 seatable_sync.py）")
+    print("  python cockpit/cockpit.pyckpit.py      # 生成 项目管理驾驶舱.html")
 
 
 if __name__ == "__main__":

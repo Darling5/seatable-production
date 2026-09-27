@@ -22,7 +22,7 @@ OUT_DIR = os.path.join(PIPE_DIR, "out")
 def load_cfg():
     p = os.path.join(SKILL_DIR, "config.yaml")
     if not os.path.exists(p):
-        die("找不到 config.yaml，请先运行 python setup.py --local 或复制 config.yaml.example")
+        die("找不到 config.yaml，请先运行 python tools/setup.py --local 或复制 config.yaml.example")
     return yaml.safe_load(open(p, encoding="utf-8")) or {}
 
 

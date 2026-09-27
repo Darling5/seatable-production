@@ -12,9 +12,9 @@
   · 安全闸门：默认 dry-run；--yes 才真正写云端。与 business_loop 的 preview/apply 同风格。
 
 用法：
-  python loop_sync.py            # dry-run：打印将建表/新增/更新的行数
-  python loop_sync.py --yes      # 实际写入 SeaTable CRM 库
-  python loop_sync.py --tables objects   # 只同步一张控制平面表
+  python workflows/loop_sync.py  # dry-run：打印将建表/新增/更新的行数
+  python workflows/loop_sync.py --yes  # 实际写入 SeaTable CRM 库
+  python workflows/loop_sync.py --tables objects  # 只同步一张控制平面表
 """
 from __future__ import annotations
 

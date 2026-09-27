@@ -6,9 +6,9 @@ deploy.py — 生产交付协同助手 · 一键全自动部署
 目标：新用户拿到仓库后，只需要「提供资料」，剩下全部自动完成。
 
 资料从哪来（优先级从高到低，给到哪层用到哪层）：
-  1. 命令行参数   python deploy.py --seatable-token XXX --seatable-uuid YYY ...
+  1. 命令行参数   python tools/deploy.py --seatable-token XXX --seatable-uuid YYY ...
   2. 环境变量     SEATABLE_TOKEN / SEATABLE_UUID / SEATABLE_SERVER / PARTDB_URL / PARTDB_TOKEN / WECHAT_DB_PATH
-  3. 资料文件     python deploy.py --profile deploy.yaml   （复制 deploy.yaml.example 填好即可）
+  3. 资料文件     python tools/deploy.py --profile deploy.yaml   （复制 deploy.yaml.example 填好即可）
   4. 交互问答     什么都不给且终端可交互 → 逐项问（直接回车跳过可选项）
   5. --demo       什么都不给 → 本地零配置演示模式，全自动跑通全链路
 
@@ -23,11 +23,11 @@ deploy.py — 生产交付协同助手 · 一键全自动部署
   S8 部署报告     控制台表格 + data/deploy-report.md + 下一步指引
 
 常用姿势：
-  python deploy.py --demo                              # 零资料演示，60 秒看全貌
-  python deploy.py --profile deploy.yaml               # 填好资料文件，一键投产
-  python deploy.py --seatable-token T --seatable-uuid U --partdb-url http://... --partdb-token K
-  python deploy.py --skip-deps --skip-sync             # 只重建配置+驾驶舱
-  python deploy.py --dry-run                           # 只看将做什么，不落盘
+  python tools/deploy.py --demo                        # 零资料演示，60 秒看全貌
+  python tools/deploy.py --profile deploy.yaml         # 填好资料文件，一键投产
+  python tools/deploy.py --seatable-token T --seatable-uuid U --partdb-url http://... --partdb-token K
+  python tools/deploy.py --skip-deps --skip-sync       # 只重建配置+驾驶舱
+  python tools/deploy.py --dry-run                     # 只看将做什么，不落盘
 """
 import argparse
 import datetime
@@ -440,10 +440,10 @@ def step_report(args, prof, backend):
         body += ["- 每日例行：建议注册定时任务（WorkBuddy 自动化 / cron）依次执行",
                  "  `seatable_sync.py → partdb_sync.py → wechat_intake.py pull → market.py watchlist --refresh → cockpit.py`"]
     else:
-        body += ["- 录入真实数据：`python op.py 录入` 或直接编辑 data/*.csv",
-                 "- 接入云端：准备好 SeaTable Token 后重跑 `python deploy.py --seatable-token ... --seatable-uuid ...`"]
-    body += ["- 微信情报（可选）：`python wechat_intake.py doctor`",
-             "- 物料行情（可选）：`python market.py snapshot --model 型号 --price 价格 --lifecycle 在产`",
+        body += ["- 录入真实数据：`python domain/op.py 录入` 或直接编辑 data/*.csv",
+                 "- 接入云端：准备好 SeaTable Token 后重跑 `python tools/deploy.py --seatable-token ... --seatable-uuid ...`"]
+    body += ["- 微信情报（可选）：`python wx/wechat_intake.py doctor`",
+             "- 物料行情（可选）：`python domain/market.py snapshot --model 型号 --price 价格 --lifecycle 在产`",
              "", "配置文件（含凭证，勿提交）：`config.yaml`", ""]
     os.makedirs(os.path.dirname(REPORT_PATH), exist_ok=True)
     with open(REPORT_PATH, "w", encoding="utf-8") as f:
@@ -457,9 +457,9 @@ def main():
         description="生产交付协同助手 · 一键全自动部署（资料给到哪层用到哪层）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="示例：\n"
-               "  python deploy.py --demo\n"
-               "  python deploy.py --profile deploy.yaml\n"
-               "  python deploy.py --seatable-token T --seatable-uuid U --partdb-url http://x --partdb-token K")
+               "  python tools/deploy.py --demo\n"
+               "  python tools/deploy.py --profile deploy.yaml\n"
+               "  python tools/deploy.py --seatable-token T --seatable-uuid U --partdb-url http://x --partdb-token K")
     ap.add_argument("--profile", help="资料文件（复制 deploy.yaml.example 填好）")
     ap.add_argument("--demo", action="store_true", help="零资料本地演示模式")
     ap.add_argument("--seatable-token", dest="seatable_token")

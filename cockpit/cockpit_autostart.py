@@ -3,11 +3,11 @@
 """cockpit_autostart.py — 驾驶舱伴生服务器的开机自启/静默启动器
 
 用法：
-  python cockpit_autostart.py install    # 注册开机自启（计划任务，当前用户登录触发）
-  python cockpit_autostart.py remove     # 取消开机自启
-  python cockpit_autostart.py status     # 查看自启状态 + 服务器是否在跑
-  python cockpit_autostart.py start      # 立即启动（等效开机自启效果，经计划任务拉起）
-  python cockpit_autostart.py stop       # 停掉正在跑的伴生服务器
+  python cockpit/cockpit_autostart.py install  # 注册开机自启（计划任务，当前用户登录触发）
+  python cockpit/cockpit_autostart.py remove  # 取消开机自启
+  python cockpit/cockpit_autostart.py status  # 查看自启状态 + 服务器是否在跑
+  python cockpit/cockpit_autostart.py start  # 立即启动（等效开机自启效果，经计划任务拉起）
+  python cockpit/cockpit_autostart.py stop  # 停掉正在跑的伴生服务器
 
 原理：
   · Windows 计划任务（schtasks /SC ONLOGON，当前用户，无需管理员），
@@ -92,7 +92,7 @@ def cmd_install():
         print(("[ok] 已启动：http://127.0.0.1:%d/" % port) if port
               else "[warn] 未探测到服务，重启电脑后生效；或手动 start")
     print("\n效果：每次登录自动后台运行，无窗口；驾驶舱打开即「⚡ 在线直连」。")
-    print("取消：python cockpit_autostart.py remove")
+    print("取消：python cockpit/cockpit_autostart.pystart.py remove")
 
 
 def cmd_remove():

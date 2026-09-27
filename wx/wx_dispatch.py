@@ -18,7 +18,7 @@ v1.9：新增 ``crm`` 目标——候选标记 ``auto_write: true``，由 crm_di
        "名称": "跟进交期", "负责人": "张三", "截止日期": "2026-09-20"}}
     ]}
 
-``python wx_dispatch.py preview event.json`` 只打印候选 JSON。
+``python wx/wx_dispatch.py preview event.json`` 只打印候选 JSON。
 """
 from __future__ import annotations
 
@@ -30,6 +30,12 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+# 本文件位于 <仓库根>/wx/，被直接执行（python wx/wx_dispatch.py ...）时 sys.path[0]
+# 是 wx/ 而非仓库根，需自己补上才能 import domain/（crm 候选要读 crm_dispatch 的字段表）。
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 BASES = ("production", "tasks", "crm")
 TASK_FIELDS = (
@@ -187,7 +193,8 @@ def _candidate(event: Mapping[str, Any], intent: Mapping[str, Any], base: str, i
     elif base == "crm":
         # v1.9：CRM 候选附带自动写入器（crm_dispatch.py）的字段。
         # crm_dispatch.lead/follow 负责查重、写入与台账，此处只做字段清洗。
-        import crm_dispatch as _cd
+        # 用包限定名：crm_dispatch 已归入 domain/，裸 `import crm_dispatch` 会 ModuleNotFoundError。
+        from domain import crm_dispatch as _cd
         intent_op = str(intent.get("op") or intent.get("action") or "").lower()
         if intent_op in ("follow", "跟进", "add_follow"):
             allowed, kind = _cd.FOLLOW_FIELDS, "follow"

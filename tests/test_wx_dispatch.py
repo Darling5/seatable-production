@@ -69,7 +69,8 @@ def test_evidence_metadata_is_reference_only(tmp_path):
 
 def test_cli_preview_stdin():
     payload = {"event_id": "WX-006", "intents": [{"target": "tasks", "data": {"name": "CLI test"}}]}
-    proc = subprocess.run([sys.executable, str(HERE / "wx_dispatch.py"), "preview", "-"],
+    # 脚本已归入 wx/（仓库结构整理 cb2bd63），这里曾漏改，导致本用例恒失败。
+    proc = subprocess.run([sys.executable, str(HERE / "wx" / "wx_dispatch.py"), "preview", "-"],
                           input=json.dumps(payload), text=True, capture_output=True, check=True)
     result = json.loads(proc.stdout)
     assert result["candidate_count"] == 1

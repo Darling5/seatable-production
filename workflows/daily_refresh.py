@@ -8,9 +8,9 @@
     Prompt 只准「启动本工作流 + 读 final.json 播报」，不再自行编排脚本顺序。
 
 用法（经根目录 workflow.py）：
-  python workflow.py daily --mode preview   # 只读检查（online_write 全被拦）
-  python workflow.py daily --mode apply     # 真实执行（每日自动化用这个）
-  python workflow.py daily --mode apply --resume <run_id>   # 断点续跑
+  python workflows/workflow.py daily --mode preview  # 只读检查（online_write 全被拦）
+  python workflows/workflow.py daily --mode apply  # 真实执行（每日自动化用这个）
+  python workflows/workflow.py daily --mode apply --resume <run_id>  # 断点续跑
 """
 from __future__ import annotations
 
@@ -25,28 +25,54 @@ from application.runner import make_step        # noqa: E402
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PY = sys.executable or "python"
 
+# 重组后（v2.0.0）的脚本真实落点。改目录结构时这里会立刻报错，
+# 而不是把「脚本不存在」记成每一步都失败的夜间事故。
+SCRIPTS = {
+    "seatable_sync": "sync/seatable_sync.py",
+    "partdb_sync": "sync/partdb_sync.py",
+    "wechat_intake": "wx/wechat_intake.py",
+    "wxmatch": "wx/wxmatch.py",
+    "alerts": "workflows/alerts.py",
+    "foresee": "domain/foresee.py",
+    "loop_sync": "workflows/loop_sync.py",
+    "daily_brief": "workflows/daily_brief.py",
+    "cockpit": "cockpit/cockpit.py",
+}
+
+# 驾驶舱产物（相对技能目录）：供发布门禁把文件钉到某次运行
+COCKPIT_ARTIFACT = "项目管理驾驶舱.html"
+
+
+def _script(key: str) -> str:
+    rel = SCRIPTS[key]
+    path = os.path.join(_HERE, rel)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            "工作流引用的脚本不存在：%s（%s）—— 仓库目录已变动，"
+            "请更新 workflows/daily_refresh.py 的 SCRIPTS" % (rel, key))
+    return path
+
 
 def build_steps() -> list[C.StepSpec]:
     """每日刷新 DAG。副作用声明严格对应旧脚本真实行为。"""
-    def s(step_id, name, script_args, **kw):
-        return make_step([_PY, os.path.join(_HERE, script_args[0])] + list(script_args[1:]),
-                         step_id, name, **kw)
+    def s(step_id, name, key, args=(), **kw):
+        return make_step([_PY, _script(key)] + list(args), step_id, name, **kw)
 
     return [
         # ── 1. 数据同步（失败即中止：后面的计算全是旧数据，跑了也白跑）──
-        s("seatable_sync", "同步生产业务 Base",
-          ["seatable_sync.py"], side_effect=C.SIDE_LOCAL_APPEND,
+        s("seatable_sync", "同步生产业务 Base", "seatable_sync",
+          side_effect=C.SIDE_LOCAL_APPEND,
           failure_policy="abort", retry=1),
-        s("partdb_sync", "同步 PartDB 库存",
-          ["partdb_sync.py"], side_effect=C.SIDE_LOCAL_APPEND,
+        s("partdb_sync", "同步 PartDB 库存", "partdb_sync",
+          side_effect=C.SIDE_LOCAL_APPEND,
           failure_policy="abort", retry=1),
 
         # ── 2. 微信情报（pull 增量 + summary 回溯；AI 总结与分流留给 Prompt）──
-        s("wechat_pull", "微信事件增量拉取",
-          ["wechat_intake.py", "pull"], side_effect=C.SIDE_LOCAL_APPEND,
+        s("wechat_pull", "微信事件增量拉取", "wechat_intake", ["pull"],
+          side_effect=C.SIDE_LOCAL_APPEND,
           depends_on=("seatable_sync",), failure_policy="continue", retry=1),
-        s("wechat_summary", "微信 24h 摘要取数",
-          ["wechat_intake.py", "summary", "--hours", "24",
+        s("wechat_summary", "微信 24h 摘要取数", "wechat_intake",
+          ["summary", "--hours", "24",
            "--out", os.path.join("data", "wechat_intake", "summary_24h.md")],
           side_effect=C.SIDE_LOCAL_APPEND,
           depends_on=("wechat_pull",), failure_policy="continue"),
@@ -54,33 +80,33 @@ def build_steps() -> list[C.StepSpec]:
         # 由自动化 AI 读 summary_24h.md 完成，产物落 ai_summary_24h.md。
 
         # ── 3. 核对与预测（只读核对 + 本地快照）──
-        s("wxmatch_scan", "消息↔业务表核对（只读）",
-          ["wxmatch.py", "scan"], side_effect=C.SIDE_LOCAL_APPEND,
+        s("wxmatch_scan", "消息↔业务表核对（只读）", "wxmatch", ["scan"],
+          side_effect=C.SIDE_LOCAL_APPEND,
           depends_on=("wechat_pull",), failure_policy="continue"),
-        s("alerts", "异常检测",
-          ["alerts.py", "run"], side_effect=C.SIDE_LOCAL_APPEND,
+        s("alerts", "异常检测", "alerts", ["run"],
+          side_effect=C.SIDE_LOCAL_APPEND,
           depends_on=("seatable_sync", "partdb_sync"), failure_policy="continue"),
-        s("foresee", "风险预测重算",
-          ["foresee.py"], side_effect=C.SIDE_LOCAL_APPEND,
+        s("foresee", "风险预测重算", "foresee",
+          side_effect=C.SIDE_LOCAL_APPEND,
           depends_on=("seatable_sync", "partdb_sync"), failure_policy="continue"),
-        s("foresee_review", "预测复盘（台账对照）",
-          ["foresee.py", "review"], side_effect=C.SIDE_LOCAL_APPEND,
+        s("foresee_review", "预测复盘（台账对照）", "foresee", ["review"],
+          side_effect=C.SIDE_LOCAL_APPEND,
           depends_on=("foresee",), failure_policy="continue"),
 
         # ── 3.5 控制平面 → CRM 云端镜像（幂等 upsert；本地无数据自动跳过不算失败）──
-        s("loop_sync", "业务闭环台账镜像 CRM",
-          ["loop_sync.py", "--yes"], side_effect=C.SIDE_ONLINE_WRITE,
+        s("loop_sync", "业务闭环台账镜像 CRM", "loop_sync", ["--yes"],
+          side_effect=C.SIDE_ONLINE_WRITE,
           depends_on=("seatable_sync",), failure_policy="continue", retry=1),
 
         # ── 4. 摘要与驾驶舱（生成）──
-        s("daily_brief", "站会摘要 + 发件箱",
-          ["daily_brief.py", "--push"], side_effect=C.SIDE_LOCAL_APPEND,
+        s("daily_brief", "站会摘要 + 发件箱", "daily_brief", ["--push"],
+          side_effect=C.SIDE_LOCAL_APPEND,
           depends_on=("alerts", "wechat_pull"), failure_policy="continue"),
-        s("cockpit", "驾驶舱重新生成",
-          ["cockpit.py"], side_effect=C.SIDE_LOCAL_APPEND,
+        s("cockpit", "驾驶舱重新生成", "cockpit",
+          side_effect=C.SIDE_LOCAL_APPEND,
           depends_on=("seatable_sync", "partdb_sync", "wechat_pull",
                       "wxmatch_scan", "foresee"),
-          failure_policy="continue"),
+          failure_policy="continue", expect_artifacts=(COCKPIT_ARTIFACT,)),
         # 注意：发布（publish）不在本 DAG——对外链接更新属于 SIDE_PUBLISH，
         # 由自动化 AI 单独确认后执行，避免数据刷新失败牵连发布。
     ]

@@ -5,8 +5,8 @@
 数据源与 cockpit.py 完全一致（复用同一个 compute()），保证两个页面不会各说各话。
 
 用法：
-    python build_share.py [输出路径]
-    SHARE_OUT=<path> python build_share.py
+    python cockpit/build_share.py [输出路径]
+    SHARE_OUT=<path> python cockpit/build_share.py
 默认输出：<本目录>/项目进度共享页.html
 """
 import os

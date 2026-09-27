@@ -5,21 +5,21 @@
 
 所有增删改查都走这里，SKILL.md 不直接碰任何存储细节，也不出现任何凭证。
 用法示例：
-  python3 op.py list 生产计划
-  python3 op.py list 生产计划 --where 状态=进行中
-  python3 op.py append 生产计划 '{"生产产品":"4G小卡","数量":100,"关联项目":"项目A"}'
-  python3 op.py update 生产计划 row_3 '{"状态":"已完成"}'
-  python3 op.py delete 生产计划 row_3
-  python3 op.py link 生产计划 PCB下单记录 row_3 row_7
-  python3 op.py linked 生产计划 row_3
-  python3 op.py meta 生产计划
-  python3 op.py resolve-link 生产计划 PCB下单记录
-  python3 op.py export-excel 生产数据.xlsx
-  python3 op.py partdb-search 电容 10
-  python3 op.py partdb-shortage 22 100
-  python3 op.py res-add 张三 --stage 贴片 --capacity 1 --rate 400
-  python3 op.py alloc-add 张三 4G小卡二代 --stage 贴片 --qty 5 --days 5
-  python3 op.py res-load
+  python3 domain/op.py list 生产计划
+  python3 domain/op.py list 生产计划 --where 状态=进行中
+  python3 domain/op.py append 生产计划 '{"生产产品":"4G小卡","数量":100,"关联项目":"项目A"}'
+  python3 domain/op.py update 生产计划 row_3 '{"状态":"已完成"}'
+  python3 domain/op.py delete 生产计划 row_3
+  python3 domain/op.py link 生产计划 PCB下单记录 row_3 row_7
+  python3 domain/op.py linked 生产计划 row_3
+  python3 domain/op.py meta 生产计划
+  python3 domain/op.py resolve-link 生产计划 PCB下单记录
+  python3 domain/op.py export-excel 生产数据.xlsx
+  python3 domain/op.py partdb-search 电容 10
+  python3 domain/op.py partdb-shortage 22 100
+  python3 domain/op.py res-add 张三 --stage 贴片 --capacity 1 --rate 400
+  python3 domain/op.py alloc-add 张三 4G小卡二代 --stage 贴片 --qty 5 --days 5
+  python3 domain/op.py res-load
 """
 import argparse
 import json
@@ -105,7 +105,7 @@ def _should_refresh_cockpit(args):
     """驾驶舱自动刷新开关（v2.0 架构：写入归写入，渲染归 workflow/cockpit.py）。
 
     默认**不**刷新：op.py 只负责数据写入，驾驶舱刷新统一由
-    `workflow.py run daily`（cockpit 步骤）或手动 `python cockpit.py` 负责。
+    `workflow.py run daily`（cockpit 步骤）或手动 `python cockpit/cockpit.py` 负责。
     需要旧的单命令「写完即刷新」行为时：
       - 命令行加 --refresh（apply-wizard / apply-text / intake）
       - 或设环境变量 SEATABLE_AUTO_REFRESH_COCKPIT=1
@@ -120,7 +120,7 @@ def _apply_and_refresh(adapter, args, table, row):
     rid = adapter.append_row(table, row)
     print(f"OK 已写入「{table}」 row_id={rid}")
     if not _should_refresh_cockpit(args):
-        print("（驾驶舱未自动刷新：写入与渲染已解耦；需要时加 --refresh 或运行 python cockpit.py）")
+        print("（驾驶舱未自动刷新：写入与渲染已解耦；需要时加 --refresh 或运行 python cockpit/cockpit.py）")
         return
     try:
         import subprocess
@@ -129,7 +129,7 @@ def _apply_and_refresh(adapter, args, table, row):
         subprocess.run([sys.executable, cockpit, out], check=False)
         print(f"OK 驾驶舱已刷新：{out}")
     except Exception as e:
-        print(f"[warn] 驾驶舱自动刷新失败（手动跑 python cockpit.py 即可）：{e}")
+        print(f"[warn] 驾驶舱自动刷新失败（手动跑 python cockpit/cockpit.py 即可）：{e}")
 
 
 def _parse_wizard_text(text):
@@ -206,7 +206,7 @@ def cmd_alloc_add(adapter, args):
 
     rid_res, res = _res_exists(adapter, args.resource)
     if not rid_res:
-        _hint = 'python3 op.py res-add "%s" --stage <工序> --rate <日费率>' % args.resource
+        _hint = 'python3 domain/op.py res-add "%s" --stage <工序> --rate <日费率>' % args.resource
         print("[warn] 资源表中没有「%s」的档案，仍会写入分配记录，"
               "但驾驶舱会标为「未登记」。建议先执行：\n       %s" % (args.resource, _hint))
 
@@ -246,14 +246,16 @@ def cmd_alloc_add(adapter, args):
 def cmd_res_load(adapter, args):
     """终端版资源负载报表：负载率 / 超载 / 闲置 / 冲突 / 人工成本。"""
     import datetime as _dt
-    import cockpit as _ck
+    # 必须用包限定名：cockpit/ 无 __init__.py，裸 `import cockpit` 会命中一个
+    # 空命名空间包（导入"成功"但没有 compute_resources），调用时才 AttributeError。
+    from cockpit import cockpit as _ck
     today = _dt.date.today()
     plans = adapter.list_rows("生产计划")
     res = _ck.compute_resources(adapter, today, plans)
     if not res:
         print("尚未录入任何资源或分配记录。先执行：\n"
-              "  python3 op.py res-add 张三 --stage 贴片 --capacity 1 --rate 400\n"
-              "  python3 op.py alloc-add 张三 4G小卡二代 --stage 贴片 --qty 5 --days 5")
+              "  python3 domain/op.py res-add 张三 --stage 贴片 --capacity 1 --rate 400\n"
+              "  python3 domain/op.py alloc-add 张三 4G小卡二代 --stage 贴片 --qty 5 --days 5")
         return
     w = res["week"]
     print(f"本周窗口 {w['start']} ~ {w['end']}（{w['workdays']} 个工作日）")
@@ -283,7 +285,8 @@ def cmd_res_load(adapter, args):
 
 def cmd_doctor(adapter, args):
     """开局体检：把「你还缺什么」一次说清，每条附下一步命令。"""
-    import doctor as _doc
+    # doctor 在 tools/ 下；裸 `import doctor` 找不到（域目录重组后遗留）。
+    from tools import doctor as _doc
     cfg = load_config(args.config)
     findings = _doc.run(adapter, cfg)
     print(_doc.render(findings))
@@ -351,7 +354,7 @@ def _refresh_cockpit(args):
         subprocess.run(cmd, check=False)
         print("OK 驾驶舱已刷新：%s" % out)
     except Exception as e:
-        print("[warn] 驾驶舱刷新失败（手动跑 python cockpit.py 即可）：%s" % e)
+        print("[warn] 驾驶舱刷新失败（手动跑 python cockpit/cockpit.py 即可）：%s" % e)
 
 
 def cmd_stage(adapter, args):

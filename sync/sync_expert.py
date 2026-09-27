@@ -12,8 +12,8 @@ sync_expert.py — 维护专家包内嵌的「壳」技能档案（v1.8.3 架构
 模板生成；如果有人手改了壳文件，--check 会报漂移。
 
 用法：
-    python sync_expert.py          # 重建/修复壳（以模板为准覆盖）
-    python sync_expert.py --check  # 只检查壳是否被改动（CI 用，不改文件）
+    python sync/sync_expert.py     # 重建/修复壳（以模板为准覆盖）
+    python sync/sync_expert.py --check  # 只检查壳是否被改动（CI 用，不改文件）
 """
 import os
 import sys
@@ -56,7 +56,7 @@ description: 生产交付协同（SeaTable 22 张业务表读写、项目/生产
    - `references/changelog.md` — 完整版本历史与踩坑归档
 3. **所有命令在主技能目录执行**（脚本、config.yaml、data/ 快照都在那）：
    ```bash
-   cd {ts} && python op.py listrows 项目表
+   cd {ts} && python domain/op.py listrows 项目表
    ```
 4. **查价类需求转介独立子技能 price-sensor**（薄指针，脚本同在主技能目录）。
 
@@ -65,11 +65,11 @@ description: 生产交付协同（SeaTable 22 张业务表读写、项目/生产
 ```bash
 cd {ts}
 
-python op.py listrows 项目表                    # 读表
-python op.py update 项目表 <行ID> 状态:已发货    # 写表（列名必须精确）
-python cockpit.py                              # 生成驾驶舱 HTML（单文件，离线可用）
-python deploy.py --help                        # 部署/发布相关
-python doctor.py                               # 环境自检
+python domain/op.py listrows 项目表             # 读表
+python domain/op.py update 项目表 <行ID> 状态:已发货  # 写表（列名必须精确）
+python cockpit/cockpit.py                      # 生成驾驶舱 HTML（单文件，离线可用）
+python tools/deploy.py --help                  # 部署/发布相关
+python tools/doctor.py                         # 环境自检
 python tests/test_smoke.py                     # 166 项冒烟测试
 ```
 
@@ -112,7 +112,7 @@ def main():
 
     if check_only:
         if issues:
-            print("专家壳档案异常，请运行 `python sync_expert.py` 修复：")
+            print("专家壳档案异常，请运行 `python sync/sync_expert.py` 修复：")
             for kind, rel in issues:
                 tag = {"missing": "[缺失]", "drifted": "[被改动]", "extra": "[残留]"}[kind]
                 print("  %s %s" % (tag, rel))

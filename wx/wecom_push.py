@@ -8,11 +8,11 @@
   - 消息格式：markdown（20480 字节上限），支持加粗/换行
 
 命令：
-  python wecom_push.py check          # 体检：CLI 路径 + 授权状态
-  python wecom_push.py whoami         # 显示授权人身份
-  python wecom_push.py test           # 发一条测试消息给授权人
-  python wecom_push.py push --subject "标题" --body "正文"   # 推送一条
-  python wecom_push.py flush-outbox   # 把 notify.py 发件箱未发送条目全部推送并标记
+  python wx/wecom_push.py check       # 体检：CLI 路径 + 授权状态
+  python wx/wecom_push.py whoami      # 显示授权人身份
+  python wx/wecom_push.py test        # 发一条测试消息给授权人
+  python wx/wecom_push.py push --subject "标题" --body "正文"  # 推送一条
+  python wx/wecom_push.py flush-outbox  # 把 notify.py 发件箱未发送条目全部推送并标记
 
 定位：自动化任务（每日 9 点）与 wxwatch 高危告警的首选推送出口；
 Agent Mail 作为兜底（企微失败时回退邮件）。
@@ -140,7 +140,7 @@ def cmd_check():
     if not authed:
         print("\n[!] 授权指引：")
         print("    1) 确保手机装了企业微信 App 并登录")
-        print("    2) 运行: python wecom_push.py authorize")
+        print("    2) 运行: python wx/wecom_push.py authorize")
         print("    3) 用企微扫描输出中的二维码/链接，CLI 自动完成绑定")
 
 
@@ -155,7 +155,7 @@ def cmd_authorize():
 
 def cmd_test():
     if not is_authorized():
-        print("[skip] 未授权，先运行 python wecom_push.py authorize")
+        print("[skip] 未授权，先运行 python wx/wecom_push.py authorize")
         return
     uid, _ = get_userid()
     print("授权人: %s" % uid)

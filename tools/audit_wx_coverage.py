@@ -15,14 +15,14 @@
   ⚠️ 群在微信库里存在 ≠ 会被采集 —— 这类「台账有、群没说」的漏采，第一步就要查本表。
 
 用法：
-  python audit_wx_coverage.py                    # 直连 SeaTable（实时），三类全查
-  python audit_wx_coverage.py --csv              # 用本地 data/*.csv（离线，可能落后云端）
-  python audit_wx_coverage.py --only customer    # 只查一类：supplier | customer | service
-  python audit_wx_coverage.py --min-records 3    # 供应商侧只列记录数 >= 3 的
-  python audit_wx_coverage.py --groups           # 额外列出「实际会被监控的全部群」
-  python audit_wx_coverage.py --buckets          # 把 386 群按五桶分类打印
-  python audit_wx_coverage.py --excluded         # 打印业主已裁定排除的全部群名
-  python audit_wx_coverage.py --json out.json    # 落 JSON
+  python tools/audit_wx_coverage.py              # 直连 SeaTable（实时），三类全查
+  python tools/audit_wx_coverage.py --csv        # 用本地 data/*.csv（离线，可能落后云端）
+  python tools/audit_wx_coverage.py --only customer  # 只查一类：supplier | customer | service
+  python tools/audit_wx_coverage.py --min-records 3  # 供应商侧只列记录数 >= 3 的
+  python tools/audit_wx_coverage.py --groups     # 额外列出「实际会被监控的全部群」
+  python tools/audit_wx_coverage.py --buckets    # 把 386 群按五桶分类打印
+  python tools/audit_wx_coverage.py --excluded   # 打印业主已裁定排除的全部群名
+  python tools/audit_wx_coverage.py --json out.json  # 落 JSON
 
 供应商侧判定：
   A  有群·已监控
@@ -315,7 +315,10 @@ def load_live():
         cwd = os.getcwd()
         os.chdir(HERE)
         try:
-            import cockpit
+            # 必须用包限定名：cockpit/ 无 __init__.py，裸 `import cockpit` 会命中一个
+            # 空命名空间包，后面的 cockpit._NormAdapter 才 AttributeError（还被外层
+            # try 吞掉，表现为「取不到线上数据」，审计静默降级）。
+            from cockpit import cockpit
             from adapters.factory import get_adapter, load_config
             ad = get_adapter(load_config(None))
             ad.auth()

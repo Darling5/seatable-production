@@ -7,13 +7,13 @@ v2.0 架构原则：口令**永不**进入每日自动播报。
 用户需要口令时，手动运行本命令（对话中当面查看）。
 
 用法：
-  python passwords.py show           # 显示当前生效口令（admin + 各角色）
-  python passwords.py check          # 只检查口令是否齐全，不显示明文
-  python passwords.py rotate         # 轮换全部口令并写回 config.yaml
+  python tools/passwords.py show     # 显示当前生效口令（admin + 各角色）
+  python tools/passwords.py check    # 只检查口令是否齐全，不显示明文
+  python tools/passwords.py rotate   # 轮换全部口令并写回 config.yaml
 
 说明：
   - 口令存于 config.yaml 的 cockpit 段（已 gitignore，不进版本库）；
-  - rotate 后需要重跑 python cockpit.py，重生成 HTML 才会生效；
+  - rotate 后需要重跑 python cockpit/cockpit.py，重生成 HTML 才会生效；
   - 显示结果请勿复制到群聊/邮件。
 """
 import argparse
@@ -48,7 +48,7 @@ def cmd_show():
     admin, roles = _current()
     if not admin:
         print("config.yaml 尚未配置 cockpit.admin_password。"
-              "运行 python cockpit.py 会自动生成一套，或用本脚本 rotate。")
+              "运行 python cockpit/cockpit.py 会自动生成一套，或用本脚本 rotate。")
         sys.exit(1)
     print("== 驾驶舱访问口令（取自 config.yaml，重生成驾驶舱后生效）==")
     print("  管理员(admin)：%s   可看全部角色、可切换" % admin)
@@ -67,7 +67,7 @@ def cmd_check():
     missing += ["role_passwords.%s" % r for r in ROLES if not roles.get(r)]
     if missing:
         print("口令不完整，缺：%s" % ", ".join(missing))
-        print("补救：python passwords.py rotate（或运行 python cockpit.py 自动补齐）")
+        print("补救：python tools/passwords.py rotate（或运行 python cockpit/cockpit.py 自动补齐）")
         sys.exit(2)
     print("口令齐全：admin + %d 个角色。明文用 passwords.py show 查看。" % len(ROLES))
 
@@ -104,7 +104,7 @@ def cmd_rotate():
     for r in ROLES:
         print("  %s %s" % (r, new_roles[r]))
     print()
-    print("下一步：python cockpit.py 重生成驾驶舱 HTML，新口令才生效。")
+    print("下一步：python cockpit/cockpit.py 重生成驾驶舱 HTML，新口令才生效。")
 
 
 def _today():

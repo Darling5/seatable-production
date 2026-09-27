@@ -21,8 +21,8 @@
   · 不带任何口令/token 到 URL 或日志。
 
 用法：
-  python cockpit_server.py            # 前台跑，Ctrl+C 停
-  python cockpit_server.py --port 8801
+  python cockpit/cockpit_server.py    # 前台跑，Ctrl+C 停
+  python cockpit/cockpit_server.py --port 8801
   然后浏览器开 http://127.0.0.1:8790/
 """
 import argparse
@@ -99,7 +99,7 @@ class Handler(BaseHTTPRequestHandler):
             if os.path.exists(HTML_PATH):
                 self._serve_html()
             else:
-                self._json({"ok": False, "error": "驾驶舱 HTML 未生成，先运行 python cockpit.py"}, 404)
+                self._json({"ok": False, "error": "驾驶舱 HTML 未生成，先运行 python cockpit/cockpit.py"}, 404)
             return
         if self.path == "/api/status":
             st = {"html_exists": os.path.exists(HTML_PATH)}

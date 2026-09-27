@@ -17,11 +17,11 @@
   - 全程台账 data/won_deal_ledger.csv，可事后核对
 
 用法：
-  python won_deal.py plan --customer "客户U" \
+  python domain/won_deal.py plan --customer "客户U" \
       --product "天然气重大危险源人员定位" --amount 464250 \
       --delivery-days 90 --payment "50%,30%,20%"
-  python won_deal.py apply --yes ...（同参数）
-  python won_deal.py ledger
+  python domain/won_deal.py apply --yes ...（同参数）
+  python domain/won_deal.py ledger
 """
 from __future__ import annotations
 
@@ -199,7 +199,7 @@ def render_plan(plan: dict[str, Any], reuse: dict[str, Any]) -> str:
         L.append("  付款：下单 %s / 收货 %s / 验收 %s" % (
             plan["project"]["下单付"], plan["project"]["收货付"], plan["project"]["验收付"]))
     L.append("")
-    L.append("确认无误后执行：python won_deal.py apply --yes ...（同参数）")
+    L.append("确认无误后执行：python domain/won_deal.py apply --yes ...（同参数）")
     return "\n".join(L)
 
 

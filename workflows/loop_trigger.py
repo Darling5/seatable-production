@@ -10,8 +10,8 @@
   · 单向触发：本脚本只建控制平面案件，不写 CRM 线索表（那条路由 crm_dispatch 管）。
 
 用法：
-  python loop_trigger.py            # preview：列出待触发的来单案件
-  python loop_trigger.py --yes      # 实际创建控制平面案件
+  python workflows/loop_trigger.py  # preview：列出待触发的来单案件
+  python workflows/loop_trigger.py --yes  # 实际创建控制平面案件
 """
 from __future__ import annotations
 

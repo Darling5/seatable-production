@@ -4,10 +4,10 @@ partdb_sync.py — 从真实 PartDB 拉取库存 / BOM，生成 data/partdb_snap
 供 cockpit.py 渲染真实的「物料库存预警 + 缺料检查」。
 
 用法:
-  python partdb_sync.py                 # 默认：project 22（4G小卡V4.0），生产 10 套
-  python partdb_sync.py --project 22 --qty 10
-  python partdb_sync.py --no-bom        # 只刷库存预警，不做 BOM 缺料
-  python partdb_sync.py --workers 24
+  python sync/partdb_sync.py            # 默认：project 22（4G小卡V4.0），生产 10 套
+  python sync/partdb_sync.py --project 22 --qty 10
+  python sync/partdb_sync.py --no-bom   # 只刷库存预警，不做 BOM 缺料
+  python sync/partdb_sync.py --workers 24
 
 配置优先级: 命令行参数 > 环境变量(PARTDB_URL/PARTDB_TOKEN) > config.yaml 的 partdb 段。
 """

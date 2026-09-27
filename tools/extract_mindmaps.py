@@ -5,8 +5,8 @@
 供 cockpit.py 的 _load_mindmaps() 读取，风格对齐 data/ 下的其它本地数据文件。
 
 用法:
-    python extract_mindmaps.py                # 默认扫 Claw/xmind-download
-    python extract_mindmaps.py <xmind目录> [输出json]
+    python tools/extract_mindmaps.py          # 默认扫 Claw/xmind-download
+    python tools/extract_mindmaps.py <xmind目录> [输出json]
 """
 import zipfile
 import json

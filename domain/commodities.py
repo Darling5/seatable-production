@@ -2,11 +2,11 @@
 """原料行情监控：金/银/铜/锡等金属 + 石化塑料代理指标 + ABS/PC/PS 现货人工录入。
 
 用法：
-  python commodities.py fetch [--dry-run]           # 拉实时价并写库（每日跑一次即可积累走势）
-  python commodities.py show  [--days 30]           # 打印走势（sparkline + 首末值 + 涨跌）
-  python commodities.py trend [--days 30]           # 涨跌幅与超阈值告警
-  python commodities.py backfill --contract au2610  # 补历史（东财 K 线，一次性）
-  python commodities.py add ABS --price 11800       # 人工录入现货价（ABS/PC/PS）
+  python domain/commodities.py fetch [--dry-run]    # 拉实时价并写库（每日跑一次即可积累走势）
+  python domain/commodities.py show  [--days 30]    # 打印走势（sparkline + 首末值 + 涨跌）
+  python domain/commodities.py trend [--days 30]    # 涨跌幅与超阈值告警
+  python domain/commodities.py backfill --contract au2610  # 补历史（东财 K 线，一次性）
+  python domain/commodities.py add ABS --price 11800  # 人工录入现货价（ABS/PC/PS）
 
 数据源与口径（2026-09-02 实测定案）
   1. 实时：新浪财经期货接口  https://hq.sinajs.cn/list=nf_XXX0
@@ -404,7 +404,7 @@ def cmd_fetch(dry_run=False, keys=None):
 def cmd_show(days=30):
     rows = _read_csv(HIST_PATH)
     if not rows:
-        print("还没有原料行情记录。先跑：python commodities.py fetch")
+        print("还没有原料行情记录。先跑：python domain/commodities.py fetch")
         return 0
     # 按原料 + 口径分组
     groups = {}
@@ -456,7 +456,7 @@ def _basis_label(b):
 def cmd_trend(days=30):
     rows = _read_csv(HIST_PATH)
     if not rows:
-        print("还没有原料行情记录。先跑：python commodities.py fetch")
+        print("还没有原料行情记录。先跑：python domain/commodities.py fetch")
         return 0
     th = _alert_threshold()
     cutoff = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")

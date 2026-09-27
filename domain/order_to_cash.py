@@ -322,13 +322,13 @@ def build_full_scenario(customer: str, product: str, owner: str = "项目经理"
 
 def handoff_suggestions(state: str, context: Mapping[str, Any] | None = None) -> str:
     return {
-        "lead": "微信来单已建线索，评估后 python business_loop.py advance --to opportunity",
+        "lead": "微信来单已建线索，评估后 python workflows/business_loop.py advance --to opportunity",
         "opportunity": "确认商机意向，推进需求确认（requirement_confirming）",
         "requirement_confirming": "AI 从聊天/PDF 提取需求要点，人工确认后 revise 需求版本",
         "solution_confirming": "基于需求 V1 出方案草稿，人工评审后 revise 方案版本",
         "quotation_confirming": "方案版本 + pipeline BOM 成本 → 报价草稿，人工确认后发出",
         "contract_pending": "wxmatch 已发现合同 PDF；核对条款后签署并登记合同信息表",
-        "won_and_funded": "python won_deal.py plan → 人工核对 → apply --yes 完成立项三表写入",
+        "won_and_funded": "python domain/won_deal.py plan → 人工核对 → apply --yes 完成立项三表写入",
         "procurement": "python pipeline/run.py prepare；foresee.py 看缺料后批准采购候选",
         "in_production": "贴片/组装记录回写，工序列表用 op.py stage 跟进工序进度",
         "quality_check": "核对良品率与测试记录，异常走维修记录；通过后推进 ready_to_ship",

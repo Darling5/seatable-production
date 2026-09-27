@@ -33,9 +33,9 @@
 短名映射，交给它更准）；本模块默认只注入**供应商侧**。要连客户一起注入用 `--with-customers`。
 
 CLI：
-  python wx_watchlist.py refresh [--with-customers]   # 从 SeaTable 抽词并落盘
-  python wx_watchlist.py show                         # 看当前词表
-  python wx_watchlist.py check                        # 词表里每个词命中几个群（找出过宽/无效的词）
+  python wx/wx_watchlist.py refresh [--with-customers]  # 从 SeaTable 抽词并落盘
+  python wx/wx_watchlist.py show                      # 看当前词表
+  python wx/wx_watchlist.py check                     # 词表里每个词命中几个群（找出过宽/无效的词）
 """
 import argparse
 import io
@@ -248,7 +248,7 @@ def cmd_check():
         with io.open(GROUPS_CACHE, encoding="utf-8") as f:
             groups = [g.get("name") or "" for g in json.load(f)]
     except Exception:
-        print("读不到 groups.json（先跑 python wechat_intake.py groups）")
+        print("读不到 groups.json（先跑 python wx/wechat_intake.py groups）")
         return 1
     kws = auto_keywords()
     if not kws:

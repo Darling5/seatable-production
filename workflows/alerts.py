@@ -12,9 +12,9 @@
   A7 数据体检         状态为空的项目/计划、#VALUE! 脏值（提示补录）
 
 命令：
-  python alerts.py run [--json]     # 跑全部规则，打印报告并写 data/alerts.json
-  python alerts.py show             # 只读上次结果
-  python alerts.py rules            # 列出规则清单
+  python workflows/alerts.py run [--json]  # 跑全部规则，打印报告并写 data/alerts.json
+  python workflows/alerts.py show   # 只读上次结果
+  python workflows/alerts.py rules  # 列出规则清单
 
 输出 data/alerts.json 供 daily_brief.py / 驾驶舱 / 自动化消费。
 """
@@ -228,7 +228,7 @@ def run(as_json=False):
 
 def show():
     if not os.path.exists(OUT):
-        print("（还没有结果，先跑 python alerts.py run）")
+        print("（还没有结果，先跑 python workflows/alerts.py run）")
         return
     r = json.load(open(OUT, encoding="utf-8"))
     c = r["counts"]

@@ -131,9 +131,17 @@ class TestArtifacts(BaseRunnerTest):
         self.assertEqual(final["run_id"], "run-x")
         self.assertEqual(final["summary"], {"total": 2, "success": 2,
                                             "failed": 0, "skipped": 0, "blocked": 0})
-        # 每步一个 JSON
+        # 每步一个 JSON；另有 context.json 记录本次运行上下文指纹，
+        # 供 --resume 判断「上次的成功能不能算这次的成功」（2026-09-27 收紧）。
         files = sorted(os.listdir(os.path.join(self.runs_dir, "run-x")))
-        self.assertEqual(files, ["01_a.json", "02_b.json", "final.json"])
+        self.assertEqual(files, ["01_a.json", "02_b.json", "context.json", "final.json"])
+        ctx = json.load(open(os.path.join(self.runs_dir, "run-x", "context.json"),
+                             encoding="utf-8"))
+        self.assertTrue(ctx.get("context_fingerprint"))
+        self.assertEqual(ctx.get("mode"), self.ctx.mode)
+        # 每步也带上指纹：步骤定义变了就不再复用历史成功
+        for s in final["steps"]:
+            self.assertTrue(s.get("ctx_fingerprint"))
 
     def test_run_status_failed_when_any_failed(self):
         steps = [self._step("a"), self._step("b", status=C.STATUS_FAILED)]

@@ -8,8 +8,8 @@ cockpit.py — 生产·项目管理驾驶舱 生成器。
 HTML 驾驶舱。
 
 用法：
-    python cockpit.py                      # 输出到默认工作区
-    python cockpit.py 路径/驾驶舱.html      # 自定义输出路径
+    python cockpit/cockpit.py              # 输出到默认工作区
+    python cockpit/cockpit.py 路径/驾驶舱.html  # 自定义输出路径
 
 数据来源：与 op.py 同源的适配器，local / seatable 自动切换。
 生成的是「数据快照」：HTML 内嵌当前计算结果；也可用页面内「导入数据」按钮载入
@@ -2321,7 +2321,7 @@ function mountMindmaps(host, model){
   const maps=(model&&model.maps)||[];
   if(!maps.length){
     host.innerHTML=`<div class="empty">未接入思维导图。把 XMind 文件放到 Claw/xmind-download/，运行
-      <code>python extract_mindmaps.py</code> 生成 <code>data/思维导图.json</code> 后重跑本页。</div>`;
+      <code>python tools/extract_mindmaps.py</code> 生成 <code>data/思维导图.json</code> 后重跑本页。</div>`;
     return;
   }
   maps.forEach(mmIds);
@@ -3240,7 +3240,7 @@ function render(m){
         <td>${lcBadge(r.lifecycle)}</td>
         <td>${spark(r.hist)}</td>
         <td class="rs-sub">${r.date||"待首检"}</td></tr>`;}).join("")
-      :`<tr><td colspan="7" class="empty">监控清单为空。在技能目录运行 python market.py watchlist 从采购记录生成；行情由每周一自动检查回填。</td></tr>`;
+      :`<tr><td colspan="7" class="empty">监控清单为空。在技能目录运行 python domain/market.py watchlist 从采购记录生成；行情由每周一自动检查回填。</td></tr>`;
     const mktAlerts=mk.alerts.length?`<div class="card" style="margin-top:14px">
       <h3>行情告警（${mk.alerts.length}）</h3><div class="actions">${mk.alerts.map(a=>
         `<div class="act"><span class="pri ${a.type==='停产'?'pri-高':'pri-中'}">${a.type}</span>
@@ -3277,7 +3277,7 @@ function render(m){
         <td>${rawSpark(r.hist)}</td>
         <td class="rs-sub">${r.date||""}</td>
         <td class="rs-sub">${r.source||""}</td></tr>`).join("")
-      :`<tr><td colspan="7" class="empty">暂无原料行情。在技能目录运行 python market.py raw fetch 拉取当日价，raw backfill AU --contract au2610 --days 40 补历史。</td></tr>`;
+      :`<tr><td colspan="7" class="empty">暂无原料行情。在技能目录运行 python domain/market.py raw fetch 拉取当日价，raw backfill AU --contract au2610 --days 40 补历史。</td></tr>`;
     const rawAlerts=raw.alerts.length?`<div class="card" style="margin-top:14px">
       <h3>原料波动告警（${raw.alerts.length}）</h3><div class="actions">${raw.alerts.map(a=>
         `<div class="act"><span class="pri ${a.type==='涨'?'pri-高':'pri-中'}">${a.type}</span>
@@ -3289,7 +3289,7 @@ function render(m){
       </tr></thead><tbody>${rawRows}</tbody></table></div>
       <div class="note">红=涨、绿=跌（成本视角）。近 ${raw.days} 天波动 ≥ ±${raw.threshold}% 触发告警（原料波动比单个料号频繁，阈值单独设，默认 5%）。
         <b>口径纪律</b>：期货「连续」与「具体合约」是两个口径，同原料出现多行属正常，<b>不跨口径比价</b>——混比会算出假涨跌。
-        ABS/PC/PS 树脂现货无免费公开 API，走人工录入（<code>python market.py raw add ABS --price 11800</code>）。</div></div>
+        ABS/PC/PS 树脂现货无免费公开 API，走人工录入（<code>python domain/market.py raw add ABS --price 11800</code>）。</div></div>
       ${rawAlerts}</section>`);
     put("Raw", secRaw);
   }
@@ -3307,7 +3307,7 @@ function render(m){
         <td>${catPill(e["分类"])}</td>
         <td style="max-width:340px">${(e["原文"]||"").slice(0,110)}</td>
         <td><span class="pill tag-red">待确认</span></td></tr>`).join("")
-      :`<tr><td colspan="6" class="empty">暂无待确认事件。每日 9 点自动拉取微信监控群新消息并提取事件；「示例」开头的演示数据可运行 python wechat_intake.py clear-demo 清除。</td></tr>`;
+      :`<tr><td colspan="6" class="empty">暂无待确认事件。每日 9 点自动拉取微信监控群新消息并提取事件；「示例」开头的演示数据可运行 python wx/wechat_intake.py clear-demo 清除。</td></tr>`;
     const catStat=Object.entries(wx.by_cat||{}).map(([c,n])=>
       `<span class="pill" style="margin-right:6px">${c} ${n}</span>`).join("")
       ||`<span class="rs-sub">近 7 天无事件</span>`;
@@ -3356,7 +3356,7 @@ function render(m){
         <td style="max-width:200px">${r["匹配项目"]?`<b>${r["匹配项目"].slice(0,20)}</b>`:`<span class="rs-sub">${(r["匹配结果"]||"未匹配").slice(0,26)}</span>`}</td>
         <td>${(r["建议动作"]||"").slice(0,30)}${r["预填意图"]?`<div class="rs-sub">有预填意图</div>`:""}</td>
         <td>${confBadge(r["置信度"])}</td></tr>`).join("")
-      :`<tr><td colspan="6" class="empty">暂无待核对项。运行 python wxmatch.py scan 扫描监控群消息与合同 PDF。</td></tr>`;
+      :`<tr><td colspan="6" class="empty">暂无待核对项。运行 python wx/wxmatch.py scan 扫描监控群消息与合同 PDF。</td></tr>`;
     const typeStat=Object.entries(wmatch.by_type||{}).map(([t,n])=>
       `<span class="pill" style="margin-right:6px">${t} ${n}</span>`).join("")
       ||`<span class="rs-sub">暂无分类数据</span>`;
@@ -3368,7 +3368,7 @@ function render(m){
         <div style="overflow-x:auto"><table data-paginate="10" data-filter="1" data-select="1"><thead><tr>
           <th>编号/日期</th><th>类型</th><th>信号内容</th><th>匹配项目/结果</th><th>建议动作</th><th>置信度</th>
         </tr></thead><tbody>${wmRows}</tbody></table></div>
-        <div class="note"><b>处置方式</b>：在 WorkBuddy 对话里说「核对 WX-M-xxxx 处理」或「忽略 WX-M-xxxx」，专家执行 wxmatch.py done 落留痕；高置信收款项确认后由 wechat_intake approve 写入项目「实收」列。扫描频率：每日 9 点自动化随微信拉取一起跑 <code>python wxmatch.py scan</code>。核对引擎<b>只读</b>，绝不自动写 SeaTable。</div></div>
+        <div class="note"><b>处置方式</b>：在 WorkBuddy 对话里说「核对 WX-M-xxxx 处理」或「忽略 WX-M-xxxx」，专家执行 wxmatch.py done 落留痕；高置信收款项确认后由 wechat_intake approve 写入项目「实收」列。扫描频率：每日 9 点自动化随微信拉取一起跑 <code>python wx/wxmatch.py scan</code>。核对引擎<b>只读</b>，绝不自动写 SeaTable。</div></div>
       <div class="card" style="margin-top:14px"><h3>分类 / 置信度分布</h3>
         <div>${typeStat}</div><div style="margin-top:8px">${confStat}</div>
         <div class="note" style="margin-top:8px">四类核对：① 收款（已打款/到账等信号 ↔ 项目待收金额 ±2% 容差）② 下单（新订单信号 ↔ 项目表客户名，匹配不到提示漏立项）③ 客户合同PDF（微信收到的合同文件 ↔ 项目表合同列）④ 供应商合同（采购合同 ↔ 5 张采购记录表供应商，含别名归一）。上次扫描：${wmatch.scan_date||"未知"}。</div></div>
@@ -3398,7 +3398,7 @@ function render(m){
         <td>${r.est_cycle!=null?r.est_cycle+" 天":"—"}</td>
         <td>${vBadge(r.verdict)}</td>
         <td style="max-width:340px">${r.note}${stageBadges?`<div style="margin-top:2px">${stageBadges}</div>`:""}</td></tr>`;
-    }).join("")||`<tr><td colspan="6" class="empty">暂无在制计划。运行 <code>python foresee.py</code> 生成风险预测。</td></tr>`;
+    }).join("")||`<tr><td colspan="6" class="empty">暂无在制计划。运行 <code>python domain/foresee.py</code> 生成风险预测。</td></tr>`;
     const supRows=(fs.cat_order||[]).map(c=>{
       const cp=fs.cat_profile[c]||{};
       const bad=(fs.sup_detail[c]||[]).filter(x=>x.mean>5).slice(0,4)
@@ -3427,7 +3427,7 @@ function render(m){
         <div style="overflow-x:auto"><table data-paginate="10" data-filter="1"><thead><tr>
           <th>计划/产品</th><th>目标交期</th><th>剩余</th><th>历史周期 p75</th><th>风险</th><th>环节预警</th>
         </tr></thead><tbody>${bkRows}</tbody></table></div>
-        <div class="note">周期基准取<b>已交付计划的实际工期</b>（立项→交货）而非合同承诺；剩余天数 &lt; p75 即高风险。环节链：${(fb.plans&&fb.plans[0]&&fb.plans[0].stages?fb.plans[0].stages.map(s=>s.stage+"(提前"+s.lead+"天)").join(" → "):"BOM核对→IC/PCB采购→组装料采购→贴片组装→测试发货")}。生成命令：<code>python foresee.py</code>。</div></div>
+        <div class="note">周期基准取<b>已交付计划的实际工期</b>（立项→交货）而非合同承诺；剩余天数 &lt; p75 即高风险。环节链：${(fb.plans&&fb.plans[0]&&fb.plans[0].stages?fb.plans[0].stages.map(s=>s.stage+"(提前"+s.lead+"天)").join(" → "):"BOM核对→IC/PCB采购→组装料采购→贴片组装→测试发货")}。生成命令：<code>python domain/foresee.py</code>。</div></div>
       <div class="card" style="margin-top:14px"><h3>【2】供应商交期画像 — 承诺 vs 实际（样本 ${fs.samples||0} 条）</h3>
         <div style="overflow-x:auto"><table><thead><tr>
           <th>类别</th><th>样本</th><th>平均偏差</th><th>最差</th><th>建议 buffer</th><th>风险供应商</th>
@@ -3437,7 +3437,7 @@ function render(m){
         <div style="overflow-x:auto"><table data-paginate="10" data-filter="1"><thead><tr>
           <th>产品/计划</th><th>交期</th><th>缺口</th><th>缺口量</th><th>在途</th><th>结论</th><th>主要缺口料</th>
         </tr></thead><tbody>${shRows}</tbody></table></div>
-        <div class="note">在途 ETA = 下单日 + 承诺交期 + 类别 buffer。「必须立刻下单」= 有缺口且无任何在途；「在途来不及」= 在途 ETA 晚于合同交期，需催货或加急补单。BOM 缺口来自 <code>python partdb_sync.py</code>，之后重跑 <code>python foresee.py</code>。</div></div>
+        <div class="note">在途 ETA = 下单日 + 承诺交期 + 类别 buffer。「必须立刻下单」= 有缺口且无任何在途；「在途来不及」= 在途 ETA 晚于合同交期，需催货或加急补单。BOM 缺口来自 <code>python sync/partdb_sync.py</code>，之后重跑 <code>python domain/foresee.py</code>。</div></div>
     </section>`);
     put("FC", secFC);
   }
@@ -4062,7 +4062,7 @@ window.addEventListener("DOMContentLoaded",()=>{
         else toast('刷新失败：'+(r.error||('exit '+r.exit)));
       });
     }else{
-      alert("离线模式：在技能目录运行\npython cockpit.py\n即可用最新本地数据重新生成此驾驶舱 HTML。\n\n想一键刷新？启动伴生服务器：python cockpit_server.py");
+      alert("离线模式：在技能目录运行\npython cockpit/cockpit.py\n即可用最新本地数据重新生成此驾驶舱 HTML。\n\n想一键刷新？启动伴生服务器：python cockpit/cockpit_server.py");
     }
   };
   // 在线模式探测：启动即异步探测本机伴生服务器，成功后按钮自动切换为直连模式

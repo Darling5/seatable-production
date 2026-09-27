@@ -16,18 +16,18 @@
     → 写入结果回填事件行，全程留痕
 
 命令：
-  python wechat_intake.py doctor            # 体检：找库、提密钥、给指引
-  python wechat_intake.py groups            # 列出所有群聊（挑监控对象）
-  python wechat_intake.py pull              # 拉监控群新消息 -> data/wechat_intake/latest.json/.md
-  python wechat_intake.py summary           # 群聊摘要：按时间窗口导出对话+统计+需关注
+  python wx/wechat_intake.py doctor         # 体检：找库、提密钥、给指引
+  python wx/wechat_intake.py groups         # 列出所有群聊（挑监控对象）
+  python wx/wechat_intake.py pull           # 拉监控群新消息 -> data/wechat_intake/latest.json/.md
+  python wx/wechat_intake.py summary        # 群聊摘要：按时间窗口导出对话+统计+需关注
                       [--group 群名] [--hours 24] [--limit 2000] [--all] [--json] [--out FILE]
                       # --group 可多次/逗号分隔、支持部分匹配；不给则用 watch_groups
-  python wechat_intake.py add-event --group 群 --sender 人 --category 分类
+  python wx/wechat_intake.py add-event --group 群 --sender 人 --category 分类
                       --text "原文" [--intent '{"op":"update",...}']
-  python wechat_intake.py list [--status 待确认]
-  python wechat_intake.py approve <编号>    # 确认事件并执行意图（写 SeaTable 云端）
-  python wechat_intake.py ignore <编号>     # 忽略（不写业务表，仅留痕）
-  python wechat_intake.py clear-demo        # 清掉示例事件
+  python wx/wechat_intake.py list [--status 待确认]
+  python wx/wechat_intake.py approve <编号>  # 确认事件并执行意图（写 SeaTable 云端）
+  python wx/wechat_intake.py ignore <编号>  # 忽略（不写业务表，仅留痕）
+  python wx/wechat_intake.py clear-demo     # 清掉示例事件
 
 事件分类：交期变更 / 价格变动 / 停产通知 / 催货 / 进度 / 库存 / 其他
 意图格式（同 op.py intake）：{"op":"update|append|log","table":"项目","row_id":"...",
@@ -360,7 +360,7 @@ def cmd_doctor():
             print("     [!] 部分库未解密：微信需保持登录运行（密钥从进程内存提取）")
         gs = wdb.get_groups()
         print("     群聊：%d 个" % len(gs))
-        print("\n下一步：python wechat_intake.py groups  挑监控群")
+        print("\n下一步：python wx/wechat_intake.py groups  挑监控群")
         return
     print("[!] 引擎A不可用（微信4.x未登录 / 版本不支持 / 缺 cryptography）")
     # 引擎B
@@ -382,7 +382,7 @@ def cmd_doctor():
             print("    [!] 该库没有消息表（可能同步未完成），请在工具里点一次「同步」")
         contact = _find_contact_map(con)
         print("    联系人昵称映射：%d 条" % len(contact))
-        print("\n下一步：python wechat_intake.py groups  挑监控群")
+        print("\n下一步：python wx/wechat_intake.py groups  挑监控群")
     finally:
         con.close()
         if tmp:
@@ -428,7 +428,7 @@ def cmd_groups():
     # 引擎B回退
     dbs = _candidate_dbs()
     if not dbs:
-        print("[!] 未找到微信库，先运行 python wechat_intake.py doctor 看指引")
+        print("[!] 未找到微信库，先运行 python wx/wechat_intake.py doctor 看指引")
         return
     con, tmp = _open_ro(dbs[0])
     try:
@@ -724,7 +724,8 @@ def cmd_approve(no):
             _op=it.get("op","log"); _tbl=it.get("table","工作日志"); _rid=it.get("row_id","")
             _flds=",".join((it.get("data") or {}).keys())
             print("  · 意图 op=%s 表=%s 行=%s 字段=[%s]" % (_op,_tbl,_rid,_flds))
-        from intake import Intent
+        # intake 已归入 domain/，必须用包限定名（裸 `from intake import` 会 ModuleNotFoundError）。
+        from domain.intake import Intent
         for it in intents:
             try:
                 obj = Intent(it.get("op", "log"), it.get("table", "工作日志"),
@@ -874,7 +875,7 @@ def _summary_targets(wdb, group_args, all_groups):
             picked.append(g)
     if not picked:
         return [], "没有匹配到任何群（要匹配：%s）。"\
-                   "用 python wechat_intake.py groups 看准确群名。" % "、".join(want)
+                   "用 python wx/wechat_intake.py groups 看准确群名。" % "、".join(want)
     return picked, None
 
 

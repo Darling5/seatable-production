@@ -15,11 +15,11 @@
 产出：data/foresee.json —— cockpit.py 驾驶舱「风险雷达」section 消费。
 
 用法：
-  python foresee.py                     # 计算并写 data/foresee.json + 落预测台账，终端打印风险摘要
-  python foresee.py --json              # 只输出 JSON 到 stdout（调试用）
-  python foresee.py review              # 预测复盘：台账预测 vs 实际结果 → 准度报告
-  python foresee.py ask <编号|产品|供应商|类别>   # 对话式追问风险细节
-  python foresee.py log                 # 只更新预测台账（不重算）
+  python domain/foresee.py              # 计算并写 data/foresee.json + 落预测台账，终端打印风险摘要
+  python domain/foresee.py --json       # 只输出 JSON 到 stdout（调试用）
+  python domain/foresee.py review       # 预测复盘：台账预测 vs 实际结果 → 准度报告
+  python domain/foresee.py ask <编号|产品|供应商|类别>  # 对话式追问风险细节
+  python domain/foresee.py log          # 只更新预测台账（不重算）
 """
 import csv
 import json
@@ -439,7 +439,7 @@ def review_predictions(today=None):
     today = today or date.today()
     ledger = _read_csv(LEDGER_FILE)
     if not ledger:
-        return {"total": 0, "message": "台账为空，先跑 python foresee.py 积累预测"}
+        return {"total": 0, "message": "台账为空，先跑 python domain/foresee.py 积累预测"}
     plans = {p.get("生产计划编号", ""): p for p in _read_csv("生产计划.csv")}
 
     stats = defaultdict(int)          # 复盘结论 → 条数
@@ -523,13 +523,13 @@ def ask(query):
     """
     q = (query or "").strip()
     if not q:
-        print("用法：python foresee.py ask <计划编号|产品名|供应商|类别>")
+        print("用法：python domain/foresee.py ask <计划编号|产品名|供应商|类别>")
         return
     try:
         with open(os.path.join(DATA, "foresee.json"), encoding="utf-8") as f:
             model = json.load(f)
     except FileNotFoundError:
-        print("无 foresee.json，先跑 python foresee.py")
+        print("无 foresee.json，先跑 python domain/foresee.py")
         return
     today = date.today()
     gen = model.get("generated_at", "?")

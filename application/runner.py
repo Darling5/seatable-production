@@ -7,12 +7,22 @@
   - final.json 汇总，AI 播报只读这里；
   - --resume <run_id> 时已 success 的步骤跳过，failed/blocked 重试。
 
+安全性要点（2026-09-27 收紧）：
+  1. **续跑必须同上下文**：复用某一步的「成功」前，先比对该步骤所在的运行
+     上下文指纹（workflow / mode / Base / 目录 / 步骤定义）。指纹不一致 → 一律
+     重跑，绝不拿另一次运行、另一种模式的结果冒充本次成功。
+  2. **产物必须存在**：步骤用 ``expect_artifacts`` 声明应当产出的文件；声明了却
+     没产出 → 该步判失败（否则门禁会为一份根本不存在的产物放行）。
+  3. **blocking=False 才算降级**：依赖步骤失败时，只有该依赖显式声明非阻断，
+     下游才继续跑；否则照旧 blocked。
+
 设计依据：docs/avatar-loop-v2.md §4。本模块不 import 任何业务模块，
 步骤实现（含 subprocess 包装旧脚本）由 workflows/ 提供。
 """
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import os
 from typing import Callable, Optional, Sequence
@@ -20,6 +30,25 @@ from typing import Callable, Optional, Sequence
 from application import contracts as C
 
 RUNS_DIR_NAME = "runs"
+CONTEXT_FILE_NAME = "context.json"
+
+# 参与上下文指纹的字段：换了其中任何一个，「上次成功」都不再适用于本次。
+_FINGERPRINT_FIELDS = ("workflow", "mode", "base_name", "skill_dir", "config_path",
+                       "data_dir")
+
+
+def context_fingerprint(ctx: C.RunContext) -> str:
+    basis = {k: str(getattr(ctx, k, "") or "") for k in _FINGERPRINT_FIELDS}
+    return hashlib.sha256(
+        json.dumps(basis, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:32]
+
+
+def _step_fingerprint(ctx: C.RunContext, spec: C.StepSpec) -> str:
+    basis = context_fingerprint(ctx) + "|" + "|".join([
+        spec.id, spec.side_effect, str(spec.write_mode or ""),
+        ",".join(spec.depends_on), "1" if spec.blocking else "0"])
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
 
 
 class WorkflowRunner:
@@ -32,6 +61,7 @@ class WorkflowRunner:
         self._by_id = {s.id: s for s in self.steps}
         self._results: dict[str, dict] = {}
         self._order: list[C.StepSpec] = []
+        self._resume_ok = False
         self._validate()
 
     # ── 准备 ─────────────────────────────────────────────
@@ -71,39 +101,92 @@ class WorkflowRunner:
         return os.path.join(self.runs_dir, self.ctx.run_id)
 
     def _load_resume_state(self) -> None:
-        """恢复历史 run 的已完成步骤：success → 跳过标记。"""
+        """恢复历史 run：仅当上下文与步骤定义完全一致时才复用 success。"""
         if not self.ctx.resume_of:
             return
         old_dir = os.path.join(self.runs_dir, self.ctx.resume_of)
         if not os.path.isdir(old_dir):
+            print("[warn] 找不到要续跑的运行 %s，本次按全新运行执行" % self.ctx.resume_of)
             return
+        old_ctx = self._read_json(os.path.join(old_dir, CONTEXT_FILE_NAME))
+        want = context_fingerprint(self.ctx)
+        if not isinstance(old_ctx, dict) or old_ctx.get("context_fingerprint") != want:
+            print("[warn] 续跑上下文与 %s 不一致（工作流/模式/目录/Base 有变），"
+                  "本次不复用任何历史步骤结果，全部重跑" % self.ctx.resume_of)
+            self._resume_ok = False
+            return
+        self._resume_ok = True
+        reused = 0
         for s in self.steps:
-            for fn in sorted(os.listdir(old_dir)):
-                if fn.endswith("_%s.json" % s.id):
-                    try:
-                        with open(os.path.join(old_dir, fn), encoding="utf-8") as f:
-                            data = json.load(f)
-                    except Exception:
-                        break
-                    if data.get("status") == C.STATUS_SUCCESS:
-                        self._results[s.id] = data
-                    break
+            data = self._read_json(self._step_file_in(old_dir, s.id))
+            if not isinstance(data, dict):
+                continue
+            if data.get("status") != C.STATUS_SUCCESS:
+                continue
+            fp = data.get("ctx_fingerprint") or ""
+            if fp != _step_fingerprint(self.ctx, s):
+                print("[warn] 步骤 %s 的定义已变化，本次不沿用历史成功结果" % s.id)
+                continue
+            data["reused_from"] = self.ctx.resume_of
+            self._results[s.id] = data
+            reused += 1
+        print("[resume] 上下文一致，复用 %d 个已成功步骤（其余重跑）" % reused)
+
+    def _step_file_in(self, run_dir: str, step_id: str):
+        if not os.path.isdir(run_dir):
+            return ""
+        for fn in sorted(os.listdir(run_dir)):
+            if fn.endswith("_%s.json" % step_id):
+                return os.path.join(run_dir, fn)
+        return ""
+
+    @staticmethod
+    def _read_json(path: str):
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _sha256(path: str) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _resolve_artifacts(self, spec: C.StepSpec) -> list[str]:
+        out = []
+        for raw in spec.expect_artifacts or ():
+            p = str(raw)
+            if not os.path.isabs(p):
+                p = os.path.join(self.ctx.skill_dir or "", p)
+            out.append(os.path.abspath(p))
+        return out
 
     def run(self) -> C.RunResult:
         os.makedirs(self._run_dir, exist_ok=True)
+        with open(os.path.join(self._run_dir, CONTEXT_FILE_NAME), "w", encoding="utf-8") as f:
+            json.dump({**self.ctx.to_dict(),
+                       "context_fingerprint": context_fingerprint(self.ctx)},
+                      f, ensure_ascii=False, indent=2)
         self._load_resume_state()
         started = _dt.datetime.now().isoformat(timespec="seconds")
         rr = C.RunResult(run_id=self.ctx.run_id, workflow=self.ctx.workflow,
                          started_at=started)
         aborted = False
         for s in self._order:
-            # resume：已成功的直接跳过
+            # resume：上下文与步骤定义都一致时才跳过
             if s.id in self._results:
                 rr.steps.append(self._results[s.id])
                 continue
-            # 前置检查
+            # 前置检查：只有**阻断型**依赖失败才拦下游（非阻断＝真实降级）
             dep_fail = [d for d in s.depends_on
-                        if self._last_status(d) in (C.STATUS_FAILED, C.STATUS_BLOCKED)]
+                        if self._last_status(d) in (C.STATUS_FAILED, C.STATUS_BLOCKED)
+                        and getattr(self._by_id.get(d), "blocking", True)]
             res = C.StepResult(step_id=s.id)
             if aborted:
                 res.status = C.STATUS_BLOCKED
@@ -136,7 +219,25 @@ class WorkflowRunner:
                     if res.status not in (C.STATUS_SUCCESS, C.STATUS_SKIPPED):
                         res.status = C.STATUS_FAILED
                         res.error = res.error or last_err
+                    else:
+                        # 声明的产物必须真实存在，否则「成功」是空的
+                        want = self._resolve_artifacts(s)
+                        missing = [p for p in want if not os.path.isfile(p)]
+                        if missing and res.status == C.STATUS_SUCCESS:
+                            res.fail("声明产物未生成：%s" % "、".join(
+                                os.path.basename(p) for p in missing))
+                        res.artifacts = list(dict.fromkeys(
+                            [str(a) for a in (res.artifacts or [])] + want))
             d = res.to_dict()
+            d["blocking"] = bool(s.blocking)
+            d["ctx_fingerprint"] = _step_fingerprint(self.ctx, s)
+            d["artifact_hashes"] = {}
+            for p in d.get("artifacts") or []:
+                try:
+                    if os.path.isfile(p):
+                        d["artifact_hashes"][os.path.abspath(p)] = self._sha256(p)
+                except OSError:
+                    pass
             self._results[s.id] = d
             rr.steps.append(d)
             try:

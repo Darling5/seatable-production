@@ -27,14 +27,22 @@
 from __future__ import annotations
 
 import datetime as _dt
+import os as _os
 import statistics
+import sys as _sys
 
 from . import schema as S
 from .calendar import WorkCalendar
 
+# 本文件位于 <仓库根>/application/decision_support/，被导入时的 sys.path 未必含仓库根，
+# 需自己补上才能 import domain/（foresee 已归入 domain/）。
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _ROOT not in _sys.path:
+    _sys.path.insert(0, _ROOT)
+
 # 与 foresee.py 的复盘口径对齐（同一把尺子）。取不到就显式降级并标明。
-try:                                     # pragma: no cover - 依赖仓库根目录在 sys.path
-    from foresee import VERDICT_REVIEW as _FORESEE_VERDICT_REVIEW
+try:
+    from domain.foresee import VERDICT_REVIEW as _FORESEE_VERDICT_REVIEW
     VERDICT_SOURCE = "foresee.VERDICT_REVIEW"
 except Exception:                        # pragma: no cover
     _FORESEE_VERDICT_REVIEW = {

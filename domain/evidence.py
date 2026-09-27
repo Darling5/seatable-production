@@ -7,9 +7,9 @@
 记录可供检索的文字摘要、哈希和来源信息。
 
 命令示例::
-    python evidence.py register-image photo.jpg --summary "快递单号..."
-    python evidence.py scan --root data/wechat_intake
-    python evidence.py prune --root data/wechat_intake --yes
+    python domain/evidence.py register-image photo.jpg --summary "快递单号..."
+    python domain/evidence.py scan --root data/wechat_intake
+    python domain/evidence.py prune --root data/wechat_intake --yes
 
 ``scan`` 永远只输出候选；``prune`` 没有 ``--yes`` 时也只输出候选。
 """

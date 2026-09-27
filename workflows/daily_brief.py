@@ -9,7 +9,7 @@
   4) 行情异动（涨跌/NRND/EOL）
 
 命令：
-  python daily_brief.py [--push] [--date YYYY-MM-DD]
+  python workflows/daily_brief.py [--push] [--date YYYY-MM-DD]
 
 输出：
   data/daily_brief.md           完整版（人读）
@@ -202,14 +202,14 @@ def build(target_date=None):
                  % (crm_counts["create_lead"], crm_counts["reused"], crm_counts["add_follow"]))
         for c in crm_lines:
             F.append("  · %s" % c)
-        F.append("- 核对：`python crm_dispatch.py ledger`；不对的单条告诉我撤销")
+        F.append("- 核对：`python domain/crm_dispatch.py ledger`；不对的单条告诉我撤销")
     else:
         F.append("- 今日暂无自动写入（周末无来单属正常）")
     if loop_counts.get("cases"):
         F.append("\n## 🔗 业务闭环案件（%d 个，business_loop 控制平面）\n" % loop_counts["cases"])
         for ln in loop_lines:
             F.append("- %s" % ln)
-        F.append("- 明细：`python business_loop.py cases --json`；看板：`python business_loop.py report`")
+        F.append("- 明细：`python workflows/business_loop.py cases --json`；看板：`python workflows/business_loop.py report`")
     low = [h for h in ar["alerts"] if h["level"] == "低"]
     if low:
         F.append("\n## 🔧 数据体检（%d，低）\n" % len(low))

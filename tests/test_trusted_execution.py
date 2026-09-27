@@ -128,14 +128,71 @@ class TestAuthority(unittest.TestCase):
             AUTH.grant_from_approval(ap)
 
     def test_approved_request_becomes_grant(self):
+        """审批只能变成「一次性、绑定载荷」的授权（审计 2026-09-27 收紧）。
+
+        旧行为把 approved 一次性转成 actions=(any,)、次数无限、且不绑定被批准的
+        内容 —— 等于「批了一条，就能写任何表任何内容、想写几次写几次」。
+        """
         ap = C.ApprovalRequest(approval_id="AP-2", object_type="项目", object_id="P1",
-                               status="approved", approver="老板", reason="核对无误")
-        g = AUTH.grant_from_approval(ap, tables=("IC采购记录",))
+                               after={"状态": "已到货"}, status="approved",
+                               approver="老板", reason="核对无误")
+        g = AUTH.grant_from_approval(ap, tables=("IC采购记录",), route="production",
+                                     action="append")
         self.assertEqual(g.source, AUTH.SOURCE_APPROVAL)
         self.assertEqual(g.actor, "老板")
         self.assertEqual(g.approval_id, "AP-2")
-        ok, _ = g.covers("IC采购记录", "update")
+        self.assertEqual(g.max_uses, 1)
+        ok, _ = g.covers("IC采购记录", "append", route="production")
         self.assertTrue(ok)
+
+    def test_approval_without_payload_refused(self):
+        """审批没写清「批准的是什么」→ 拒绝转授权，不能默认放行任何内容。"""
+        ap = C.ApprovalRequest(approval_id="AP-3", object_type="项目", object_id="P1",
+                               status="approved", approver="老板")
+        with self.assertRaises(PermissionError):
+            AUTH.grant_from_approval(ap, tables=("IC采购记录",))
+
+    def test_approval_grant_rejects_other_payload(self):
+        """批的是「已到货」，就不能借这份授权去写成「已取消」。"""
+        tmp = tempfile.mkdtemp(prefix="trusted_apbind_")
+        adapter = FakeAdapter()
+        adapter.rows["r1"] = {"__row_id__": "r1", "状态": "已下单"}
+        ds = _ds(tmp, adapter)
+        ap = C.ApprovalRequest(approval_id="AP-4", object_type="IC采购记录", object_id="r1",
+                               after={"状态": "已到货"}, status="approved", approver="老板")
+        g = AUTH.grant_from_approval(ap, tables=("IC采购记录",), route="production",
+                                     action="update")
+        bad = ds.write(
+            WriteRequest(table="IC采购记录", row={"状态": "已取消"}, route="production",
+                         action="update", row_id="r1", grant=g),
+            mode=C.MODE_APPLY)
+        self.assertEqual(bad.status, "blocked")
+        self.assertIn("载荷", bad.message)
+        self.assertEqual(adapter.rows["r1"]["状态"], "已下单")   # 一个字都没改
+
+    def test_approval_grant_is_single_use(self):
+        """审批授权只能用一次：第二次即便对象还在，也须被次数拦住。"""
+        tmp = tempfile.mkdtemp(prefix="trusted_ap1use_")
+        adapter = FakeAdapter()
+        ds = _ds(tmp, adapter)
+        ap = C.ApprovalRequest(approval_id="AP-5", object_type="IC采购记录", object_id="",
+                               after={"状态": "已到货"}, status="approved", approver="老板")
+        g = AUTH.grant_from_approval(ap, tables=("IC采购记录",), route="production",
+                                     action="append")
+        r1 = ds.write(WriteRequest(table="IC采购记录", row={"状态": "已到货"},
+                                   route="production", idem_key="ap5-1", grant=g),
+                      mode=C.MODE_APPLY)
+        r2 = ds.write(WriteRequest(table="IC采购记录", row={"状态": "已到货"},
+                                   route="production", idem_key="ap5-1", grant=g),
+                      mode=C.MODE_APPLY)
+        self.assertEqual(r1.status, "written")
+        self.assertEqual(r2.status, "skipped_reuse")   # 复用同一行，没有第二次写入
+        self.assertEqual(len(adapter.rows), 1)
+        r3 = ds.write(WriteRequest(table="IC采购记录", row={"状态": "已到货"},
+                                   route="production", idem_key="ap5-2", grant=g),
+                      mode=C.MODE_APPLY)
+        self.assertEqual(r3.status, "blocked")         # 授权已用尽
+        self.assertEqual(len(adapter.rows), 1)
 
     def test_preview_leaves_no_trace(self):
         r = self.ds.write(

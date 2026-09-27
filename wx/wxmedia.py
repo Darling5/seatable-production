@@ -43,10 +43,10 @@ V2 格式（微信 4.x，2025-08+，本机占绝对主流）
 ════════════════════════════════════════════════════════════════════════
 CLI
 ════════════════════════════════════════════════════════════════════════
-  python wxmedia.py doctor                 # 环境 + 密钥自检（只读）
-  python wxmedia.py key                    # 打印派生出的 code / aes key / xor key（便于排障）
-  python wxmedia.py scan [--hours 24] [--groups A,B] [--max 400] [--ocr] [--all-groups]
-  python wxmedia.py index                  # 只看已有索引统计
+  python wx/wxmedia.py doctor              # 环境 + 密钥自检（只读）
+  python wx/wxmedia.py key                 # 打印派生出的 code / aes key / xor key（便于排障）
+  python wx/wxmedia.py scan [--hours 24] [--groups A,B] [--max 400] [--ocr] [--all-groups]
+  python wx/wxmedia.py index               # 只看已有索引统计
 
 产物：
   data/wechat_media/<YYYY-MM>/<md5>.jpg|png|gif|webp   ← 解密后的原图

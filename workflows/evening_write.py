@@ -13,8 +13,14 @@
 
 退出码：
   0  写入全部通过（或本次没有待写入项）
-  1  有写入未通过（读回验证失败 / 授权不覆盖该表）→ 上游发布门禁拦住发布
+  1  有写入未通过（读回验证失败 / 授权不覆盖该表 / 结果未知）→ 上游发布门禁拦住发布
   3  没有有效授权 → 跳过
+
+⚠️ 退出码只看 **cmd_apply 返回的结构化摘要**（审计 2026-09-27 修）：
+   旧实现忽略 cmd_apply 的返回值，改用「读台账新增行里有没有『失败』」来判成败
+   —— 于是「授权不覆盖该表」「业务后端起不来」这类**根本没走到写库**的失败，
+   一条台账都不会新增，脚本照样退 0，门禁也就照样放行。
+   现在一律以 write() 的结构化 status 为准；台账只用于打印与人工核对。
 
 ⚠️ 本脚本**不会**自己造授权。想让它写库，必须有人先把授权文件放进
    data/approvals/。授权文件长这样（manual 来源）：
@@ -32,6 +38,7 @@
 
    留空 tables/actions 表示不限（**只应在人工确认时这么写**）；
    max_uses=0 表示不限次，建议一次性任务写个有限次数，用完即失效。
+   授权一旦撤销（删除该文件），已构造的授权对象也不能再用。
 """
 from __future__ import annotations
 
@@ -59,7 +66,6 @@ def main() -> int:
     from application import authorization as AUTH
 
     ledger = os.path.join(HERE, "data", LEDGER_NAME)
-    before = len(_ledger_rows(ledger))
 
     store = AUTH.GrantStore()
     lives = store.live_grants()
@@ -77,17 +83,39 @@ def main() -> int:
               % ("、".join(grant.tables), "、".join(grant.actions) or "不限"))
 
     from wx import wxmatch as wm  # noqa: E402 — wxmatch 已并入 wx/ 包
-    wm.cmd_apply(grant_file=store.path(grant.grant_id))
+    summary = wm.cmd_apply(grant_file=store.path(grant.grant_id))
 
-    new_rows = _ledger_rows(ledger)[before:]
-    failed = [r for r in new_rows if (r.get("读回验证") or "").strip() == "失败"]
-    if failed:
-        print("[fail] 本次授权写入有 %d 条读回验证失败：" % len(failed))
-        for r in failed[:5]:
-            print("       %s %s  %s" % (r.get("表"), r.get("row_id"),
-                                        (r.get("备注") or "")[:60]))
+    new_rows = _ledger_rows(ledger)
+    reason = summary.get("reason") or ""
+    if summary.get("wrote_nothing"):
+        if reason == "no_todo":
+            print("[ok] 本次没有待授权写入的核对项（台账共 %d 条）" % len(new_rows))
+            return 0
+        # no_grant / bad_grant：授权文件读不到或非法 → 等同「没有授权」，跳过而非失败
+        print("[skip] 未执行写入（%s）—— 当晚不写业务表" % (reason or "缺少可用授权"))
+        return 3
+
+    unknown = int(summary.get("unknown") or 0)
+    blocked = int(summary.get("blocked") or 0)
+    failed = int(summary.get("failed") or 0)
+    if unknown:
+        print("[fail] 有 %d 条写入**结果未知**（响应丢失/落盘失败）：" % unknown)
+        for no, items in (summary.get("results") or {}).items():
+            for it in items:
+                if it.get("stage") == "unknown":
+                    print("       %s %s" % (no, (it.get("msg") or "")[:120]))
+        print("       已按「不可重发」处置（避免重复写）。请人工核对远端后决定下一步。")
         return 1
-    print("[ok] 授权写入及读回完成：新增台账 %d 条，读回失败 0 条" % len(new_rows))
+    if failed or blocked:
+        print("[fail] 授权写入未通过：成功 %d / 未通过 %d（其中授权阻断 %d 条）"
+              % (summary.get("ok", 0), failed, blocked))
+        for no, items in (summary.get("results") or {}).items():
+            if items and all(i.get("ok") for i in items):
+                continue
+            print("       %s %s" % (no, "；".join(i.get("msg", "") for i in items)[:150]))
+        return 1
+    print("[ok] 授权写入及读回完成：成功 %d 条，读回失败 0 条（台账共 %d 条）"
+          % (summary.get("ok", 0), len(new_rows)))
     return 0
 
 

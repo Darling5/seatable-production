@@ -18,9 +18,9 @@
    汇率走免费接口，拿不到就退回 config 的静态汇率，并在结果里标注汇率来源。
 
 CLI：
-    python suppliers.py doctor                    # 凭证自检（脱敏）+ 可选 --live 连通实测
-    python suppliers.py lookup FR8018HD           # 单型号全源查价
-    python suppliers.py lookup FR8018HD --source digikey --qty 100
+    python domain/suppliers.py doctor             # 凭证自检（脱敏）+ 可选 --live 连通实测
+    python domain/suppliers.py lookup FR8018HD    # 单型号全源查价
+    python domain/suppliers.py lookup FR8018HD --source digikey --qty 100
 """
 import argparse
 import json
