@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """配置加载 + 适配器工厂（**后端注册表**驱动）。
 
-按 config.yaml 的 ``backend`` 选择实现：
-  - local    → LocalAdapter（默认，零配置）
-  - seatable → SeaTableAdapter（填了 api_token + base_uuid 才启用，否则退回 local）
+按 config.yaml 的 ``backend`` 选择实现（清单以 ``list_backends()`` 为唯一真源）：
+  - local      → LocalAdapter（默认，零配置）
+  - seatable   → SeaTableAdapter（填了 api_token + base_uuid 才启用，否则退回 local）
+  - feishu     → FeishuAdapter（飞书多维表格；协议事实全部实测）
+  - jiandaoyun → JiandaoyunAdapter（简道云 API v5；⚠️ 协议细节**未经实测**，
+                 见 adapters/jiandaoyun.py 顶部说明）
 
 新增一个后端（飞书 / 简道云 / 禅道 / 金蝶…）**只需在下面的 BACKENDS 注册表里加一条**：
 宣告它叫什么、怎么造、命名实例需要哪些必填键、能不能通过 API 管表结构。
@@ -148,6 +151,28 @@ def _make_feishu(selected, config: dict):
     )
 
 
+def _make_jiandaoyun(selected, config: dict):
+    """构造简道云适配器。
+
+    ``api_key``（简道云的「APIKey」）是**企业级**凭据：一把钥匙可以访问本企业下
+    所有开启了 API 的应用，所以与飞书一样写在 ``jiandaoyun.api_key``，
+    而不是每个命名实例里重复填。命名实例的必填项只有 ``app_id``（应用 id）。
+    ``proxy`` / ``no_proxy`` 也在这段：本机沙箱会注入 ``HTTPS_PROXY``，
+    从沙箱里直连会被拦成 502（详见 adapters/jiandaoyun.py 的传输层说明）。
+    """
+    from .jiandaoyun import JiandaoyunAdapter
+    jc = config.get("jiandaoyun") if isinstance(config.get("jiandaoyun"), dict) else {}
+    return JiandaoyunAdapter(
+        selected["app_id"],
+        jc.get("api_key") or selected.get("api_key") or "",
+        server=selected.get("server") or jc.get("server") or "",
+        app_name=selected.get("name"),
+        timeout=int(jc.get("timeout") or 30),
+        proxy=str(jc.get("proxy") or ""),
+        no_proxy=bool(jc.get("no_proxy")),
+    )
+
+
 register_backend("local", label="本地 CSV", make=_make_local)
 
 register_backend(
@@ -179,6 +204,23 @@ register_backend(
     # init_sync（云端 → 本地初次同步）尚未落地，故不声明 ——
     # 部署报告会明确写「该后端未声明初始化步骤」，比让它静默跳过要好。
     deploy={"verify": ("verify_feishu.py", ["--read-only"], 180)},
+)
+
+register_backend(
+    "jiandaoyun",
+    label="简道云",
+    make=_make_jiandaoyun,
+    # 命名实例只必填 app_id：api_key 是**企业级**凭据，写在 jiandaoyun.api_key。
+    required_keys=("app_id",),
+    # 同一件的多种写法都收，对外只暴露 app_id。
+    key_aliases={"app_id": ("appId", "application_id", "app")},
+    named_bases=True,
+    default_server="https://api.jiandaoyun.com",
+    # ⚠️ 这个后端的协议细节**未经实测**（本机无简道云账号），因此 verify 钩子
+    # 在没配置凭据时会明确打印「未配置，跳过」并以 0 退出 —— 它不会假装验证过。
+    # init_sync（云端 → 本地初次同步）未落地，故不声明：
+    # 部署报告会写明「该后端未声明初始化步骤」，比静默跳过好。
+    deploy={"verify": ("verify_jiandaoyun.py", ["--read-only"], 180)},
 )
 
 

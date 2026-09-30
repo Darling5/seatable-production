@@ -42,6 +42,8 @@ NEUTRAL_TYPES = (
 #:         不是两个类型。适配器的 ensure_table() 会据此补 multiple=true；
 #:         直接调 backend_type() 拿到的只是 type 字符串。
 #:       - longtext → text：飞书文本字段不区分长短（有 text/location/url 等细分风格）。
+#:   · jiandaoyun：**来自官方文档、无实例可验证**（本机没有简道云账号）。
+#:     四处降级写在下面那段注释里，其中 bool → radiogroup 是唯一「换了语义」的一处。
 BACKEND_TYPES = {
     "local": {t: "text" for t in NEUTRAL_TYPES},
     "seatable": {
@@ -65,6 +67,30 @@ BACKEND_TYPES = {
         "select": "select",
         "multiselect": "select",
         "attachment": "attachment",
+    },
+    # 简道云：取自**官方文档**的控件类型表（hc.jiandaoyun.com/open/12320），
+    # ⚠️ 与 seatable / feishu 不同，这一列**没有真实环境可验证**（本机无简道云账号）。
+    #    四处如实降级，都不是笔误：
+    #      - longtext → textarea：简道云的「多行文本」就是这个类型，语义正好对上。
+    #      - date/datetime → datetime：简道云只有一个「日期时间」控件，
+    #        没有独立的纯日期类型，写进去的日期会带 00:00（且按 UTC 存储！）。
+    #      - multiselect → checkboxgroup：「复选框组」，值是 Array<String>。
+    #      - bool → radiogroup：简道云**没有**布尔控件，最接近的「单选按钮组」
+    #        只能是「是/否」两个选项，值也从 true/false 变成字符串 —— 这是本表里
+    #        唯一一处「换了语义」的降级，务必知晓。
+    #    另外：简道云的开放接口**没有建表/加列 API**，所以这张表目前只用于
+    #    「把中立类型说清楚」，backend_type() 的返回值不会被真正发出去
+    #    （JiandaoyunAdapter.ensure_table 会显式抛 Unsupported）。
+    "jiandaoyun": {
+        "text": "text",
+        "longtext": "textarea",
+        "number": "number",
+        "date": "datetime",
+        "datetime": "datetime",
+        "bool": "radiogroup",
+        "select": "radiogroup",
+        "multiselect": "checkboxgroup",
+        "attachment": "upload",
     },
 }
 
