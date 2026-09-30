@@ -173,6 +173,33 @@ def _make_jiandaoyun(selected, config: dict):
     )
 
 
+def _make_zentao(selected, config: dict):
+    """构造禅道适配器。
+
+    禅道是**唯一一个「实体固定」的底座**（项目/执行/任务/产品/需求/Bug…），
+    所以它多带一层实体映射（见 adapters/zentao.py 的 ENTITY_SPECS / ALIASES）。
+
+    凭据两级（与飞书/简道云同样的理由）：
+      · ``token`` —— 禅道 API 令牌，写在 ``zentao.token``；会过期，
+        过期后用 ``zentao.account`` + ``zentao.password`` 自动换取。
+      · ``account`` / ``password`` —— 用来登录换 token，**不落日志**。
+    ``no_proxy`` 默认 **true**：禅道通常在本机/内网，走系统代理没有意义，
+    而本机沙箱注入的 HTTPS_PROXY 会把它拦成 502（实测踩过）。
+    """
+    from .zentao import ZentaoAdapter
+    zc = config.get("zentao") if isinstance(config.get("zentao"), dict) else {}
+    return ZentaoAdapter(
+        base=selected.get("base_url") or zc.get("base_url") or "",
+        token=zc.get("token") or selected.get("token") or "",
+        account=zc.get("account") or "",
+        password=zc.get("password") or "",
+        site=selected.get("name"),
+        timeout=int(zc.get("timeout") or 30),
+        proxy=str(zc.get("proxy") or ""),
+        no_proxy=bool(zc.get("no_proxy", True)),
+    )
+
+
 register_backend("local", label="本地 CSV", make=_make_local)
 
 register_backend(
@@ -221,6 +248,20 @@ register_backend(
     # init_sync（云端 → 本地初次同步）未落地，故不声明：
     # 部署报告会写明「该后端未声明初始化步骤」，比静默跳过好。
     deploy={"verify": ("verify_jiandaoyun.py", ["--read-only"], 180)},
+)
+
+register_backend(
+    "zentao",
+    label="禅道",
+    make=_make_zentao,
+    # 命名实例只必填 base_url（一个站点一个实例）；token/账号密码写 zentao 段。
+    required_keys=("base_url",),
+    # 站点地址的常见叫法都收，对外只暴露 base_url。
+    key_aliases={"base_url": ("base", "url", "server", "site_url")},
+    named_bases=True,
+    default_server="http://127.0.0.1/zentao/api.php/v2",
+    # 只读连通性验证；写路径必须显式 --write-test（会在实体里真建东西并清理）。
+    deploy={"verify": ("verify_zentao.py", ["--read-only"], 180)},
 )
 
 

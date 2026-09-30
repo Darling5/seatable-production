@@ -92,6 +92,14 @@ BACKEND_TYPES = {
         "multiselect": "checkboxgroup",
         "attachment": "upload",
     },
+    # ⚠️ **刻意没有 "zentao"** —— 这不是漏了。
+    #    禅道是唯一一个「实体与字段都固定」的底座（项目/执行/任务/产品/Bug…），
+    #    REST v2 没有建表/加列接口，所以「中立类型该翻译成禅道的哪个字段类型」
+    #    这个问题在禅道身上**不存在**：没有任何一条代码路径会把类型发出去
+    #    （ZentaoAdapter.ensure_table 直接抛 Unsupported）。
+    #    硬凑一张表只会让人以为禅道能建列。
+    #    禅道那些实体字段 ↔ 中立类型的**读向**对应由
+    #    ``adapters/zentao.py::neutral_type()`` 提供（get_metadata 会用它）。
 }
 
 #: 这些类型**不能**通过建表接口创建，只能人工预建：

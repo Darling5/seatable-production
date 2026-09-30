@@ -57,9 +57,10 @@
 > `--demo` 零资料演示），它会自动生成配置并完成整套部署，详见仓库 README「一键全自动部署」。
 
 ```yaml
-backend: local          # 已登记后端名；当前 local（默认）| seatable
-                        # 多底座改造进行中：飞书多维表格 / 简道云 / 禅道 / 金蝶
-                        # 陆续接入，登记入口见 adapters/factory.py::register_backend()
+backend: local          # 已登记后端名（见 adapters/factory.py::list_backends()）：
+                        #   local（默认，零配置）| seatable | feishu（飞书多维表格）
+                        #   | jiandaoyun（简道云）| zentao（禅道）
+                        # 路线图最后一项金蝶尚未接入；未登记的名字不会静默退回（见下）。
 local:
   data_dir: data
   format: csv
@@ -167,7 +168,11 @@ class Unsupported(NotImplementedError):   # 继承 NotImplementedError，老代�
 1. 子类化 `BaseAdapter`，设 `backend = "feishu"` 与 `CAPS`
 2. 实现 **8 个必修方法**（含 `auth`）
 3. 在 `adapters/schema.py` 的 `BACKEND_TYPES` 里加该后端的中立类型映射
-   （未知类型 `backend_type()` **抛错，绝不静默降级成 text**）
+   （未知类型 `backend_type()` **抛错，绝不静默降级成 text**）。
+   ⚠️ **例外**：若该后端的实体与字段是**系统固定的、不能建表**（禅道就是这样），
+   应当**刻意不加**这张映射表并在原处写明理由 —— 硬凑一张只会让人误以为它能建列。
+   此时「字段类型 ↔ 中立类型」的**读向**对应由该后端模块自己提供
+   （`adapters/zentao.py::neutral_type()`），且 `ensure_table()` 必须老实抛 `Unsupported`。
 4. `adapters/factory.py` 里登记一行（各参数都可省，只有 `name`/`label`/`make` 必给）：
    ```python
    register_backend(
@@ -196,6 +201,17 @@ class Unsupported(NotImplementedError):   # 继承 NotImplementedError，老代�
   改为 `.lower()` 比较。但 `sync/seatable_sync.py:136` 与 `sync/backfill_seatable.py:100`
   仍是精确比较（走 CSV 路径、不在契约内，且当前实测 0 个大写 select 列）—— **列为已知风险面，未修**。
 - `sync/` 下的 CSV 同步路径**未纳入适配器契约**，多底座改造尚未覆盖它
+- **禅道（`zentao`）只覆盖 PM 实体**：项目集/项目/执行/任务/产品/需求/Bug/测试用例/测试单/用户。
+  采购、发货、库存那类表**禅道承载不了**，`_resolve()` 会明确拒绝并指回 seatable/feishu/jiandaoyun，
+  不会硬塞进语义不符的实体。逻辑表名别名见 `adapters/zentao.py::ALIASES`。
+- **禅道写「项目」有实测到的副作用**：会顺手建一个**同名产品**（删项目不删产品），
+  且那个名字**用过一次就不可回收**（再建同名项目会被拒，报的还是「『产品名称』已经有…」）。
+  适配器已在错误文案里加了大白话提示，但**批量建项目前必须用一次性名字**。
+- **禅道部分实体列表读不了**（本版 `/tasks` `/stories` 的列表 GET 回 HTTP 200 + 0 字节）：
+  适配器抛 `Unsupported` 而不是返回空列表冒充「没有数据」；`get_row` 走详情接口仍可用。
+- **简道云（`jiandaoyun`）的全部协议细节来自官方文档、无实测环境**：接入真实企业时
+  第一件事是跑 `tools/verify_jiandaoyun.py --read-only` 逐条核对 `adapters/jiandaoyun.py`
+  里那些标注了 ⚠️ 的推断（尤其是**日期按 UTC 存**与**格式不合法的值会被静默写成空**两条）
 
 ---
 
