@@ -34,6 +34,14 @@ NEUTRAL_TYPES = (
 #: 中立类型 → 各后端原生类型名。
 #:   · local：CSV 一切都存成文本，这是如实声明而非偷懒。
 #:   · seatable：取自只读实测的列 type 取值（GET /metadata/ 的 columns[].type）。
+#:   · feishu：取自只读实测的 field type 取值（lark-cli base +field-list 的 type，
+#:     是**字符串**不是数字码）。三处如实降级，都不是笔误：
+#:       - date → datetime：飞书只有一个日期类型，靠 style.format 区分显示到日还是到分，
+#:         没有独立的「纯日期」类型。所以写进去的日期会带 00:00:00。
+#:       - multiselect → select：单/多选在飞书是**同一个 type 加一个 multiple 布尔位**，
+#:         不是两个类型。适配器的 ensure_table() 会据此补 multiple=true；
+#:         直接调 backend_type() 拿到的只是 type 字符串。
+#:       - longtext → text：飞书文本字段不区分长短（有 text/location/url 等细分风格）。
 BACKEND_TYPES = {
     "local": {t: "text" for t in NEUTRAL_TYPES},
     "seatable": {
@@ -46,6 +54,17 @@ BACKEND_TYPES = {
         "select": "single-select",
         "multiselect": "multiple-select",
         "attachment": "file",
+    },
+    "feishu": {
+        "text": "text",
+        "longtext": "text",
+        "number": "number",
+        "date": "datetime",
+        "datetime": "datetime",
+        "bool": "checkbox",
+        "select": "select",
+        "multiselect": "select",
+        "attachment": "attachment",
     },
 }
 

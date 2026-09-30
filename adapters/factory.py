@@ -123,6 +123,31 @@ def _make_seatable(selected, _config: dict):
     )
 
 
+def _make_feishu(selected, config: dict):
+    """构造飞书适配器。
+
+    **两种传输层**（详见 adapters/feishu.py 的模块 docstring）：
+      · cli（默认）—— 走 lark-cli 子进程，复用其登录态，不需要 app_secret
+      · api        —— 直连 open.feishu.cn，需要 app_id + app_secret
+
+    ``app_id`` / ``app_secret`` 是**应用级**凭据（一个应用可访问它名下的所有 Base），
+    所以写在 ``feishu.app_id`` / ``feishu.app_secret``，而不是每个命名实例里重复填。
+    ``cli_path`` / ``identity`` 同理写在 ``feishu`` 段。
+    """
+    from .feishu import FeishuAdapter
+    fc = config.get("feishu") if isinstance(config.get("feishu"), dict) else {}
+    return FeishuAdapter(
+        selected["base_token"],
+        cli_path=fc.get("cli_path") or selected.get("cli_path") or "",
+        identity=fc.get("identity") or "",
+        app_id=fc.get("app_id") or "",
+        app_secret=fc.get("app_secret") or "",
+        transport=fc.get("transport") or "",
+        server=selected.get("server") or "",
+        base_name=selected.get("name"),
+    )
+
+
 register_backend("local", label="本地 CSV", make=_make_local)
 
 register_backend(
@@ -137,6 +162,23 @@ register_backend(
         "verify": ("seatable_sync.py", ["--dry-run"], 120),
         "init_sync": ("seatable_sync.py", [], 900),
     },
+)
+
+register_backend(
+    "feishu",
+    label="飞书多维表格",
+    make=_make_feishu,
+    required_keys=("base_token",),
+    # Base 在飞书里的正式叫法是 app_token；早期文档/URL 里叫 base_token。
+    # token 与 base 也都是「同一个东西」的常见口头叫法 —— 三种都收，对外只暴露 base_token。
+    key_aliases={"base_token": ("app_token", "token", "base")},
+    named_bases=True,
+    default_server="https://open.feishu.cn",
+    # verify 钩子只跑**只读**验证（认证 / 表清单 / 字段 / 拉记录 / 单行读取），
+    # 部署流程不会因此往生产 Base 里建任何东西。
+    # init_sync（云端 → 本地初次同步）尚未落地，故不声明 ——
+    # 部署报告会明确写「该后端未声明初始化步骤」，比让它静默跳过要好。
+    deploy={"verify": ("verify_feishu.py", ["--read-only"], 180)},
 )
 
 

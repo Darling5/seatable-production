@@ -2,6 +2,12 @@
 # 生产交付协同助手 — 配置文件（复制为 config.yaml 后填写）
 # ============================================================
 # 三种后端，开箱默认用 local（零配置、离线、不需要任何账号）
+#   local    本地 CSV / Excel
+#   seatable SeaTable（见下）
+#   feishu   飞书多维表格（见下）
+# ⚠️ backend 写了**未登记**的名字（如简道云/禅道，尚在路线图中）时：
+#    默认只打印 [warn] 并**仍然退回 local**；写入路径（strict=True）会直接抛错 ——
+#    这是有意的：静默退回 local 会把「写线上」变成「写本地 CSV」，而读回校验还会照样通过。
 backend: local
 
 # ── 本地模式（默认，零配置）──────────────────────────────
@@ -36,6 +42,36 @@ seatable:
       server: "https://cloud.seatable.cn"
   # 未配置命名 Base 时，仍可只填上面的 api_token/base_uuid；空配置自动退回 local 模式
   # CLI 可用 --base production / --base tasks / --base crm 选择目标 Base。
+
+# ── 飞书多维表格模式（可选）──────────────────────────────
+# 两种取数方式，二选一即可；都不填则飞书后端不可用（会明确报错，不静默退回）。
+#
+#   ① cli（默认，推荐）—— 复用 lark-cli 的登录态，**不需要 app_secret**
+#      前置：装好 lark-cli 并完成过一次 `lark-cli auth login`
+#      （scope 需要 base:table:read / base:record:read / base:record:create
+#        base:record:update / base:record:delete / base:table:create base:field:read）
+#   ② api —— 直连 open.feishu.cn，需要企业自建应用的 app_id + app_secret，
+#      适合分发给没装 lark-cli 的机器
+#
+# ⚠️ 飞书后端的能力边界（实测，别再当 bug 查）：
+#   · 读**不是强一致**的：写入/删除成功之后立刻读回可能仍是旧值（实测 ~2.7s 才可见）。
+#     上层的写后读回验证必须容忍这个窗口。
+#   · 单向关联字段（bidirectional=false）无法实现双向 link()，适配器会显式拒绝。
+#   · 单选/多选列的选项必须建列时给全，写不存在的选项直接报错（不会自动新增选项）。
+feishu:
+  # cli_path: ""          # 留空则自动查找（WorkBuddy 内置连接器包 → PATH → 常见安装位置）
+  # identity: ""          # user / bot；留空跟随 lark-cli 的默认身份
+  # transport: ""         # cli / api；留空则「有 app_id+app_secret 走 api，否则走 cli」
+  # app_id: ""            # 应用级凭据，不是每个 Base 各填一份
+  # app_secret: ""
+  default_base: production
+  bases:
+    production:
+      base_token: ""      # 兼容叫法：app_token / token / base 都会被识别
+    tasks:
+      base_token: ""
+  # 只想快速验证连通性：python tools/verify_feishu.py --read-only
+  # （只读，不写任何东西；加 --write-test 才会在 ZZ_WB_VERIFY_* 临时表上跑写路径并自动清理）
 
 # ── 采购流水线库存源 ───────────────────────────────────────
 # source: partdb | api | mcp | file
