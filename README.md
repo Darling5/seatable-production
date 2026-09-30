@@ -352,7 +352,11 @@ seatable-production/
 │   ├── project_brain/             二期内核（上下文 / 行动 / 证据 / 记忆）
 │   └── decision_support/          三期内核（排程 / 图 / 方案 / 复盘）
 │
-├── adapters/                   存储适配：local CSV · SeaTable · PartDB + schema
+├── adapters/                   存储适配层
+│   ├── base.py                    三层契约（必修方法 / 能力声明 / 可选方法）+ 12 个能力位
+│   ├── factory.py                 后端注册表（register_backend）+ fail-closed 路由
+│   ├── schema.py                  跨后端逻辑 schema + 中立类型词表
+│   └── local.py / seatable.py / partdb.py    具体后端实现
 ├── domain/                     业务域
 │   ├── op.py                      统一读写 CLI（模型与用户都只调它）
 │   ├── market.py / suppliers.py / commodities.py    行情三件套
@@ -369,7 +373,7 @@ seatable-production/
 ├── tools/                      deploy · setup · doctor · passwords · seed_demo · audit_wx_coverage
 ├── automations/                WorkBuddy 自动化桥（bridge/ + prompt 模板）
 ├── pipeline/                   采购初始化管道：合同 → BOM → 库存审核 → 采购订单
-├── tests/                      361 项离线回归测试（不碰线上数据）
+├── tests/                      466 项离线回归测试（不碰线上数据）
 ├── docs/                       手册 · 契约 · 配图 · 在线指南（GitHub Pages 源）
 ├── references/                 长文档：changelog · analysis · wx-intake-and-check · …
 ├── expert/                     专家包（production-cockpit）
@@ -737,7 +741,7 @@ python tools/passwords.py show  # 查看当前口令（仅本地 / 私聊）
 | 微信图片 OCR | `rapidocr_onnxruntime`（本机在 `C:\Python311`） |
 | 生成采购订单 PDF | `reportlab` |
 
-**测试**：361 项离线回归测试，不触碰线上数据。
+**测试**：466 项离线回归测试，不触碰线上数据。
 
 ```bash
 python -m unittest discover -s tests -q

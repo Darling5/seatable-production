@@ -60,6 +60,7 @@ EVENT_COLS = ["事件编号", "日期", "时间", "来源群", "发送人", "分
 CATEGORIES = ["交期变更", "价格变动", "停产通知", "催货", "进度", "库存", "其他"]
 
 sys.path.insert(0, HERE)
+from adapters.base import backend_of  # noqa: E402
 from adapters.factory import load_config  # noqa: E402
 
 
@@ -683,7 +684,9 @@ def _get_adapter_for_business(base_name=None):
         selected = get_base_config(cfg, base_name)
         if selected and selected.get("api_token") and selected.get("base_uuid"):
             adapter = get_adapter(cfg, base_name=base_name)
-            if adapter.__class__.__name__ == "SeaTableAdapter":
+            # 用后端标识判断，不再嗅探类名：工厂在 SeaTable 初始化失败时会
+            # **静默降级**成 LocalAdapter —— 这里要认出来的正是那次降级。
+            if backend_of(adapter) == "seatable":
                 return adapter, "seatable云「%s」" % selected.get("name", base_name or "default")
     except Exception as e:
         print("[warn] SeaTable 初始化失败，退回本地：%s" % e)

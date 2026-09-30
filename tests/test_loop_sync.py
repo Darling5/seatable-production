@@ -1,5 +1,15 @@
 # -*- coding: utf-8 -*-
-"""loop_sync.py 离线单测：FakeAdapter 模拟云端，覆盖建表/幂等 upsert/更新。"""
+"""loop_sync.py 离线单测：FakeAdapter 模拟云端，覆盖建表/幂等 upsert/更新。
+
+2026-09-30 更新：FakeAdapter 按**适配器新契约**（adapters/base.py 三层契约）重写。
+旧替身是照着「绕过适配器」的旧实现造的 —— 它自带 ``_ensure_meta`` / ``_meta`` /
+``_base`` / ``_h`` 四个私有属性，并靠劫持 ``requests.post`` 来假装建表。那四个私有
+属性正是本次要从生产代码里消灭的东西，所以替身必须跟着换契约：实现
+``table_exists()`` / ``ensure_table()``，并声明 ``CAP_SCHEMA_MANAGE`` 能力。
+
+⚠️ 断言**一条都没改** —— 变的只是替身怎么满足契约。若哪天有断言需要迁就实现，
+那说明改错了方向。
+"""
 import json
 import os
 import sys
@@ -10,25 +20,48 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
+from adapters.base import (CAP_DELETE, CAP_READ, CAP_SCHEMA_MANAGE, CAP_UPDATE,
+                           CAP_WRITE)
 from domain.order_to_cash import Service
 from workflows import loop_sync
 
 
 class FakeAdapter:
-    """模拟 SeaTableAdapter：内存表 + 中文列名读写。"""
+    """模拟 SeaTableAdapter：内存表 + 中文列名读写（新契约实现）。"""
+
+    backend = "fake"
+    CAPS = frozenset({CAP_READ, CAP_WRITE, CAP_UPDATE, CAP_DELETE, CAP_SCHEMA_MANAGE})
 
     def __init__(self):
         self.tables = {}       # cloud_table_name -> {columns: [names], rows: {row_id: dict}}
         self._seq = 0
-        self._meta = None      # 模拟 SeaTableAdapter 的元数据缓存
+        self.ensure_calls = []  # 记录 ensure_table 的入参，供「列定义形态」断言用
 
     def auth(self):
         pass
 
-    def _ensure_meta(self):
-        # 从内存表构造与真实 metadata 同构的 _meta
-        self._meta = {"tables": [{"name": n, "_id": "fake-%d" % i}
-                                 for i, n in enumerate(self.tables)]}
+    def get_metadata(self, table):
+        t = self.tables.get(table)
+        if t is None:
+            raise KeyError("表不存在：%s" % table)
+        return {"table_name": table,
+                "columns": [{"name": c, "type": "text"} for c in t["columns"]]}
+
+    def table_exists(self, table):
+        return table in self.tables
+
+    def ensure_table(self, table, columns=None):
+        """新契约的建表原语；返回 "created" / "exists"。"""
+        if table in self.tables:
+            return "exists"
+        names = []
+        for c in (columns or []):
+            nm = c.get("name") if isinstance(c, dict) else c
+            if nm and nm not in names:
+                names.append(nm)
+        self.ensure_calls.append((table, list(columns or []), list(names)))
+        self.tables[table] = {"columns": names, "rows": {}}
+        return "created"
 
     def list_rows(self, table):
         t = self.tables.get(table)
@@ -56,33 +89,12 @@ class FakeAdapter:
             raise KeyError("行不存在：%s" % row_id)
         t["rows"][row_id].update({k: v for k, v in data.items() if k != "__row_id__"})
 
-    # loop_sync.ensure_tables 需要的建表能力
-    def _base(self):
-        return "fake://dtable"
 
-    _h = {"Authorization": "Bearer fake"}
+class NoSchemaAdapter(FakeAdapter):
+    """不支持建表的后端替身（如禅道的 252 张固定表）—— 用于验证会显式报错。"""
 
-    def _create_table(self, name, columns):
-        self.tables[name] = {"columns": [c["column_name"] for c in columns],
-                             "rows": {}}
-
-
-class EnsureTablesPatcher:
-    """把 requests.post 建表调用劫持到 FakeAdapter。"""
-
-    def __init__(self, adapter):
-        self.adapter = adapter
-
-    def __call__(self, url, headers=None, json=None, timeout=None, **kw):
-        class R:
-            status_code = 200
-            def raise_for_status(self):
-                pass
-            def json(self):
-                return {"success": True}
-        # json = {"table_name": ..., "columns": [...]}
-        self.adapter._create_table(json["table_name"], json["columns"])
-        return R()
+    backend = "noschema"
+    CAPS = frozenset({CAP_READ, CAP_WRITE, CAP_UPDATE, CAP_DELETE})
 
 
 class TestLoopSync(unittest.TestCase):
@@ -90,10 +102,6 @@ class TestLoopSync(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="loop_sync_")
         self.svc = Service(self.tmp.name)
         self.fake = FakeAdapter()
-        # 劫持 loop_sync.ensure_tables 内的 requests.post
-        import requests
-        self._orig_post = requests.post
-        requests.post = EnsureTablesPatcher(self.fake)
         # prepare local data：建一个案件并推进两步
         root = self.svc.start_case("客户A", "产品B", owner="小王",
                                    source_event_id="EV-T1", approved=True)["root_id"]
@@ -102,8 +110,6 @@ class TestLoopSync(unittest.TestCase):
         self.root = root
 
     def tearDown(self):
-        import requests
-        requests.post = self._orig_post
         self.tmp.cleanup()
 
     def test_dry_run_creates_nothing(self):
@@ -147,6 +153,41 @@ class TestLoopSync(unittest.TestCase):
                                 data_dir=self.tmp.name, adapter=self.fake)
         synced = {s["table"] for s in report["stats"]}
         self.assertEqual(synced, {"业务对象台账"})
+
+    # ── 新契约相关（2026-09-30）─────────────────────────────
+    def test_ensure_table_receives_neutral_column_defs(self):
+        """建表列定义必须是**中立形态** {"name":..,"type":..}。
+
+        旧实现拼的是 SeaTable 私有字段 {"column_name":..,"column_type":..} —— 上层
+        凭这个假设就换不了后端。这条断言锁住「上层不知道后端私有字段名」。
+        """
+        loop_sync.sync(apply=True, data_dir=self.tmp.name, adapter=self.fake)
+        self.assertTrue(self.fake.ensure_calls, "应当调用过 ensure_table")
+        for table, columns, names in self.fake.ensure_calls:
+            self.assertTrue(names, "%s 的列定义为空" % table)
+            for c in columns:
+                self.assertIn("name", c, "%s 的列定义缺 name：%r" % (table, c))
+                self.assertIn("type", c, "%s 的列定义缺 type：%r" % (table, c))
+                self.assertNotIn("column_name", c, "%s 用了 SeaTable 私有字段名" % table)
+        # 表名与列名的对应关系没串（业务对象台账的主键列就是 object_id）
+        obj = [names for t, _c, names in self.fake.ensure_calls if t == "业务对象台账"]
+        self.assertEqual(len(obj), 1)
+        self.assertIn("object_id", obj[0])
+
+    def test_backend_without_schema_manage_fails_loudly(self):
+        """不支持建表的后端必须**显式报错**，不能静默跳过或退化成写本地。
+
+        禅道（252 张固定表）、金蝶（元数据设计器）、简道云（字段接口只读）都属于
+        这一类。旧实现会在这里抛 AttributeError（读了 4 个私有属性），现在抛的是
+        一条能看懂、能照做的 RuntimeError。
+        """
+        adapter = NoSchemaAdapter()
+        with self.assertRaises(RuntimeError) as ctx:
+            loop_sync.sync(apply=True, data_dir=self.tmp.name, adapter=adapter)
+        msg = str(ctx.exception)
+        self.assertIn("不支持通过 API 建表", msg)
+        self.assertIn("noschema", msg)          # 报出到底是哪个后端
+        self.assertEqual(adapter.tables, {})    # 且确实一张表都没建
 
 
 if __name__ == "__main__":

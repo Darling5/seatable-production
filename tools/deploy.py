@@ -330,23 +330,47 @@ def _run_py(script, extra_args=None, timeout=600):
     return r.returncode, "\n".join(tail[-5:])
 
 
+def _deploy_hooks(backend: str) -> dict:
+    """后端声明的部署钩子（连通验证 / 初次同步），从后端注册表读。
+
+    以前这三件事在本文件里写成 `if backend == "seatable":`（S4 / S5 / S8 各一处），
+    后果是新加的后端会被**静默跳过**连通验证与数据初始化 —— 部署报告还显示「部署成功」。
+    改成声明式之后，漏配是看得见的：未声明就走明确提示分支。
+
+    注册表读不到时（极端情况下 import 失败）返回空 dict，同样走「未声明」分支 ——
+    宁可少做一步并说明，也不要凭假设替某个后端做验证。
+    """
+    try:
+        if SKILL_DIR not in sys.path:
+            sys.path.insert(0, SKILL_DIR)
+        from adapters.factory import backend_deploy_hooks
+        return backend_deploy_hooks(backend)
+    except Exception:
+        return {}
+
+
 def step_verify(args, prof, backend):
     s = Step("连通验证")
     STEPS.append(s)
     if args.dry_run:
         return s.skip("dry-run")
     notes = []
-    # SeaTable
-    if backend == "seatable":
-        rc, tail = _run_py("seatable_sync.py", ["--dry-run"], timeout=120)
+    # 目标后端连通性（脚本由后端自己在注册表里声明）
+    hooks = _deploy_hooks(backend)
+    verify = hooks.get("verify")
+    if verify:
+        script, argv, timeout = verify
+        rc, tail = _run_py(script, list(argv), timeout=timeout)
         if rc == 0:
-            notes.append("SeaTable ✓（dry-run 通过）")
+            notes.append("%s ✓（验证脚本 %s 通过）" % (backend, script))
         else:
-            notes.append("SeaTable ✗：%s" % tail)
+            notes.append("%s ✗：%s" % (backend, tail))
             s.fail("；".join(notes))
             return s
+    elif backend != "local":
+        notes.append("%s：该后端未声明连通验证步骤（部署流程不会替它验证，请人工确认）" % backend)
     else:
-        notes.append("SeaTable：未配置，本地 CSV 模式")
+        notes.append("本地 CSV 模式（无需连通验证）")
     # PartDB
     if prof.get("partdb_url") and prof.get("partdb_token"):
         try:
@@ -377,12 +401,16 @@ def step_init_data(args, backend):
     if args.skip_sync:
         return s.skip("--skip-sync")
     notes = []
-    if backend == "seatable":
-        rc, tail = _run_py("seatable_sync.py", timeout=900)
+    init_sync = _deploy_hooks(backend).get("init_sync")
+    if init_sync:
+        script, argv, timeout = init_sync
+        rc, tail = _run_py(script, list(argv), timeout=timeout)
         if rc == 0:
-            notes.append("云端业务表已同步到本地 data/")
+            notes.append("云端业务表已同步到本地 data/（%s）" % script)
         else:
-            return s.fail("seatable_sync 失败：%s" % tail)
+            return s.fail("%s 失败：%s" % (script, tail))
+    elif backend != "local":
+        notes.append("%s：该后端未声明初次同步步骤，跳过（请人工确认本地 data/ 是否就绪）" % backend)
     else:
         notes.append("本地模式：使用 data/ 现有 CSV")
     rc, tail = _run_py("market.py", ["watchlist", "--refresh"], timeout=300)
@@ -436,7 +464,7 @@ def step_report(args, prof, backend):
             "- 结果：%s" % status, "",
             "```", report_table(), "```", "",
             "## 下一步", ""]
-    if backend == "seatable":
+    if _deploy_hooks(backend).get("init_sync"):
         body += ["- 每日例行：建议注册定时任务（WorkBuddy 自动化 / cron）依次执行",
                  "  `seatable_sync.py → partdb_sync.py → wechat_intake.py pull → market.py watchlist --refresh → cockpit.py`"]
     else:

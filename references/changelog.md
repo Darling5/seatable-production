@@ -4,6 +4,176 @@
 > 当时的设计决策与踩坑细节，先看这里。日常操作无需通读。
 
 
+### v2.1.0（2026-09-30）
+> **多底座改造 · 第 0 期「地基」**。起因（业主原话）：「把这套生产经理的第二大脑整体也兼容禅道的
+> 系统，为的是适配更多不同的底座，比如 partdb 简道云 飞书多维表格 禅道 金蝶等」→「我肯定是要全套支持」。
+> 批准路线：**第 0 期地基 → 飞书 → 简道云 → 禅道 → 金蝶**。本期**不新增任何后端**，
+> 只把「接一个新后端要付的代价」从「改 6 处硬编码 + 碰 4 个私有属性」降到「登记一行」。
+
+**① 三层适配器契约（`adapters/base.py` 重写）**
+旧文件只有 8 个 `@abstractmethod` + 1 个具体方法，**没有任何能力声明机制** → 上层只能靠
+`hasattr` / 类名嗅探分叉，于是长出一堆「看着存在其实是空实现」的坑。新契约三层：
+- ① **必修方法**（ABC 强制，**8 个**）：`auth` / `list_rows` / `get_metadata` / `append_row` /
+  `update_row` / `delete_rows` / `link` / `list_linked`
+- ② **能力声明**：`capabilities()` / 类属性 `CAPS` —— 声明式、无副作用、**建连前可读**
+- ③ **可选方法**（**9 个**）：`close` / `query` / `get_row` / `table_exists` / `append_rows` /
+  `link_append` / `link_one_way` / `ensure_table` / `version_of` —— 有通用兜底，拿不到正确答案时抛 `Unsupported`
+- 📌 `auth` 在**必修**、`query` 在**可选**（有客户端过滤的具体实现，故非抽象），别记反。
+
+**② 12 个能力位 + `Unsupported` 铁律**
+`read` `write` `update` `delete` `link` `link_read` `batch_write` `schema_manage` `idempotent`
+`optimistic_lock` `query_pushdown` `server_row_id`；`BASE_CAPABILITIES` 默认含前 5 个。
+- `Unsupported(NotImplementedError)` —— 继承 `NotImplementedError` 让老代码的 `except` 仍能兜住。
+  铁律：**可选方法只有在能给出正确答案时才返回结果**；`return []` / `return None` 冒充「没有」是禁止的。
+- **不推断关联能力**：`link` / `list_linked` 完全可能**存在**却是个空实现，靠方法存在性推断必踩坑。
+- 为什么这么严：**静默失败是本仓库的历史主坑**。SeaTable 的 `PUT /rows/` 传错列 key 会返回
+  `{"success":true}` HTTP 200 却**不落库**；空桩 `list_linked` 让「读关联」永远返回空 —— 两者都「看起来成功」。
+- 🔴 `link_append()` 默认抛 `Unsupported`，**不提供**「读-改-写硬凑」兜底（并发写后端上会丢失更新，
+  悄悄做这个加法比不做更危险）；`link_one_way()` 默认抛 `Unsupported`，**不降级成双向 `link()`**
+  （那正是它要消灭的错误行为，悄悄降级等于把坑换个地方埋）。
+
+**③ 🔴 修掉 `adapters/seatable.py::list_linked` 的**空桩**（历史遗留的静默失败）**
+旧实现是 `return []` —— 命令成功、返回空、**无报错**，调用方无从分辨「没有关联」和「读不了」。
+- 根因：`GET /links/` 是 **405**（走不通）；`GET /metadata/` 的 `metadata` 顶层**没有 `links` 键**
+  （只有 `format_version` / `tables` / `version`），旧 `_resolve_link_id` 读 `meta["links"]` **恒为空 → 是从未走通的死代码**。
+- 新实现：读该行 → 按 `link_id` 找列 → 抽 `row_id`。关联列在行数据里回传为
+  `[{"row_id": ..., "display_value": ...}]`，**`row_id` 就在里面**（这是读关联的唯一可用入口）。
+- `link_id` 传空字符串 = 返回该行在**所有**关联列上的对方 `row_id` 并集。
+- 表/行/`link_id` 任一不存在都显式抛错 —— 空列表**只**代表「确实没有关联」。
+- 📌 `link_id` **只存在于每个关联列的 `data.link_id`**（本 Base 实测均为 4 位字符串，但代码无长度校验，
+  属观察值而非契约）；新增 `link_map()` / `link_columns()` / `known_link_ids()` 供查询。
+
+**④ `link_append()` 新方法 + `crm_dispatch` 去私有属性**
+`domain/crm_dispatch.py::_link_single()` 原来借 `a._base()` / `a._h` 裸发 PUT —— 两个私有属性，换后端必崩。
+现走 `a.link_one_way(...)`：**只写跟进记录一侧**，完全不碰线索表（避免把线索侧的历史关联整体替换掉）。
+- 为什么不用 `POST /links/`（它确实存在）：实测无法在不向 Base 真实写入的前提下确证它是「追加」还是
+  「把该行关联设置成这一个」。猜错的后果是逐条 POST 后**只留下最后一条**，既有历史被静默冲掉。
+  故选择**已验证的读 + 已验证的写**（`list_linked` + `link`）并加读回验证。
+- ⚠️ 已知局限：读-改-写**不是并发安全**的（SeaTable 无行版本号、无条件写）。
+
+**⑤ `adapters/factory.py` 重写为**后端注册表****
+`register_backend(name, label=, make=, required_keys=, key_aliases=, named_bases=, default_server=, deploy=)`
+—— 终结散在 6 处的 `backend == "seatable"` 硬编码。`deploy` 声明部署钩子（`verify` / `init_sync`），
+`tools/deploy.py` 据此拉活，不再写死后端名。
+- 🔴 **未知后端不再静默**：以前会**静默**返回 `LocalAdapter`。加了新后端之后那成了隐患 ——
+  `backend: feishu`（还没实现完）会被当成 local，把线上写入变成写本地 CSV，**且毫无提示**。
+  - 📌 准确行为（实测）：**默认** `get_adapter(cfg)` 打 `[warn] …退回 local 模式` 到 stderr 后**仍然退回 local**；
+    只有 `strict=True`（由 `application/dataservice.py:310` 这条**写入路径**传入）才抛 `RuntimeError` 拒绝退回。
+  - 所以区别是「**不静默**」而不是「**不退回**」。真正防住误写的是写入路径的 `strict=True` ——
+    因为**读回校验在本地库上照样会通过**，不能拿「读回验证」当兜底。
+- 这是**本期改造成立与否的判据**：注册完不需要改工厂一行代码，`get_adapters()` / 命名 Base 解析 /
+  键别名归一化就都通了 —— `tests/test_adapter_contract.py::PluggableBackendTests` 就是拿这事当验收标准的
+  （注册一个假后端 `feishufake`，验证工厂不改一行就能路由）。
+
+**⑥ 类型归一中立化（`adapters/schema.py`）**
+`NEUTRAL_TYPES` / `BACKEND_TYPES` / `NON_CREATABLE_TYPES` + `backend_type(backend, neutral)`。
+- **未知类型抛错，绝不静默降级成 text**；关联列/计算列明确列为「不可创建，需人工预建」。
+- `link_id_for()` 改为**方向敏感**：`生产计划 ↔ 项目` 实测有两条方向相反的关联（`3Fld` / `wana`），
+  旧实现用无序集合比较 → **永远只返回先出现的 `3Fld`**。
+
+**⑦ 只读实测推翻多项旧假设（4 轮 probe，全程零写请求）**
+| 旧假设 | 实测事实 |
+|---|---|
+| `metadata` 里有 `links` 键 | **没有**；link_id 藏在每个 link 列的 `data.link_id` |
+| 关联用 `GET /links/` 读 | **405**；改用读该行 + 抽 `row_id` |
+| 双向关联的 `data.other_table_id` 指向对方表 | **不可靠**（双向会在**两张表上各建一个同 link_id 的列**）→ 改按「link_id 覆盖哪两张表」判定 |
+| `schema.LINKS` 里的 link_id 都是真的 | `PlAl` / `RsAl` **不存在**；`JV66` / `Ya8b` / `s7AE` 存在但漏登记 |
+| 列名 | 真实是 `成品采购` / `关联项目` / `PCBA采购` / `工序`（旧写「成品采购记录」「项目」） |
+| 关联列的 `type` 恒为小写 `link` | **大小写混用**：`link` 36 列 + **大写 `LINK` 4 列** + `link-formula` 9 列 → 见 ⑫ |
+- `POST /links/` 字段契约：`link_id` + `table_name` + `other_table_name`；伪 link_id → `"link for ZZZZ not found"`（**同时证明探测零副作用**）。
+- `GET /rows/{row_id}/?table_name=` → **200，返回裸行对象**（不带 `rows` 包装、含 `_id`）。
+- 「link 列」的精确口径（只读实测 production Base）：
+  **`type == "link"` 36 列**（可真写）、**`type == "LINK"` 4 列**（大写，同样可真写）、
+  **`type == "link-formula"` 9 列**（计算列，`data` 里**没有 link_id**，不可真写）。
+  适配器 `_link_index()` 认定的 link 列 = **40**，去掉 `link-formula` 是对的。
+- 真实 Base = **18 张业务表**、**20 个 link_id**（不是 18 —— 见 ⑫）；逻辑 schema = 22 张（含资源域/记忆域）。
+
+**⑧ 🔴 修掉 `_link_index()` 的大小写敏感比较（静默漏列，与 `list_linked` 空桩同类）**
+`adapters/seatable.py` 的 `_link_index()` 原来写 `if c.get("type") != "link": continue` ——
+精确比较，而真实 Base 里有 **4 个大写 `LINK` 列**（`生产计划.工时记录` / `生产工序.工时记录` /
+`工时记录.关联生产计划` / `工时记录.关联工序`，link_id = `W1Q1` / `Hh3j`）。后果（只读实测）：
+- `link_columns("工时记录")` → **`[]`**（真表有 2 个关联列）
+- `known_link_ids()` → **18** 个（真实 20 个）
+- 🔴 最糟：`_assert_link_id_known("W1Q1")` **谎报「在本 Base 中不存在」** ——
+  一个**守卫反过来拦截合法 link_id**，且报错文案还把责任推给调用方（「多半是调用方用了过期的硬编码值」）
+- 这恰好是本轮反复谴责的「**静默返回空**」同类残留：`list_linked` 修好了，`link_columns` 漏了
+- 修法：`str(c.get("type") or "").lower() != "link"`（`link-formula` 仍被正确排除）。
+- 回归测试：`tests/test_adapter_contract.py::SeaTableLinkTypeCaseTests`（6 项）。
+  **已验证测试有效性** —— 临时退回精确比较后 2 failures + 3 errors，不是橡皮图章。
+
+**⑧-b 同类问题：`date` / `single-select` 的类型比较也是大小写敏感的（一并修掉）**
+由**独立验证者**在复验 ⑧ 时提示、我实测确认 —— 大小写混用**不止 `link`**。
+真实 Base 类型直方图（只读实测）：
+
+| 类型 | 小写 | **大写** | 影响 |
+|---|---|---|---|
+| `link` | 36 | **4**（`LINK`） | 见 ⑧ |
+| `date` | 40 | **2**（`DATE`） | `_flat_cell()` 不截 ISO → 日期留着 `2026-05-07T00:00:00+08:00` |
+| `single-select` | 31 | 0 | （本次未发现大写，同属风险面） |
+| 其它 | — | `LONG_TEXT` 2 / `NUMBER` 1 | 代码未按类型分支，暂无影响 |
+
+- 受影响的具体列：`工时记录.开始时间` / `工时记录.结束时间`（`type == "DATE"`）。
+  ⚠️ **该表当前无数据**，所以是**潜伏**的坑、不是正在出错 —— 但一旦有人往 `工时记录` 写行，
+  日期会静默保持完整 ISO，而下游是按 `YYYY-MM-DD` 写的（正是 `_cell_meta` 自己 docstring 记的那类错）。
+- 修法（2 处，都在 `adapters/seatable.py`）：
+  - `_cell_meta()`：`str(c.get("type") or "").lower() in ("single-select", "multiple-select")`
+  - `_flat_cell()`：`str(ctype or "").lower() in ("date", "ctime", "mtime", "datetime")`
+- 回归测试：`tests/test_adapter_contract.py::SeaTableOtherTypeCaseTests`（3 项）。
+  **已验证测试有效性** —— 临时退回精确比较后 **3/3 全红**（含端到端 `list_rows` 断言 `'9' != '高'`）。
+- 🔎 **尚未修（如实记录）**：`sync/seatable_sync.py:136` 与 `sync/backfill_seatable.py:100`
+  也有 `c.get("type") in ("single-select", "multiple-select")`。它们走 **CSV 同步路径**、
+  不在适配器契约内，且实测当前 **0 个大写 select 列**，故本轮不动 —— 列为已知风险面。
+- 📌 教训：**「类型字符串」在这个 Base 里不是个可靠的不变量**。凡按 `type` 分支的代码，
+  一律 `.lower()` 比较；新写后端适配器时同样适用。
+
+**⑨ 🔴 `wx/wxmatch.py` 写入路径复活（原先在本机 100% 死掉）**
+旧 `_get_business_adapter()` 只认命名 Base `business`，而本机 `config.yaml` 用的是
+`seatable.bases:` 形态、**根本没有** `business` → `has_biz` 恒为 False → 必然抛 `RuntimeError`，
+`wxmatch apply` 的写入路径在本机完全不可用。旧实现还直接 `new SeaTableAdapter`、**绕过工厂**，
+「多底座可插拔」对写路径无效。
+- 新解析链：① `seatable.bases` 里的 `business` → ② `wx.business_base` 指定的 Base 名
+  → ③ `seatable.default_base`（本机是 `production`，wxmatch 写的是到货/发货类生产业务表，语义正确）。
+- ⚠️ 写路径**不许静默降级**：解析不出可用 Base 时**直接抛错**（由调用方记成 blocked），
+  绝不退回 `LocalAdapter` —— 否则「写 SeaTable」会变成「写本地 CSV」且**读回校验照样通过**。
+
+**⑩ 上层去私有属性 / 去类名嗅探**
+- `workflows/loop_sync.py::ensure_tables()`：去掉 4 个私有属性（`_ensure_meta` / `_meta` / `_base` / `_h`）
+  + 裸 `POST /tables/`，改走 `adapter.table_exists()` / `adapter.ensure_table()`，
+  并在 `not supports(adapter, CAP_SCHEMA_MANAGE)` 时显式 `RuntimeError`。
+- `workflows/loop_trigger.py` / `wx/wechat_intake.py`：`hasattr(adapter, "auth")` 与
+  `adapter.__class__.__name__ == "SeaTableAdapter"` 这类嗅探 → `backend_of(adapter)` / `supports(...)`。
+  📌 `hasattr(adapter, "auth")` **恒为真**（`LocalAdapter` 也实现了 `auth`）→ 该分支**永不触发**，闸门形同虚设。
+- `tools/deploy.py`：3 处 `backend == "seatable"` → 读注册表声明的 `verify` / `init_sync` 钩子。
+
+**⑪ 测试 403 → 466（全绿）+ 真实 Base 只读端到端验证**
+- 新增 `tests/test_adapter_contract.py`（**56 项**）：三层契约 / 能力声明（含鸭子类型）/ 两后端契约 /
+  schema 契约 / **可插拔性证明** / **link 列类型大小写**（见 ⑧，6 项）。
+- `tests/test_loop_sync.py`：`FakeAdapter` 升级到新契约（旧替身自带 4 个私有属性 + 劫持 `requests.post`，
+  是照着**旧绕过契约**造的），**原有断言一条都没改**；新增 2 项（中立列定义透传 / 无 `schema_manage` 时必须响亮失败）。
+- `tests/test_wxmatch.py`：新增 5 项覆盖命名 Base 解析链四分支 + fail-closed。
+- 真实 Base **只读**端到端验证全部通过，含「单行与列表逐列一致（25 列）」与「全程未发出任何写请求」的**写请求守卫取证**。
+- 修掉一个**自查发现的真 bug**：`capabilities_of()` 首版只看 `capabilities()` 方法，
+  **忽略鸭子类型适配器的 `CAPS` 类属性** → 能力声明形同虚设（`FakeAdapter` 声明了 `schema_manage` 却被判不支持）。
+- **独立审计**（另一 agent 用新鲜眼睛、只读复核 12 条可证伪断言）发现 4 条文档不准确 + 2 条代码外的错误，
+  其中最高危的就是 ⑧ 的大小写漏列 —— 由审计发现、我实测复现后修掉。审计还确认 `config.yaml` 零改动、
+  新增行**未泄露**任何凭证（拿 9 个真实凭证值比对新增内容，命中 0 次）。
+
+**⑫ 文档同步**
+- `SKILL.md` 新增 **§0.5 多底座适配器契约**（三层契约 / 12 能力位 / `Unsupported` 铁律 / 新增后端五步 / 已知局限）；
+  §0 的 `backend` 取值与「如何确认当前后端」改指向注册表；§9.6 的「项目 `阶段` …**不可读**」**作废**
+  （关联现已可读，并补「同一对表可能有多条关联 → 须用 `column=` 指定列名」）。
+- `config.yaml.example` 补 `wx.business_base` 说明与 fail-closed 警示。
+
+**⑬ 已知局限（诚实记录）**
+- `link_append()` 读-改-写**非并发安全**（SeaTable 无行版本号）
+- `adapters/partdb.py` **至今未继承 `BaseAdapter`**，是侧挂集成，不在本契约内
+- `version_of()` 只在基类定了契约，尚无后端实现（SeaTable 无行版本概念）
+- `_minimal_yaml()` 遇到 YAML 列表**静默丢弃**（`watch_groups` 会变空 dict）；本机装了 PyYAML 故不触发
+- `tests/test_crm_dispatch.py` 是脚本式测试（`unittest discover` 恒为 0 用例）→ `_link_single()` 非 `stub_mode` 分支零自动化覆盖
+- `wx/wxmatch.py::_factory_biz_adapter()` 仍读 `adapter.server` / `.uuid` / `.base_name`（SeaTable 实例属性，非契约一部分）
+- **未修**：`wx/wxmatch.py` 的 `DataService(lambda _name: _get_business_adapter()[0])` **吞掉路由参数**
+
+
 ### v1.9.0（2026-09-15）
 > 本轮业主一次性提了四条需求（原话见文末），逐条落地并全部通过无头 Chrome / CLI 实测。
 

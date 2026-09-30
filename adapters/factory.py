@@ -1,16 +1,148 @@
 # -*- coding: utf-8 -*-
-"""配置加载 + 适配器工厂。
+"""配置加载 + 适配器工厂（**后端注册表**驱动）。
 
-读取 config.yaml，按 backend 选择实现：
-  - local    → LocalAdapter（默认）
-  - seatable → SeaTableAdapter（仅在填了 api_token/base_uuid 时启用，否则退回 local）
-PartDB 是独立的物料后端，用 get_partdb() 单独取（enabled=false 时返回 None）。
+按 config.yaml 的 ``backend`` 选择实现：
+  - local    → LocalAdapter（默认，零配置）
+  - seatable → SeaTableAdapter（填了 api_token + base_uuid 才启用，否则退回 local）
+
+新增一个后端（飞书 / 简道云 / 禅道 / 金蝶…）**只需在下面的 BACKENDS 注册表里加一条**：
+宣告它叫什么、怎么造、命名实例需要哪些必填键、能不能通过 API 管表结构。
+
+为什么要有注册表：以前 `backend == "seatable"` 这个判断被**硬编码在 6 个地方**
+（本模块 2 处 + `tools/deploy.py` 3 处 + `wx/` 两个模块的类名嗅探）。每加一个底座
+都要去全仓库搜 `if backend ==`，那不是「可插拔」，那只是「可修改」。注册表把
+「系统支持哪些后端」收敛成一处数据，上层只问「是什么后端」，不再问「是不是 SeaTable」。
+
+PartDB 是独立的**物料后端**，不在这条存储分派链上，用 ``get_partdb()`` 单独取
+（``enabled: false`` 时返回 None）。它至今没继承 BaseAdapter、也没有多底座抽象 ——
+这是已知的下一阶段工作，不在本次改动范围内。
 """
 import os
 import sys
 
 _SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+__all__ = [
+    "load_config", "get_adapter", "get_adapters", "get_base_config",
+    "get_backend", "backend_info", "list_backends", "register_backend", "BACKENDS",
+    "backend_deploy_hooks",
+]
+
+
+# ══════════════════════════════════════════════════════════════════
+# 后端注册表
+# ══════════════════════════════════════════════════════════════════
+
+#: name -> {
+#:   label         展示名（错误信息里的人话）
+#:   make          make(selected, config) -> adapter；selected 为 None 表示该后端
+#:                 不吃「命名实例」（如 local 只有一份）
+#:   required_keys 一个可用命名实例的必填键（缺一即视为配置不完整）
+#:   key_aliases   {规范键: (可接受的别名…)}，如 api_token ← token
+#:   named_bases   是否支持「一个后端下挂多个命名实例」
+#:   default_server 该后端的默认服务地址
+#: }
+BACKENDS: dict = {}
+
+
+def register_backend(name: str, *, label: str, make, required_keys=(),
+                     key_aliases=None, named_bases: bool = False,
+                     default_server: str = "", deploy: dict = None) -> None:
+    """登记一个后端。重复登记同名会覆盖（便于测试与本地实验）。
+
+    ``deploy`` 声明该后端在**部署流程**里的钩子（``tools/deploy.py`` 消费）：
+      · ``verify``    ``(script, argv, timeout)`` 连通性验证（如 dry-run）
+      · ``init_sync`` ``(script, argv, timeout)`` 初次「云端 → 本地」同步
+    以前这两件事由 ``tools/deploy.py`` 里的 ``if backend == "seatable"`` 写死，
+    于是新后端在部署流程里会被**静默跳过验证** —— 声明式之后，漏配是看得见的
+    （部署报告会明确写「该后端未声明验证步骤」）。
+    """
+    BACKENDS[str(name).lower()] = {
+        "label": label,
+        "make": make,
+        "required_keys": tuple(required_keys),
+        "key_aliases": dict(key_aliases or {}),
+        "named_bases": bool(named_bases),
+        "default_server": default_server,
+        "deploy": dict(deploy or {}),
+    }
+
+
+def backend_deploy_hooks(backend: str) -> dict:
+    """某后端声明的部署钩子；未登记或未声明时返回空 dict（**不猜**）。"""
+    info = BACKENDS.get(str(backend or "").lower())
+    return dict(info.get("deploy") or {}) if info else {}
+
+
+def list_backends():
+    """已登记的后端名（排序后，便于错误信息里稳定展示）。"""
+    return sorted(BACKENDS)
+
+
+def backend_info(config: dict = None):
+    """返回 (后端名, 注册表条目)；未登记的后端返回 (名字, None)。
+
+    只读 config 的 ``backend`` 字段，不做任何 I/O。上层想知道「当前是什么后端」
+    就该用这个（或适配器上的 ``backend`` 属性），而不是 ``isinstance`` / 类名嗅探。
+    """
+    config = load_config() if config is None else config
+    name = str((config or {}).get("backend") or "local").strip().lower()
+    return name, BACKENDS.get(name)
+
+
+def get_backend(config: dict = None) -> str:
+    """当前配置声明的后端名（小写）。只读 config，不做 I/O、不建连。"""
+    return backend_info(config)[0]
+
+
+# ── 各后端的构造实现 ────────────────────────────────────────────
+
+def _make_local(_selected, config: dict):
+    from .local import LocalAdapter
+    lc = config.get("local")
+    if not isinstance(lc, dict):
+        # 配置写坏了（例如 local: 后面跟了字符串而非缩进子项）时，
+        # 与其抛 AttributeError，不如说清楚哪写错了。
+        if lc is not None:
+            print("[warn] config 的 local 段格式不对（应为缩进的 data_dir: ...），"
+                  "已退回默认 data/ 目录", file=sys.stderr)
+        lc = {}
+    data_dir = lc.get("data_dir") or "data"
+    if not os.path.isabs(data_dir):
+        data_dir = os.path.join(_SKILL_DIR, data_dir)
+    return LocalAdapter(data_dir, config)
+
+
+def _make_seatable(selected, _config: dict):
+    from .seatable import SeaTableAdapter
+    return SeaTableAdapter(
+        selected["api_token"],
+        selected.get("server") or BACKENDS["seatable"]["default_server"],
+        selected["base_uuid"],
+        base_name=selected.get("name"),
+    )
+
+
+register_backend("local", label="本地 CSV", make=_make_local)
+
+register_backend(
+    "seatable",
+    label="SeaTable",
+    make=_make_seatable,
+    required_keys=("api_token", "base_uuid"),
+    key_aliases={"api_token": ("token",), "base_uuid": ("uuid",)},
+    named_bases=True,
+    default_server="https://cloud.seatable.cn",
+    deploy={
+        "verify": ("seatable_sync.py", ["--dry-run"], 120),
+        "init_sync": ("seatable_sync.py", [], 900),
+    },
+)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 配置读取
+# ══════════════════════════════════════════════════════════════════
 
 def _coerce(v: str):
     v = v.strip()
@@ -32,7 +164,20 @@ def _coerce(v: str):
 
 
 def _minimal_yaml(text: str):
-    """只支持本技能 config 用到的「2 空格缩进嵌套字典 + 叶子值」，无列表。"""
+    """只支持本技能 config 用到的「2 空格缩进嵌套字典 + 叶子值」，**无列表**。
+
+    ⚠️ 已知短板（未修，需要时再上真正的 YAML 解析器）：本函数遇到 YAML 列表会
+    **静默丢弃**。例如 config 里写了
+
+        watch_groups:
+          - 群A
+          - 群B
+
+    这里会解析成 ``{}``，130+ 个群名凭空消失且不报错。PyYAML 缺失时才会走到
+    本函数（`load_config` 优先用 yaml），本机装了 PyYAML，所以现状不触发。
+    真要修：遇到 ``- `` 开头行时抛错而不是 continue —— 「解析不了」必须比
+    「解析成空」安全。
+    """
     root: dict = {}
     stack = [(-1, root)]
     for raw in text.splitlines():
@@ -75,63 +220,79 @@ def load_config(path: str = None) -> dict:
             return _minimal_yaml(f.read())
 
 
-def _seatable_bases(config: dict) -> dict:
-    """Return normalized named SeaTable Base definitions.
+def _named_bases(config: dict, backend: str) -> dict:
+    """返回某后端下**归一化后**的命名实例映射 {名字: 配置字典}。
 
-    New configurations may use ``seatable.bases`` (the preferred form), or a
-    top-level ``bases`` mapping.  A flat ``seatable.api_token/base_uuid`` block
-    remains valid and is exposed as the implicit/default Base.  Values are not
-    copied to logs or persisted here; credentials stay in the caller's config.
+    兼容四种书写形态（按优先级）：
+      ① ``<backend>.bases: {名: {...}}``   —— 推荐
+      ② 顶层 ``bases: {名: {...}}``
+      ③ 顶层 ``<backend>_bases: {...}``
+      ④ ``<backend>: {名: {...}}``         —— 简写；与保留键同名的键不算实例名
+    另外，只填了扁平必备键（如 ``seatable.api_token/base_uuid``）而没有命名实例时，
+    会暴露成一个名为 ``default`` 的隐式实例（**命名实例优先，不被覆盖**）。
+
+    实现是通用的：以前这套逻辑写死在 ``_seatable_bases()`` 里，换个后端就得抄一遍。
+    凭证只在此处复制与归一，**不**写日志、不落盘。
     """
-    sc = config.get("seatable")
-    sc = sc if isinstance(sc, dict) else {}
-    named = sc.get("bases")
+    info = BACKENDS.get(backend)
+    if info is None or not info["named_bases"]:
+        return {}
+    section = config.get(backend)
+    section = section if isinstance(section, dict) else {}
+    named = section.get("bases")
     if not isinstance(named, dict):
         named = config.get("bases")
     if not isinstance(named, dict):
-        named = config.get("seatable_bases")
+        named = config.get("%s_bases" % backend)
     if not isinstance(named, dict):
-        # Also accept ``seatable: {production: {...}, tasks: {...}}`` for
-        # concise deployments; reserved legacy keys are not treated as names.
-        named = {k: v for k, v in sc.items()
-                 if k not in {"api_token", "token", "base_uuid", "uuid", "server", "default_base"}
-                 and isinstance(v, dict)}
+        reserved = {"server", "default_base", "enabled"} | set(info["required_keys"])
+        for aliases in info["key_aliases"].values():
+            reserved |= set(aliases)
+        named = {k: v for k, v in section.items()
+                 if k not in reserved and isinstance(v, dict)}
     result = {}
     for name, value in named.items():
         if not isinstance(value, dict):
             continue
         item = dict(value)
-        # Accept the common token/uuid spellings while exposing one stable
-        # shape to the rest of the factory.
-        if not item.get("api_token") and item.get("token"):
-            item["api_token"] = item["token"]
-        if not item.get("base_uuid") and item.get("uuid"):
-            item["base_uuid"] = item["uuid"]
+        # 接受同一件的多种写法，但对外只暴露一种稳定形状。
+        for canon, aliases in info["key_aliases"].items():
+            if item.get(canon):
+                continue
+            for alias in aliases:
+                if item.get(alias):
+                    item[canon] = item[alias]
+                    break
         result[str(name)] = item
-    # Legacy flat configuration is deliberately retained, but named entries
-    # win when the same name is present.
-    if (sc.get("api_token") or sc.get("base_uuid")) and "default" not in result:
-        result["default"] = {k: sc.get(k) for k in ("api_token", "base_uuid", "server")}
+    if "default" not in result and any(section.get(k) for k in info["required_keys"]):
+        implicit = {k: section.get(k) for k in info["required_keys"]}
+        implicit["server"] = section.get("server")
+        result["default"] = implicit
     return result
 
 
-def get_base_config(config: dict = None, base_name: str = None):
-    """Resolve one named Base's config without authenticating or doing I/O.
+def get_base_config(config: dict = None, base_name: str = None, backend: str = None):
+    """解析某后端下一个命名实例的配置。**不做 I/O、不认证。**
 
-    ``base_name`` defaults to ``seatable.default_base`` then ``production``
-    when present, preserving the historical flat config when no named Bases
-    are configured.  ``None`` is returned when the requested Base is absent.
+    ``base_name`` 缺省时按 ``<backend>.default_base`` → ``production`` → ``default``
+    → 第一个实例 的顺序回落；请求的实例不存在时返回 ``None``（不抛错，交由调用方决定）。
     """
     config = load_config() if config is None else config
     if not isinstance(config, dict):
         raise SystemExit("[错误] 配置文件格式不对（顶层应为 key: value）。"
                          "请检查 config.yaml，或运行 python tools/setup.py 重新生成。")
-    sc = config.get("seatable") if isinstance(config.get("seatable"), dict) else {}
-    bases = _seatable_bases(config)
+    if backend is None:
+        backend = str(config.get("backend") or "local").strip().lower()
+    info = BACKENDS.get(backend)
+    if info is None or not info["named_bases"]:
+        return None
+    section = config.get(backend)
+    section = section if isinstance(section, dict) else {}
+    bases = _named_bases(config, backend)
     if not bases:
         return None
     if base_name is None:
-        base_name = sc.get("default_base") or ("production" if "production" in bases else None)
+        base_name = section.get("default_base") or ("production" if "production" in bases else None)
         if base_name is None:
             base_name = "default" if "default" in bases else next(iter(bases))
     selected = bases.get(str(base_name))
@@ -139,82 +300,78 @@ def get_base_config(config: dict = None, base_name: str = None):
         return None
     out = dict(selected)
     out["name"] = str(base_name)
-    out.setdefault("server", sc.get("server") or "https://cloud.seatable.cn")
+    if not out.get("server"):
+        out["server"] = section.get("server") or info["default_server"]
     return out
 
 
 def get_adapters(config: dict = None):
-    """Build a mapping of configured named adapters (not authenticated).
+    """构造当前后端下**全部**命名实例的映射（未认证）。
 
-    This is useful to callers that need to inspect multiple Bases.  Each
-    value is a separate adapter instance, so auth tokens and metadata caches
-    can never leak between Bases.
+    调用方靠它同时看多个实例。每个值都是独立实例 —— 认证 token 与 metadata 缓存
+    绝不跨实例复用（那条隔离由 BaseAdapter 实现保证，有测试钉住）。
+
+    当前后端不支持命名实例（如 local）时返回空 dict —— 这是**如实回答**
+    「这个后端没有多实例概念」，而不是错误。
     """
     config = load_config() if config is None else config
     backend = str(config.get("backend", "local") or "local").lower()
-    if backend != "seatable":
+    info = BACKENDS.get(backend)
+    if info is None or not info["named_bases"]:
         return {}
     return {name: get_adapter(config, base_name=name)
-            for name in _seatable_bases(config)
-            if get_base_config(config, name)}
+            for name in _named_bases(config, backend)
+            if get_base_config(config, name, backend)}
 
 
-def _fallback(strict: bool, why: str) -> None:
-    """SeaTable 不可用时：默认只告警退回 local；写入路径必须硬失败。"""
+def _fallback(strict: bool, why: str, label: str = "远程后端") -> None:
+    """目标后端不可用时：默认只告警退回 local；**写入路径必须硬失败**。
+
+    `strict=True` 由 DataService 等写入路径传入：静默退回 local 会把「写线上」
+    变成「写本地 CSV」，而且读回校验还会照样「通过」。
+    """
     if strict:
-        raise RuntimeError("SeaTable 不可用，已拒绝退回 local 以免误写本地库：%s" % why)
+        raise RuntimeError("%s 不可用，已拒绝退回 local 以免误写本地库：%s" % (label, why))
     print("[warn] %s，退回 local 模式" % why, file=sys.stderr)
 
 
 def get_adapter(config: dict = None, base_name: str = None, strict: bool = False):
-    """Build an adapter for one named Base.
-
-    ``strict`` is for write paths: when the configuration asks for SeaTable but
-    the Base/token is missing or initialisation fails, silently returning a
-    LocalAdapter would turn a requested online write into a local write and
-    still read back as "verified".  With ``strict=True`` we raise instead, so
-    the caller fails closed and reports a blocked/unverified outcome.
-    """
+    """构造当前后端下一个实例。``strict`` 供写入路径使用（见 `_fallback`）。"""
     config = load_config() if config is None else config
     if not isinstance(config, dict):
         raise SystemExit("[错误] 配置文件格式不对（顶层应为 key: value）。"
                          "请检查 config.yaml，或运行 python tools/setup.py 重新生成。")
-    backend = (config.get("backend") or "local").lower()
-    if backend == "seatable":
-        sc = config.get("seatable") if isinstance(config.get("seatable"), dict) else {}
-        selected = get_base_config(config, base_name)
-        if selected is None and base_name is not None and _seatable_bases(config):
-            _fallback(strict, "未配置 SeaTable Base「%s」" % base_name)
-        if selected:
-            token = selected.get("api_token") or ""
-            uuid = selected.get("base_uuid") or ""
-            server = selected.get("server") or "https://cloud.seatable.cn"
-            if token and uuid:
-                try:
-                    from .seatable import SeaTableAdapter
-                    return SeaTableAdapter(token, server, uuid, base_name=selected.get("name"))
-                except Exception as e:
-                    _fallback(strict, "SeaTable 初始化失败：%s" % e)
-            else:
-                _fallback(strict, "Base「%s」缺 api_token/base_uuid" %
-                          (selected.get("name") or base_name or "default"))
-        elif not _seatable_bases(config):
-            # Keep the old diagnostic for a flat, empty seatable block.
-            _fallback(strict, "未配置 seatable.api_token/base_uuid")
+    backend = str(config.get("backend") or "local").strip().lower()
+    info = BACKENDS.get(backend)
+    if info is None:
+        # ⚠️ 以前这里会**静默**返回 LocalAdapter。加了新后端之后那就成了隐患：
+        #    config 里写了 backend: feishu（还没实现完）会被当成 local，把线上写入
+        #    变成写本地 CSV，且毫无提示。所以未知后端一律走 fail-closed 的 _fallback。
+        _fallback(strict, "未知后端 backend=%r（可用：%s）"
+                  % (backend, "/".join(list_backends())), label="后端「%s」" % backend)
+        return _make_local(None, config)
+    if not info["named_bases"]:
+        return info["make"](None, config)
+
+    selected = get_base_config(config, base_name, backend)
+    if selected is None and base_name is not None and _named_bases(config, backend):
+        _fallback(strict, "未配置 %s 实例「%s」" % (info["label"], base_name), label=info["label"])
+    if selected:
+        missing = [k for k in info["required_keys"] if not selected.get(k)]
+        if not missing:
+            try:
+                return info["make"](selected, config)
+            except Exception as e:
+                _fallback(strict, "%s 初始化失败：%s" % (info["label"], e), label=info["label"])
+        else:
+            _fallback(strict, "%s 实例「%s」缺 %s"
+                      % (info["label"], selected.get("name") or base_name or "default",
+                         "/".join(missing)), label=info["label"])
+    elif not _named_bases(config, backend):
+        _fallback(strict, "未配置 %s 实例（需 %s）"
+                  % (info["label"], "/".join(info["required_keys"])), label=info["label"])
     # 默认 / 兜底：本地
-    lc = config.get("local")
-    if not isinstance(lc, dict):
-        # 配置写坏了（例如 local: 后面跟了字符串而非缩进子项）时，
-        # 与其抛 AttributeError，不如说清楚哪写错了。
-        if lc is not None:
-            print("[warn] config 的 local 段格式不对（应为缩进的 data_dir: ...），"
-                  "已退回默认 data/ 目录", file=sys.stderr)
-        lc = {}
-    data_dir = lc.get("data_dir") or "data"
-    if not os.path.isabs(data_dir):
-        data_dir = os.path.join(_SKILL_DIR, data_dir)
-    from .local import LocalAdapter
-    return LocalAdapter(data_dir, config)
+    return _make_local(None, config)
 
 
 def get_partdb(config: dict = None):
@@ -232,3 +389,13 @@ def get_partdb(config: dict = None):
     except Exception as e:
         print(f"[warn] PartDB 初始化失败：{e}", file=sys.stderr)
         return None
+
+
+def _seatable_bases(config: dict) -> dict:
+    """已废弃：SeaTable 专用的命名实例解析。
+
+    保留为**兼容别名**，只为不让仓库外可能存在的 `import _seatable_bases` 断掉。
+    新代码请用通用的 :func:`_named_bases`（或公开的 :func:`get_base_config`）——
+    后端专属的解析路径正是本次要消灭的东西。
+    """
+    return _named_bases(config, "seatable")

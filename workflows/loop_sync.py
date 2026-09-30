@@ -30,6 +30,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from adapters import schema
+from adapters.base import backend_of
 from domain.order_to_cash import BusinessStore
 
 # 控制平面表名 -> (本地 CSV 表名, 云端 SeaTable 表名, 主键列, 列定义常量)
@@ -45,9 +46,15 @@ DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 
 def _columns_of(cloud_table: str) -> list[dict]:
-    """云端表列定义（建表用）。所有列统一用 text：控制平面是台账，不做类型魔法。"""
+    """云端表列定义（建表用），**中立形态** ``{"name": ..., "type": ...}``。
+
+    所有列统一用 text：控制平面是台账，不做类型魔法。
+    中立形态是所有后端通用的列定义词表（见 adapters/schema.py）；
+    SeaTableAdapter 两种形态都能吃，但此后统一用中立形态 ——
+    上层不该知道某个后端私有的字段名（``column_name``/``column_type``）。
+    """
     cols = getattr(schema, MAPPING[_local_name(cloud_table)][3])
-    return [{"column_name": c, "column_type": "text"} for c in cols]
+    return [{"name": c, "type": "text"} for c in cols]
 
 
 def _local_name(cloud_table: str) -> str:
@@ -58,26 +65,28 @@ def _local_name(cloud_table: str) -> str:
 
 
 def ensure_tables(adapter, apply: bool = False) -> dict:
-    """确保四张云端表存在。返回 {云端表名: "created"/"exists"}。"""
+    """确保四张云端表存在。返回 {云端表名: "created"/"exists"/"would_create"}。
+
+    建表是**后端能力**，走 adapter.ensure_table()。不再读 adapter._meta /
+    调 adapter._base() / 拼 adapter._h 裸 POST /tables/ —— 那 4 个私有属性
+    在 LocalAdapter 上必然 AttributeError，且让本模块换不了后端。
+    """
+    from adapters.base import CAP_SCHEMA_MANAGE, backend_of, supports
     adapter.auth()
-    adapter._ensure_meta()
-    existing = {t["name"] for t in adapter._meta["tables"]}
+    if not supports(adapter, CAP_SCHEMA_MANAGE):
+        raise RuntimeError(
+            "当前后端（%s）不支持通过 API 建表，无法确保控制平面表存在；"
+            "请人工预建这四张表后重试：%s"
+            % (backend_of(adapter), " / ".join(MAPPING[k][1] for k in MAPPING)))
     result = {}
     for local, (_l, cloud, _key, _cols) in MAPPING.items():
-        if cloud in existing:
+        if adapter.table_exists(cloud):
             result[cloud] = "exists"
             continue
         if not apply:
             result[cloud] = "would_create"
             continue
-        import requests
-        r = requests.post(
-            adapter._base() + "/tables/",
-            headers={**adapter._h, "Content-Type": "application/json"},
-            json={"table_name": cloud, "columns": _columns_of(cloud)}, timeout=30)
-        r.raise_for_status()
-        adapter._meta = None  # 失效缓存，下次重拉
-        result[cloud] = "created"
+        result[cloud] = adapter.ensure_table(cloud, _columns_of(cloud))
     return result
 
 
@@ -124,7 +133,7 @@ def sync(apply: bool = False, only: set[str] | None = None,
     if adapter is None:
         from adapters.factory import get_adapter
         adapter = get_adapter(base_name="crm")
-        if not hasattr(adapter, "auth"):  # 退回 local 模式了
+        if backend_of(adapter) == "local":  # 工厂退回 local 模式了
             return {"error": "未配置 CRM Base（seatable.bases.crm），无法同步云端。"}
 
     store = BusinessStore(data_dir)

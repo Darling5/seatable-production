@@ -153,6 +153,13 @@ wechat:
   db_path: ""            # 引擎B：merge_all.db 绝对路径，留空=自动搜索
   watch_groups: []       # 要监控的群名/群ID列表；留空=所有群（群多时首拉很慢）
   max_hours: 48          # 首次拉取回看时长（小时）
+  # 群消息核对（wx/wxmatch.py）要往哪个 SeaTable Base 写。留空即可，绝大多数情况不用填：
+  #   解析链 = ① `seatable.bases` 里的 `business` → ② 这里的 `wx.business_base` 指定的 Base 名
+  #            → ③ `seatable.default_base`（出厂默认，本机是 production）
+  # 只有在「群消息写库单独占一个 Base」的部署形态下才需要填第 ② 步。
+  # ⚠️ 写路径不许静默降级：backend=seatable 却解析不出任何可用 Base 时会**直接抛错**
+  #    （记成 blocked），绝不退回 local —— 否则「写线上」会变成「写本地 CSV」且读回照样通过。
+  business_base: ""
   # 发言人别名映射（wxid/微信号 -> 显示名）。优先级最高：同一人多个账号/多个昵称
   # （如企微号显示真名、个人小号是另一个昵称）时，统一聚合到一个名字下。
   # 示例（请换成你自己的）：

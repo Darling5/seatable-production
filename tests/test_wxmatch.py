@@ -308,3 +308,136 @@ for p in (tmp_ev, tmp_prj):
         os.remove(p)
     except OSError:
         pass
+
+# ---------------------------------------------------------------- 测试 9：业务 Base 解析（unittest）
+# 背景（2026-09-30）：_get_business_adapter 旧实现只认 `seatable.business` 这一个命名
+#   Base，而本机 config.yaml 用的是 `seatable.bases:` 命名形态、**根本没有** business ——
+#   于是 backend=seatable 时它必然抛 RuntimeError，apply 写入路径在本机 100% 死掉。
+#   下面用「形如本机 config.yaml」的**虚构**配置钉住新的命名 Base 解析链：
+#     ① 显式命名（business / wx.business_base）→ ② 出厂默认 Base（default_base）。
+#   认证全程由 requests.get stub 拦下，不联网、不碰线上 SeaTable。
+import unittest  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+from adapters.local import LocalAdapter  # noqa: E402
+from adapters.seatable import SeaTableAdapter  # noqa: E402
+
+
+def _cfg_text(bases, default_base="production", backend="seatable",
+              legacy=True, business_base=None):
+    """按 config.yaml 的形态拼一段 YAML。
+
+    ``legacy=True`` 时带上旧的扁平 api_token/base_uuid —— 本机 config.yaml 就是
+    「扁平兼容口 + bases 命名形态」并存的写法，不带上就不是真实配置形态。
+    """
+    lines = ["backend: %s" % backend, "local:", "  data_dir: data", "seatable:",
+             '  server: "https://cloud.seatable.cn"']
+    if legacy:
+        lines += ['  api_token: "flat-token"', '  base_uuid: "flat-uuid"']
+    lines += ["  default_base: %s" % default_base, "  bases:"]
+    for name, token, uuid in bases:
+        lines += ["    %s:" % name, '      api_token: "%s"' % token,
+                  '      base_uuid: "%s"' % uuid,
+                  '      server: "https://cloud.seatable.cn"']
+    if business_base:
+        lines += ["wx:", "  business_base: %s" % business_base]
+    return "\n".join(lines) + "\n"
+
+
+class _CfgResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
+def _fake_requests_get(url, headers=None, params=None, timeout=None):
+    """拦掉认证/元数据请求：不联网也能把 SeaTableAdapter.auth() 跑完。"""
+    if url.endswith("app-access-token/"):
+        return _CfgResponse({"access_token": "access-fake",
+                             "dtable_server": "https://gateway.example"})
+    return _CfgResponse({"metadata": {"tables": [], "links": [], "uuid": "u"}})
+
+
+class BusinessBaseResolutionTests(unittest.TestCase):
+    """_get_business_adapter 的命名 Base 解析链 —— 形如本机 config.yaml 的离线回归。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="wxmatch_cfg_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.addCleanup(setattr, wm, "CONFIG_PATH", wm.CONFIG_PATH)
+        self.addCleanup(wm._BIZ_CACHE.clear)   # 缓存是进程级的，用例间必须隔离
+        wm._BIZ_CACHE.clear()
+
+    def _use_cfg(self, text):
+        path = os.path.join(self.tmp, "config.yaml")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        wm.CONFIG_PATH = path
+
+    def _resolve(self):
+        with patch("adapters.seatable.requests.get", side_effect=_fake_requests_get):
+            adapter, backend = wm._get_business_adapter()
+        # 证明确实走了 auth()（而不是压根没认过证 / 真的联了网）
+        self.assertEqual(adapter._access, "access-fake")
+        return adapter, backend
+
+    def test_named_default_base_falls_back_to_production(self):
+        """本机形态：bases{production,tasks} + default_base=production，无 business。"""
+        self._use_cfg(_cfg_text([("production", "prod-token", "prod-uuid"),
+                                 ("tasks", "task-token", "task-uuid")]))
+        adapter, backend = self._resolve()
+        self.assertEqual(backend, "seatable")
+        self.assertIsInstance(adapter, SeaTableAdapter)
+        self.assertEqual(adapter.base_name, "production")
+        self.assertEqual(adapter.uuid, "prod-uuid")
+        self.assertEqual(adapter.token, "prod-token")
+
+    def test_explicit_business_base_wins_over_default(self):
+        """显式命名 business 优先于出厂默认 Base。"""
+        self._use_cfg(_cfg_text([("production", "prod-token", "prod-uuid"),
+                                 ("business", "biz-token", "biz-uuid")]))
+        adapter, backend = self._resolve()
+        self.assertEqual(backend, "seatable")
+        self.assertEqual(adapter.base_name, "business")
+        self.assertEqual(adapter.uuid, "biz-uuid")
+
+    def test_wx_business_base_override(self):
+        """wx.business_base 指定的 Base 生效。"""
+        self._use_cfg(_cfg_text([("production", "prod-token", "prod-uuid"),
+                                 ("tasks", "task-token", "task-uuid")],
+                                business_base="tasks"))
+        adapter, _ = self._resolve()
+        self.assertEqual(adapter.base_name, "tasks")
+        self.assertEqual(adapter.uuid, "task-uuid")
+
+    def test_no_usable_base_still_fails_closed(self):
+        """解析不出任何可用 Base → 仍必须抛错，绝不静默退回本地库。"""
+        cases = {
+            "没有 seatable 段": _cfg_text([], legacy=False, default_base=""),
+            "bases 为空": _cfg_text([]),
+            "default_base 指向不存在的 Base": _cfg_text([("production", "p", "u")],
+                                                        default_base="crm"),
+            "production 缺 api_token": _cfg_text([("production", "", "prod-uuid")]),
+        }
+        for label, text in cases.items():
+            with self.subTest(case=label):
+                self._use_cfg(text)
+                with self.assertRaises(RuntimeError) as ctx:
+                    wm._get_business_adapter()
+                self.assertIn("拒绝退回本地库", str(ctx.exception))
+
+    def test_local_backend_returns_local_adapter(self):
+        """backend=local：即便一个 Base 都解析不出来，也不许因此报错。"""
+        self._use_cfg(_cfg_text([], backend="local", legacy=False, default_base=""))
+        adapter, backend = wm._get_business_adapter()
+        self.assertEqual(backend, "local")
+        self.assertIsInstance(adapter, LocalAdapter)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

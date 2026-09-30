@@ -59,6 +59,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
 DATA = os.path.join(HERE, "data")
+CONFIG_PATH = os.path.join(HERE, "config.yaml")
 EVENTS_PATH = os.path.join(DATA, "微信事件.csv")
 PROJECTS_PATH = os.path.join(DATA, "项目.csv")
 MATCH_PATH = os.path.join(DATA, "核对结果.csv")
@@ -554,38 +555,82 @@ def scan_arrivals(days=7):
 _BIZ_CACHE: dict = {}
 
 
+def _factory_biz_adapter(cfg, base_name=None):
+    """经 adapters.factory 解析一个命名 Base，返回**已 auth** 的 SeaTableAdapter。
+
+    全程走工厂、不再 import 具体适配器类 —— 这样「多底座可插拔」（自定义 Base 名、
+    按 Base 隔离的 token 与元数据缓存）对写路径才真正生效。
+
+    解析不出可用 Base 时返回 None（缺 api_token/base_uuid，或工厂降级回了
+    LocalAdapter），由调用方决定「抛错」还是「退回本地」—— 写路径的 fail-closed
+    由调用方把关，这里不做决定。
+
+    进程内按 (server, base_uuid, base_name) 复用同一实例：SeaTableAdapter 的
+    _server 要 auth() 之后才有值，且列选项映射有缓存 —— 每条写入都新建实例会
+    既慢又白拉元数据；key 里带 Base 名，一个进程里多个 Base 也不会串味。
+    """
+    from adapters.base import backend_of
+    from adapters.factory import get_adapter, get_base_config
+    selected = get_base_config(cfg, base_name)
+    if not (selected and selected.get("api_token") and selected.get("base_uuid")):
+        return None
+    adapter = get_adapter(cfg, base_name=base_name)
+    # 工厂在「SeaTable 初始化失败/凭证缺失」时会**静默降级**成 LocalAdapter
+    # （见 factory._fallback）。写路径吃下这个降级就等于把线上写入变成写本地 CSV，
+    # 所以这里必须再确认一次拿到的确实是 SeaTable 适配器 —— 按**后端标识**判断，
+    # 不再嗅探类名（换个类名/包一层就失效）。
+    if backend_of(adapter) != "seatable":
+        return None
+    key = (adapter.server, adapter.uuid, adapter.base_name)
+    if _BIZ_CACHE.get("key") != key:
+        adapter.auth()   # ← 必须：不 auth 则 _server=None，写入必定抛异常
+        _BIZ_CACHE["key"], _BIZ_CACHE["adapter"] = key, adapter
+    return _BIZ_CACHE["adapter"]
+
+
 def _get_business_adapter():
-    """复用 wechat_intake 的业务 Base adapter 初始化（不 import 整个模块避免副作用）。
+    """按「命名 Base」解析写入适配器，返回 (adapter, "seatable" | "local")。
+
+    解析链（2026-09-30 修）：
+      ① 显式命名 Base：先 `seatable.bases` 里的 `business`，再 `wx.business_base`
+         指定的 Base 名 —— 留给「群消息写库单独占一个 Base」的部署形态；
+      ② 出厂默认 Base：`get_base_config(cfg, None)`，即 `seatable.default_base`
+         —— 本机 config.yaml 把它设成 production。wxmatch 写的是到货/发货类
+         生产业务表，这些表就在 production 这个 Base 里，语义正确。
+
+    为什么改：旧实现只认 `seatable.business` 这一个命名 Base，而本机 config.yaml
+    用的是 `seatable.bases:` 命名形态、**根本没有** business —— 于是配置里 backend
+    写着 seatable、`has_biz` 却恒为 False，必然抛 RuntimeError，wxmatch 的写入
+    路径（apply）在本机 100% 死掉。旧实现还直接 new SeaTableAdapter、绕过工厂，
+    「多底座可插拔」对写路径无效。
 
     ⚠️ 写路径**不许静默降级**（审计 2026-09-27）：配置写着 backend=seatable 却
-    拿不到业务 Base 凭证时，绝不退回 LocalAdapter —— 那会把「写 SeaTable」
+    解析不出任何可用 Base 时，绝不退回 LocalAdapter —— 那会把「写 SeaTable」
     变成「写本地 CSV」，读回还照样「通过」。这种配置下直接抛错，由调用方
     记成 blocked，而不是伪造成功。
     """
     import yaml
-    cfg_path = os.path.join(HERE, "config.yaml")
-    if not os.path.exists(cfg_path):
+    if not os.path.exists(CONFIG_PATH):
         raise RuntimeError("缺少 config.yaml，无法确定写入目标（拒绝退回本地库）")
-    with open(cfg_path, "r", encoding="utf-8") as f:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
-    biz = (cfg.get("seatable") or {}).get("business") or {}
     backend = str(cfg.get("backend") or "local").lower()
-    has_biz = bool(biz.get("api_token") and biz.get("server") and biz.get("base_uuid"))
-    if has_biz:
-        # 进程内复用同一实例：SeaTableAdapter 的 _server 要 auth() 之后才有值，
-        # 且列选项映射有缓存 —— 每条写入都新建实例会既慢又白拉元数据。
-        key = (biz["server"], biz["base_uuid"], biz.get("base_name", "business"))
-        if _BIZ_CACHE.get("key") != key:
-            from adapters.seatable import SeaTableAdapter
-            adapter = SeaTableAdapter(biz["api_token"], biz["server"], biz["base_uuid"],
-                                      base_name=biz.get("base_name", "business"))
-            adapter.auth()   # ← 必须：不 auth 则 _server=None，写入必定抛异常
-            _BIZ_CACHE["key"], _BIZ_CACHE["adapter"] = key, adapter
-        return _BIZ_CACHE["adapter"], "seatable"
     if backend == "seatable":
+        # ① 显式命名（business / wx.business_base）→ ② 出厂默认 Base
+        explicit = [n for n in ("business",
+                                (cfg.get("wx") or {}).get("business_base")) if n]
+        for name in explicit:
+            adapter = _factory_biz_adapter(cfg, name)
+            if adapter is not None:
+                return adapter, "seatable"
+        adapter = _factory_biz_adapter(cfg, None)
+        if adapter is not None:
+            return adapter, "seatable"
         raise RuntimeError(
-            "backend=seatable 但 seatable.business 的 api_token/server/base_uuid "
-            "不完整 —— 拒绝退回本地库（否则会把线上写入变成写本地 CSV）")
+            "backend=seatable 但解析不出任何可用 Base（seatable.bases / "
+            "seatable.default_base / wx.business_base 都取不到可用的 "
+            "api_token+base_uuid，或 SeaTable 适配器初始化失败）"
+            " —— 拒绝退回本地库（否则会把线上写入变成写本地 CSV）")
     from adapters.local import LocalAdapter
     return LocalAdapter(os.path.join(HERE, "data"), cfg), "local"
 

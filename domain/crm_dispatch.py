@@ -197,21 +197,14 @@ def add_follow(a, lead_row_id: str, data: Mapping[str, Any],
 def _link_single(a, follow_row_id: str, lead_row_id: str) -> None:
     """单向设置跟进记录的「客户线索」关联（不动线索侧，避免替换历史）。
 
+    走适配器的 link_one_way()：只写跟进记录一侧的关联列，完全不碰线索表。
+    以前是借 a._base() / a._h 裸发 PUT —— 两个私有属性，换后端必崩。
     测试桩适配器（带 stub_mode 标记）走内存路径。
     """
     if getattr(a, "stub_mode", False):
         a.link(FOLLOW_TABLE, LEAD_TABLE, LEAD_LINK_ID, follow_row_id, [lead_row_id])
         return
-    import requests
-    r = requests.put(a._base() + "/links/", headers={**a._h, "Content-Type": "application/json"},
-                     json={
-                         "link_id": LEAD_LINK_ID,
-                         "table_name": FOLLOW_TABLE,
-                         "other_table_name": LEAD_TABLE,
-                         "row_id_list": [follow_row_id],
-                         "other_rows_ids_map": {follow_row_id: [lead_row_id]},
-                     }, timeout=30)
-    r.raise_for_status()
+    a.link_one_way(FOLLOW_TABLE, LEAD_TABLE, LEAD_LINK_ID, follow_row_id, [lead_row_id])
 
 
 def _cli_idem_key(args, prefix: str, *business_parts: str) -> str:

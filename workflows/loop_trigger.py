@@ -22,6 +22,7 @@ import sys
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
+from adapters.base import CAP_READ, backend_of, supports
 from domain.order_to_cash import Service
 
 DEFAULT_DATA_DIR = os.path.join(HERE, "data", "business_loop")
@@ -40,7 +41,7 @@ def _scan_leads() -> tuple[list[dict], object]:
     """拉取 CRM 销售线索表并按客户名去重（保留首条）。返回 (线索列表, adapter)。"""
     from adapters.factory import get_adapter
     adapter = get_adapter(base_name="crm")
-    if not hasattr(adapter, "auth"):
+    if backend_of(adapter) == "local":   # 工厂退回 local 模式了
         print("[!] 未配置 CRM Base，无法扫描来单线索。")
         return [], adapter
     adapter.auth()
@@ -101,7 +102,7 @@ def trigger(apply: bool = False, data_dir: str = DEFAULT_DATA_DIR,
     existing = _existing_customers(svc)
     leads, adapter = _scan_leads()
     follow_map = {}
-    if leads and hasattr(adapter, "list_rows"):
+    if leads and supports(adapter, CAP_READ):
         # 一次性拉跟进记录，按线索 row_id 建索引（避免逐条重复拉全表）
         try:
             follow_rows = adapter.list_rows("客户线索跟进记录")
