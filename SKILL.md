@@ -1,9 +1,10 @@
-# 生产交付协同助手（v2.1.0）
+# 生产交付协同助手（v2.1.2）
 
 **描述**：通过自然语言控制「生产」业务数据的增删改查，覆盖项目立项 → 生产计划 → 采购 → 生产执行 → 库存核对 → 发货 → 维修售后的完整周期，并支持工时/成本/质量/供应链四维分析。
 
 **本版最大变化（vs 旧版）**：
-- ✅ **多底座可插拔（v2.1.0 · 第 0 期地基）**。契约层 `adapters/base.py` 重写为**三层**（必修方法 / 能力声明 / 可选方法）+ 12 个能力位；`adapters/factory.py` 重写为**后端注册表**——新增一个后端只需「实现 8 个必修方法 + 在 `schema.BACKEND_TYPES` 加类型映射 + `register_backend()` 登记一行 + 加契约测试」，**不用改工厂一行代码**。第 0 期不新增后端，只铺地基；后续按 **飞书 → 简道云 → 禅道 → 金蝶** 推进。详见 §0.5。
+- ✅ **多底座可插拔 · 已落地 5 个业务后端（v2.1.2）**。契约层 `adapters/base.py` 重写为**三层**（必修方法 / 能力声明 / 可选方法）+ 12 个能力位；`adapters/factory.py` 重写为**后端注册表**——新增一个后端只需「实现 8 个必修方法 + 在 `schema.BACKEND_TYPES` 加类型映射 + `register_backend()` 登记一行 + 加契约测试」，**不用改工厂一行代码**。现状：**local / seatable / feishu（多维表格）/ feishu_task（飞书任务）/ jiandaoyun / zentao** 六个后端，路线图最后一项金蝶未开工。详见 §0.5。
+- ✅ **协议事实一律实测，不照文档猜（v2.1.x）**。飞书多维表格 4 轮只读探测 + 飞书任务 4 轮读写探测（共约 40 条实测事实）+ 禅道 2 轮全量探测（88 路径可用性矩阵，实体 10→16）；**简道云是唯一例外**（无实测环境，全部来自官方文档，模块内逐条标注 ⚠️）。
 - ✅ **修掉三个历史静默失败**（v2.1.0）：① `SeaTableAdapter.list_linked` 的**空桩** `return []`（命令成功、返回空、无报错）；② `wx/wxmatch.py` 写入路径**在本机 100% 死掉**（只认命名 Base `business`，而本机用 `bases:` 形态）；③ `factory` 对未知 `backend` 值**静默**返回 local（会把「写线上」变成「写本地 CSV」且读回照样通过）—— 现在至少会打 `[warn]`，而**写入路径**（`strict=True`）直接抛错拒绝退回。
 - ✅ **彻底解耦后端**。领域知识（流程、表规则、格式、分析公式）与存储完全分离。
 - ✅ **零配置开箱即用**。默认 `local` 后端，数据存本地 CSV/Excel，**不需要任何 SeaTable 账号，也不需要 PartDB**，离线就能用。
@@ -29,6 +30,8 @@
 
 | 版本 | 日期 | 一句话 |
 |---|---|---|
+| **v2.1.2** | **10-01** | ★★**多底座第 4 期 — 飞书任务（Task）底座** + **禅道全量摸透**。飞书在项目管理上是**两个产品两套 API**：多维表格（第 1 期）与**任务**（本期）。映射：表=任务清单、行=任务、`__row_id__`=guid、列=内置属性+清单自定义字段。① 4 轮真实读写探测拿到约 18 条事实，**6 条与直觉相反**：`tasks.patch` 的 `update_fields` 是**必填的固定 14 项白名单**且 `members` 不在其中、列了就必须给非空值（否则**全盘失败**不是忽略）、给了没列则**静默忽略**、`tasklists.tasks` 是**只有 7 个键的摘要投影**（拿它当行会让所有详情列看起来「本来就是空的」）、`tasks.get` 对不存在 guid **抛 1470404**（不是回空）、`tasks.create` 不带清单照样成功 → **孤儿任务**任何清单都看不到。② `--yes` 是另一条命令分界线（high-risk-write 不加时服务端**什么都没做**、rc=**10**）。③ 单选**写入必须给选项 guid**、读回来也是 guid → 写名/读 guid 不对称。④ 禅道第二轮实测（实体 10→16）补 17 条事实。⑤ **三重验证**：离线契约 **86 项**、真实只读 **24/24** + 写路径 **56/56**、反向验证 **14/14** 守卫「退回即断言失败」。⑥ 反向验证抓到 1 个真实缺陷（`get_row` 未翻译 1470404）+ 1 个测试盲区（两处「关注人」写入分支均无测试，退回后仍全绿）。测试 742 → **828 全绿**。详见 `CHANGELOG.md`。 |
+| **v2.1.1** | **09-30** | ★★**多底座第 1～3 期 — 飞书多维表格 / 简道云 / 禅道三个后端**。① `feishu`（多维表格 Base）：4 轮只读探测**全部协议事实实测**，含 `PUT /rows/` 覆盖语义、关联字段双向**双列**、字段类型大小写混用等；真实 Base 只读端到端验证 + 「零写请求」取证。② `jiandaoyun`（简道云 API v5）：⚠️ **唯一一个全部来自官方文档、无实测环境**的后端 —— 模块内逐条标注 ⚠️，接真实企业第一件事是跑 `tools/verify_jiandaoyun.py --read-only` 核对推断（尤其**日期按 UTC 存**与**格式不合法的值被静默写成空**两条）。③ `zentao`（禅道 REST v2）：**唯一「实体与字段系统固定、不能建表」**的底座，故 `schema.BACKEND_TYPES` **刻意不给它类型表**（硬凑会让人误以为能建列），`ensure_table()` 老实抛 `Unsupported`；2 轮全量探测（19 资源 × 88 路径可用性矩阵）；写「项目」有实测副作用（顺手建**同名产品**、且名字**用过一次不可回收**）。 |
 | **v2.1.0** | **09-30** | ★★**多底座改造 · 第 0 期地基**（业主原话：「把这套生产经理的第二大脑整体也兼容……适配更多不同的底座，比如 partdb 简道云 飞书多维表格 禅道 金蝶等」→「我肯定是要全套支持」）。**本期不新增后端**，只把「接一个新后端」的代价从「改 6 处硬编码 + 碰 4 个私有属性」降到「登记一行」。① `adapters/base.py` 重写为**三层契约**（必修方法 / 能力声明 / 可选方法）+ 12 个能力位 + `Unsupported` 铁律。② 🔴 修掉 `list_linked` **空桩**（`return []` 静默失败；根因 `GET /links/` = 405、`metadata` 顶层**无 `links` 键** → 旧 `_resolve_link_id` 是从未走通的死代码）。③ 新增 `link_append()` / `link_one_way()`，`crm_dispatch` 去私有属性。④ `factory.py` 重写为**后端注册表**，未知后端不再静默（默认 warn + 退回 local，写入路径 `strict=True` 抛错拒绝退回）。⑤ 🔴 `wx/wxmatch.py` 写入路径**复活**（旧实现只认命名 Base `business`，而本机用 `bases:` 形态 → 必然抛 RuntimeException，本机 100% 死）。⑥ 类型归一中立化 + `link_id_for()` 方向敏感。⑦ 4 轮只读探测推翻多项旧假设（`POST /links/` 契约、双向关联**双列**、`schema.LINKS` 的 `PlAl`/`RsAl` 不存在等）。测试 **403 → 466 全绿** + 真实 Base **只读**端到端验证通过（含「零写请求」取证）。详见 §0.5 与 `references/changelog.md`。 |
 | **v2.0.0** | **09-26** | ★★★**断代版**。① **可信执行层 v1**：统一写库授权（**高置信 ≠ 授权**，`wx/wxmatch.py apply` 无 `--grant-file` 只列清单）、副作用分级契约、`application/runner.py` DAG 执行器、`application/dataservice.py` 读回验证+幂等+台账、**发布门禁** `application/gates.py`（关键阶段失败即阻断发布）。详见 `docs/trusted-execution-v1.md`。② **二期「单项目第二大脑」** `project_brain.py`（上下文/行动/证据/记忆，先预演再授权才执行）。③ **三期「项目决策辅助」** `decision_support.py`（三日期+关键路径、方案比较、延期传播、预测复盘带防未来信息审计，只读离线）。④ **仓库结构重组**：44 个顶层脚本按域归组，命令由 `python op.py` 变为 `python domain/op.py`。⑤ 修 `domain/order_to_cash.py` / `workflows/loop_sync.py` 整理后无法直接执行的回归。 |
 | v1.9.0 | 09-15 | 内部版本（**未单独发版，已并入 v2.0.0**）：甘特三状态 + 微信图片离线解密/OCR + 供应商群自动纳入 + 双班自动化 |
@@ -59,7 +62,8 @@
 ```yaml
 backend: local          # 已登记后端名（见 adapters/factory.py::list_backends()）：
                         #   local（默认，零配置）| seatable | feishu（飞书多维表格）
-                        #   | jiandaoyun（简道云）| zentao（禅道）
+                        #   | feishu_task（飞书任务/待办）| jiandaoyun（简道云）
+                        #   | zentao（禅道）
                         # 路线图最后一项金蝶尚未接入；未登记的名字不会静默退回（见下）。
 local:
   data_dir: data
@@ -124,8 +128,13 @@ python3 domain/op.py list 生产计划                   # ③ 实际能不能�
 
 ## 0.5 多底座适配器契约（改适配器 / 新增后端必读）
 
-目标是把整套系统做成**多底座可插拔**（SeaTable / 飞书多维表格 / 简道云 / 禅道 / 金蝶 / …）。
+目标是把整套系统做成**多底座可插拔**（SeaTable / 飞书多维表格 / **飞书任务** / 简道云 / 禅道 / 金蝶 / …）。
 契约层在 `adapters/base.py`，后端注册表在 `adapters/factory.py`。
+
+> ⚠️ **飞书是两个后端，不是一个**：`feishu` = **多维表格（Base）**，
+> `feishu_task` = **任务（Task）**。两者除了都叫「飞书」外没有共同点 ——
+> 没有共同的表概念、没有共同的 id 空间，连「写一个字段」的语义都不同
+> （Base 是整条 record 覆盖，Task 是 `update_fields` **白名单**）。详见 §0.6。
 
 ### 三层契约
 
@@ -212,6 +221,86 @@ class Unsupported(NotImplementedError):   # 继承 NotImplementedError，老代�
 - **简道云（`jiandaoyun`）的全部协议细节来自官方文档、无实测环境**：接入真实企业时
   第一件事是跑 `tools/verify_jiandaoyun.py --read-only` 逐条核对 `adapters/jiandaoyun.py`
   里那些标注了 ⚠️ 的推断（尤其是**日期按 UTC 存**与**格式不合法的值会被静默写成空**两条）
+- **飞书任务（`feishu_task`）刻意不声明三项能力**：`CAP_LINK` / `CAP_LINK_READ`
+  （任务的 `dependencies` 是**任务↔任务**不是表↔表，实测**只读**且在本机 99 条任务里
+  **全为空** → 「读出来是空」与「这字段根本不生效」无法区分，硬做等于猜）、
+  `CAP_BATCH_WRITE`（任务 API 没有批量创建接口）、`CAP_IDEMPOTENT` /
+  `CAP_OPTIMISTIC_LOCK`（删除不幂等、无行版本号）。`link()` 与 `list_linked()`
+  **如实抛 `Unsupported`**。
+- **飞书任务两种自定义字段类型的值键未实测**：`multi_select` 与 `datetime` 的
+  写入路径是按同构推断实现的（`multi_select_value` / `datetime_value`），
+  `member` / `single_select` / `text` / `number` 四种已实测。首次用到前请先跑
+  `tools/verify_feishu_task.py --write-test`（会在一次性清单里跑完整读写并清理）。
+- **飞书任务的成员写入不是并发安全的**：`members add` 是**追加**、`remove` 只摘指定
+  `(id, role)`，「改负责人」实际是**读-改-写**（先读当前成员再算增删）。同一任务被
+  并发改成员时可能丢失更新 —— 与 `SeaTableAdapter.link_append()` 的已知局限同类。
+- **飞书项目（Meego / Meegle）尚未打通**：实测路由全在（`/open_api/authen/plugin_token`
+  401、`user_plugin_token` 401、`refresh_token` 400、`work_item/filter` 500），
+  但 **lark-cli 的 OAuth token 打不了它** —— 它要 `plugin_id` + `plugin_secret`，
+  须**空间管理员**在飞书项目开放平台建插件后发布。官方 CLI 是 `meego-cli`（本机未装）。
+
+---
+
+## 0.6 飞书任务后端（`backend: feishu_task`）· 操作前必读
+
+飞书在项目管理上是**两个产品、两套 API**：
+`feishu` = **多维表格（Base / Bitable）**，路径 `/open-apis/bitable/v1`；
+`feishu_task` = **任务（Task / 待办）**，路径 `/open-apis/task/v2`。
+
+**映射关系**：表 = **任务清单（tasklist）**（可用清单名或 guid）；行 = **任务**；
+`__row_id__` = 任务的 **guid**；列 = 任务内置属性（摘要/描述/完成状态/开始/截止/负责人/
+关注人/里程碑…）+ 该清单的**自定义字段**。
+
+**本机实测的清单**：「项目」（99 条任务）与「付款」（70 条任务）。
+「项目」清单有 6 个自定义字段：**优先级**（单选：高/中/低/搁置）、**项目预算**（number/cny）、
+**工时**（number，符号「/人天」）、**状态**（单选：进行中/已完成/暂停中/执行异常/已延迟/已取消）、
+**配合人员**（member）、**任务完成度**（number/percentage）。分组：研发 / 采购 / 生产 / 商务 / 品宣 / 公司运营。
+
+### ⚠️ 六条「与直觉相反」的实测事实（全在 `adapters/feishu_task.py` 顶部 docstring）
+
+1. **`tasks.patch` 的 `update_fields` 是必填的、固定 14 项白名单**，且 **`members` 不在其中**
+   → 改负责人/关注人**只能**走 `members add` / `members remove`，走 `patch` 一定失败。
+2. **`update_fields` 列了就必须给非空值**：列了 `summary` 而 body 里没有 → `1470400`
+   且**整条调用失败**（不是「忽略那一项」）。
+3. **给了却没列 → 静默忽略**：body 塞 `description`、`update_fields` 只写 `summary`，
+   调用**成功**且 `description` 原文不动 —— **只看返回值发现不了**。
+   （适配器让两者由**同一个 dict 派生**，从结构上使 2/3 不可能发生。）
+4. **`tasklists.tasks` 是摘要投影，不是详情**：列表项**只有 7 个键**
+   （`completed_at / due / guid / members / start / subtask_count / summary`），
+   连 `description` 都没有；而 `tasks.get` 返回 **28 个键**。
+   **拿列表当行用，会让所有详情列看起来「本来就是空的」** → `list_rows()` 逐条补详情（N+1），
+   只想要摘要请显式用 `list_rows_brief()`。
+5. **`tasks.get` 对不存在的 guid 抛 `1470404 not_found`**（不是回空 `data.task`）
+   → `get_row()` 必须翻译该错误码为 `None`，其余错误照抛。
+6. **`tasks.create` 不带 `tasklists` 照样成功** → 任务成为**孤儿**，任何清单都看不到，
+   而调用方以为建好了。适配器的 `append_row()` **强制要求目标清单**。
+
+### 其他要点
+
+- **`--yes` 是另一条命令分界线**：`tasks.delete` / `tasklists.delete` / `sections.delete` /
+  `custom_fields.remove` 是 **high-risk-write**，不加 `--yes` 时服务端**什么都没做**，
+  回 `{"ok":false,"error":{"type":"confirmation",…}}` 且 **rc=10**（既不是 0 也不是 1）。
+  适配器按 `cmd` 自动补，不会漏。
+- **单选写入必须给选项 guid，不能给选项名**（给名字报 `1470400 "isn't a visible option"`），
+  而**读回来也是 guid** → 写名 / 读 guid **不对称**。适配器读向自动翻译成选项名、
+  写向自动把名字翻成 guid。
+- **完成状态不是布尔位**：判据是 `completed_at != "0"`；**取消完成 = patch `completed_at` 为字符串 `"0"`**。
+- **时间字段两种形状**：`due` / `start` 是 `{"timestamp":"<ms>","is_all_day":bool}`；
+  `completed_at` / `created_at` / `updated_at` 是毫秒字符串。
+- **重名会撞车**：内置列与自定义字段可能同名（本机真有一个叫「状态」的自定义字段）。
+  撞车时自定义字段被改名为 `原名(自定义)` 并保留 `origin_name`；**两个自定义字段之间**重名
+  则直接抛 `KeyError`（按名字取值是歧义的）。
+- **创建类接口回的都是包装键**：`data.tasklist.guid` / `data.task.guid` /
+  `data.custom_field.guid` / `data.section.guid`（**不是** `data.guid`）。
+- **没有必填配置键**：飞书任务是**账号级**的，清单（=表）是**方法参数**，
+  凭据复用 `lark-cli` 的登录态。`identity` / `cli_path` 没配就回落 `feishu` 段。
+
+### 怎么自检
+
+```bash
+python tools/verify_feishu_task.py --read-only    # 24 项，安全，随时可跑
+python tools/verify_feishu_task.py --write-test   # 56 项，在一次性清单里跑完整读写并清理
+```
 
 ---
 

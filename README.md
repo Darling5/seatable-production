@@ -238,16 +238,31 @@ python domain/op.py export-excel 生产数据.xlsx
 python cockpit/cockpit.py                      # 生成驾驶舱网页
 ```
 
-**② 接你自己的 SeaTable** — `cp config.yaml.example config.yaml`，填上：
+**② 接你自己的业务底座** — `cp config.yaml.example config.yaml`，改一行 `backend` 即可：
 
 ```yaml
-backend: seatable
+backend: seatable       # 已登记 6 个后端，见 adapters/factory.py::list_backends()
 seatable:
   api_token: "你的Token"
   base_uuid: "你的BaseUUID"
 ```
 
-命令一行都不用改。想退回本地，`backend` 改回 `local`。
+| `backend` | 是什么 | 协议事实来源 |
+|---|---|---|
+| `local` | 本地 CSV/Excel（**默认，零配置**） | — |
+| `seatable` | SeaTable 云 / 私有部署 | 实测 |
+| `feishu` | 飞书**多维表格**（Base / Bitable） | 4 轮只读探测，全部实测 |
+| `feishu_task` | 飞书**任务**（Task / 待办）—— 表=任务清单、行=任务 | 4 轮读写探测，全部实测 |
+| `jiandaoyun` | 简道云 API v5 | ⚠️ **仅官方文档，无实测环境** |
+| `zentao` | 禅道 REST v2（PM 实体） | 2 轮全量探测（88 路径矩阵） |
+
+> ⚠️ **飞书是两个后端，不是一个**：`feishu` 是**多维表格**，`feishu_task` 是**任务**。
+> 两者没有共同的表概念与 id 空间，连「写一个字段」的语义都不同
+> （Base 是整条 record 覆盖，Task 是 `update_fields` 白名单）。
+> `feishu_task` **不需要任何配置键**，凭据复用 `lark-cli` 的登录态。
+
+命令一行都不用改。想退回本地，`backend` 改回 `local`（未登记的后端名不会静默退回，
+写入路径直接抛错）。
 
 **③ 采购库存源：按客户现状选一种**：
 
@@ -741,11 +756,25 @@ python tools/passwords.py show  # 查看当前口令（仅本地 / 私聊）
 | 微信图片 OCR | `rapidocr_onnxruntime`（本机在 `C:\Python311`） |
 | 生成采购订单 PDF | `reportlab` |
 
-**测试**：466 项离线回归测试，不触碰线上数据。
+**测试**：**828 项**离线回归测试，不触碰线上数据。
 
 ```bash
 python -m unittest discover -s tests -q
 ```
+
+除离线单测外，每个真后端都有一个**真实服务端验证器**，默认只读、可安全随时跑：
+
+```bash
+python tools/verify_feishu.py      --read-only   # 飞书多维表格
+python tools/verify_feishu_task.py --read-only   # 飞书任务（24 项）
+python tools/verify_feishu_task.py --write-test  # 飞书任务写路径（56 项，一次性清单+自动清理）
+python tools/verify_jiandaoyun.py  --read-only   # 简道云
+python tools/verify_zentao.py      --read-only   # 禅道
+```
+
+> 「测试全绿」不等于「守卫有效」—— 一个从没被触发过的断言，把守卫代码退回后照样是绿的。
+> 所以关键适配器还做**反向验证**：把每处守卫**逐个临时退回**，确认对应测试**真的变红**，
+> 再恢复并做**字节级 md5 校验**。飞书任务 **14/14** 守卫通过。
 
 [MIT License](LICENSE) © 2026 Darling5
 
