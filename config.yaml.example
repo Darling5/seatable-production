@@ -1,12 +1,13 @@
 # ============================================================
 # 生产交付协同助手 — 配置文件（复制为 config.yaml 后填写）
 # ============================================================
-# 五种后端，开箱默认用 local（零配置、离线、不需要任何账号）
-#   local      本地 CSV / Excel
-#   seatable   SeaTable（见下）
-#   feishu     飞书多维表格（见下；协议事实全部实测）
-#   jiandaoyun 简道云（见下；⚠️ 协议细节来自官方文档，**未经实测**）
-#   zentao     禅道（见下；⚠️ 只覆盖 PM 实体，采购/发货/库存那类表它承载不了）
+# 六种后端，开箱默认用 local（零配置、离线、不需要任何账号）
+#   local       本地 CSV / Excel
+#   seatable    SeaTable（见下）
+#   feishu      飞书多维表格（见下；协议事实全部实测）
+#   feishu_task 飞书任务/待办（见下；飞书侧的**项目管理**底座，协议事实全部实测）
+#   jiandaoyun  简道云（见下；⚠️ 协议细节来自官方文档，**未经实测**）
+#   zentao      禅道（见下；⚠️ 只覆盖 PM 实体，采购/发货/库存那类表它承载不了）
 # ⚠️ backend 写了**未登记**的名字（如金蝶，尚在路线图中）时：
 #    默认只打印 [warn] 并**仍然退回 local**；写入路径（strict=True）会直接抛错 ——
 #    这是有意的：静默退回 local 会把「写线上」变成「写本地 CSV」，而读回校验还会照样通过。
@@ -74,6 +75,36 @@ feishu:
       base_token: ""
   # 只想快速验证连通性：python tools/verify_feishu.py --read-only
   # （只读，不写任何东西；加 --write-test 才会在 ZZ_WB_VERIFY_* 临时表上跑写路径并自动清理）
+
+# ── 飞书任务模式（可选）──────────────────────────────────
+# 飞书侧的**项目管理**底座。⚠️ 与上面的 feishu（多维表格）**不是一套 API**：
+#   feishu      → open.feishu.cn/open-apis/bitable/v1   （通用表格）
+#   feishu_task → open.feishu.cn/open-apis/task/v2      （任务清单/任务/子任务/分组）
+# 映射：**任务清单 = 表，任务 = 行**，任务是方法参数（不是「命名实例」），
+# 所以这一段**没有任何必填键** —— 唯一凭据是 lark-cli 的登录态。
+#
+# 前置：装好并登录 lark-cli（scope 需要 task:task:read / task:task:write /
+#       task:tasklist:read / task:tasklist:write / task:custom_field:read
+#       task:custom_field:write）。
+#
+# ⚠️ 能力边界（实测，别再当 bug 查）：
+#   · ``tasks.patch`` 的 update_fields 是**固定 14 项白名单**，**members 不在其中**
+#     → 改负责人/关注人由适配器自动改走 task members add/remove。
+#   · 列表接口（tasklists.tasks）**只回 7 个摘要字段**，连「描述」都没有
+#     → list_rows() 会逐条补详情（N+1 次调用，100 条任务≈100 次）。
+#     只要摘要请显式用 list_rows_brief()。
+#   · 「任务可以先建、后进清单」：不带清单建的任务是**孤儿**，任何清单都看不到它
+#     → 本适配器的 append_row 强制要求清单。
+#   · 没有「两表各记一次」的关联列模型 → link() / list_linked() 明确抛
+#     Unsupported，**不会**返回空列表冒充「没有关联」。
+#   · 内置列与自定义字段**可能同名**（本机真有一个自定义字段叫「状态」）
+#     → 内置列名永远属于内置列，重名的自定义字段被改名为「状态(自定义)」。
+feishu_task:
+  # cli_path: ""          # 留空则自动查找；不填会回落到上面 feishu 段的同名字段
+  # identity: ""          # user / bot；留空跟随 lark-cli 的默认身份
+  # timeout: 180
+  # 只想快速验证连通性：python tools/verify_feishu_task.py --read-only
+  # 用法：把清单名当表名传给适配器，例如 list_rows("项目") / get_metadata("项目")
 
 # ── 简道云模式（可选）──────────────────────────────────────
 # ⚠️⚠️ 这个后端的协议细节**全部来自官方文档，没有任何实测**（开发机上没有简道云账号）。

@@ -5,6 +5,8 @@
   - local      → LocalAdapter（默认，零配置）
   - seatable   → SeaTableAdapter（填了 api_token + base_uuid 才启用，否则退回 local）
   - feishu     → FeishuAdapter（飞书多维表格；协议事实全部实测）
+  - feishu_task → FeishuTaskAdapter（飞书任务/待办；飞书侧的**项目管理**底座，
+                 与 feishu 不是一套 API，协议事实全部实测）
   - jiandaoyun → JiandaoyunAdapter（简道云 API v5；⚠️ 协议细节**未经实测**，
                  见 adapters/jiandaoyun.py 顶部说明）
 
@@ -151,6 +153,30 @@ def _make_feishu(selected, config: dict):
     )
 
 
+def _make_feishu_task(_selected, config: dict):
+    """构造飞书任务适配器。
+
+    与 ``_make_feishu`` 的区别：飞书任务**没有「一个 base_token 对应一张表」的概念** ——
+    整个任务空间是账号级的，清单（表）是**方法参数**。所以这个后端
+    ``named_bases=False``、``required_keys=()``：不需要任何配置就能用，
+    凭据复用 ``lark-cli`` 的登录态。
+
+    ``identity`` / ``cli_path`` / ``timeout`` 从 ``feishu_task`` 段读；没配就
+    回落 ``feishu`` 段 —— 两个后端共用同一份 lark-cli 登录态，
+    让用户为了切后端再填一遍路径是没道理的。
+    """
+    from .feishu_task import FeishuTaskAdapter
+    tc = config.get("feishu_task") if isinstance(config.get("feishu_task"), dict) else {}
+    fc = config.get("feishu") if isinstance(config.get("feishu"), dict) else {}
+    return FeishuTaskAdapter(
+        cli_path=tc.get("cli_path") or fc.get("cli_path") or "",
+        identity=tc.get("identity") or fc.get("identity") or "",
+        server=tc.get("server") or "",
+        base_name="default",
+        timeout=int(tc.get("timeout") or 180),
+    )
+
+
 def _make_jiandaoyun(selected, config: dict):
     """构造简道云适配器。
 
@@ -231,6 +257,20 @@ register_backend(
     # init_sync（云端 → 本地初次同步）尚未落地，故不声明 ——
     # 部署报告会明确写「该后端未声明初始化步骤」，比让它静默跳过要好。
     deploy={"verify": ("verify_feishu.py", ["--read-only"], 180)},
+)
+
+register_backend(
+    "feishu_task",
+    label="飞书任务",
+    make=_make_feishu_task,
+    # **没有必填键**：飞书任务是账号级的，清单（=表）是方法参数而不是「实例」。
+    # 唯一的「凭据」是 lark-cli 的登录态，不属于 config。
+    required_keys=(),
+    named_bases=False,
+    default_server="https://open.feishu.cn",
+    # 只读连通性验证（认证 / 清单清单 / 列 / 拉任务 / 单任务读取）；
+    # 部署流程不会因此往任何清单里建东西。
+    deploy={"verify": ("verify_feishu_task.py", ["--read-only"], 240)},
 )
 
 register_backend(

@@ -92,6 +92,27 @@ BACKEND_TYPES = {
         "multiselect": "checkboxgroup",
         "attachment": "upload",
     },
+    # 飞书任务（``backend="feishu_task"``）—— 注意它与上面的 "feishu" **不是一套东西**：
+    # "feishu" 是**多维表格（Base）**，这张是**任务（Task）的自定义字段类型**。
+    # 取自实测（lark-cli task custom_fields create/list，2026-10-01）：
+    #   该 API 只有 6 种自定义字段类型：text / number / single_select /
+    #   multi_select / datetime / member。据此如实翻译/降级：
+    #     - longtext → text：任务字段不区分长短
+    #     - date → datetime：没有独立的纯日期类型
+    #     - multiselect → multi_select：这里**是两个不同的类型**，
+    #       与多维表格「同一个 type 加一个 multiple 布尔位」的实现完全不同
+    #   **刻意不写** bool / attachment —— 任务自定义字段**没有**对应类型。
+    #   漏掉不是疏忽：写成 text 会造出一个语义错误的列（勾选变成字符串），
+    #   而 backend_type() 会为它们抛出明确错误，由调用方决定怎么办。
+    "feishu_task": {
+        "text": "text",
+        "longtext": "text",
+        "number": "number",
+        "date": "datetime",
+        "datetime": "datetime",
+        "select": "single_select",
+        "multiselect": "multi_select",
+    },
     # ⚠️ **刻意没有 "zentao"** —— 这不是漏了。
     #    禅道是唯一一个「实体与字段都固定」的底座（项目/执行/任务/产品/Bug…），
     #    REST v2 没有建表/加列接口，所以「中立类型该翻译成禅道的哪个字段类型」
