@@ -626,23 +626,55 @@ class MeasuredWriteFactsTests(unittest.TestCase):
         self.assertEqual(rid, "1")
 
     def test_spec_required_is_the_source_for_the_other_entities(self):
-        """其余实体的必填取自规范的 ``required``，来源标出来 —— 它是**礼貌性校验**，
-        不是接口契约，所以必须能一眼看出「这条判据是规范说的还是实测的」。"""
-        expect = {
+        """必填清单**必须标出它从哪来** —— 规范说的 vs 实测的，不能混。
+
+        第二轮实测改了几处（见 adapters/zentao.py 第 27~31 条）：
+          · 需求/Bug/测试用例/测试单 的「所属产品」**必须走 query** → 判据变实测
+          · 测试单规范漏了 ``status``；产品计划规范漏了 ``begin``+``end``
+          · 业务需求/用户需求 规范漏了 reviewer，且它必须是**数组**
+        """
+        measured = {
+            "项目": ("名称", "计划完成"),                       # 规范更严（第 18 条）
+            "需求": ("标题", "所属产品", "评审人"),              # 第 27/30 条
+            "Bug": ("标题", "所属产品", "影响版本"),             # 第 27 条
+            "测试用例": ("标题", "所属产品"),                    # 第 27 条
+            "测试单": ("名称", "所属产品", "提测构建", "状态", "开始日期", "结束日期"),  # 第 27/31 条
+            "产品计划": ("名称", "所属产品", "计划开始", "计划完成"),   # 第 31 条
+            "业务需求": ("标题", "所属产品", "评审人"),           # 第 30 条
+            "用户需求": ("标题", "所属产品", "评审人"),           # 第 30 条
+            "发布": ("名称", "所属产品", "所属应用", "包含构建", "计划发布日期"),  # 第 28 条
+            "应用": ("名称", "所属产品", "是否集成应用", "集成子应用"),            # 第 28 条
+        }
+        from_spec = {
             "项目集": ("名称", "计划开始", "计划完成"),
             "执行": ("名称", "所属项目", "计划开始", "计划完成"),
             "任务": ("名称", "所属执行"),
             "产品": ("名称",),
-            "需求": ("标题", "所属产品"),
-            "Bug": ("标题", "所属产品", "影响版本"),
-            "测试用例": ("标题", "所属产品"),
-            "测试单": ("名称", "所属产品", "提测构建", "开始日期", "结束日期"),
             "用户": ("用户名", "姓名", "密码"),
+            "构建": ("名称", "所属执行", "所属产品", "所属应用", "构建者", "打包日期"),
         }
-        for name, req in expect.items():
+        for name, req in measured.items():
+            spec = ENTITY_SPECS[name]
+            self.assertEqual(spec["required"], req, name)
+            self.assertEqual(spec["required_source"], "measured", name)
+        for name, req in from_spec.items():
             spec = ENTITY_SPECS[name]
             self.assertEqual(spec["required"], req, name)
             self.assertEqual(spec["required_source"], "spec", name)
+
+        # 每个实体都必须标来源，且只有这两种 —— 第三种来源意味着有人凭感觉填了。
+        for name, spec in ENTITY_SPECS.items():
+            self.assertIn(spec.get("required_source"), ("spec", "measured"), name)
+
+        # **结构性铁律**：父参数必须走 query 的实体，其必填判据一定是实测的
+        # ——因为规范恰恰把这些字段声明在 body 里（第 27 条，规范错）。
+        for name, spec in ENTITY_SPECS.items():
+            if spec.get("parent_query"):
+                self.assertEqual(spec["required_source"], "measured", name)
+                # 且那个父字段必须真的是一个可写列
+                lab = spec["parent_query"][0]
+                self.assertIn(lab, {c[0] for c in spec["columns"]}, name)
+                self.assertIn(lab, spec["required"], name)
 
     def test_required_labels_all_exist_as_columns(self):
         """必填列名必须都是真列 —— 否则客户端校验会永远失败（拦死所有创建）。
@@ -1182,6 +1214,497 @@ class RegistrationTests(unittest.TestCase):
             body = f.read()
         self.assertIn(TOKEN, body)
         self.assertTrue(TOKEN.startswith("tk-test-"))
+
+
+class ParentQueryTests(unittest.TestCase):
+    """第 27 条：``productID`` 必须走 **query string**，放 body 会被当成「没传」。
+
+    而官方 OpenAPI **恰恰把它声明为 requestBody 里的 integer 属性** —— 规范错了。
+    这条守卫要是没了，所有按产品写入的调用都会拿到
+    ``Missing required parameter: productID.``，而这个错让人根本想不到是「位置错了」。
+    """
+
+    def test_parent_query_goes_to_query_string_not_body(self):
+        t = _FakeTransport({("POST", "/bugs"): {"status": "success", "id": 11}})
+        a = _adapter(t)
+        a.append_row("Bug", {"标题": "甲", "所属产品": 9, "影响版本": "trunk"})
+        method, path, query, body = t.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(query, {"productID": 9})
+        self.assertNotIn("productID", body, "父参数**不能**同时出现在 body 里")
+        self.assertEqual(body.get("title"), "甲")
+        # 规范说 openedBuild 是 array → 裸值必须被包成列表（第 31 条同源的形状问题）
+        self.assertEqual(body.get("openedBuild"), ["trunk"])
+
+    def test_missing_parent_query_is_refused_before_any_request(self):
+        t = _FakeTransport({})       # 登记为空：一旦发请求就会 AssertionError
+        a = _adapter(t)
+        with self.assertRaises(ZentaoError) as cm:
+            a.append_row("需求", {"标题": "没有产品"})
+        self.assertIn("所属产品", str(cm.exception))
+        self.assertIn("query", str(cm.exception))
+        self.assertEqual(t.calls, [], "客户端校验必须在发请求之前拦下")
+
+    def test_update_row_does_not_send_parent_query(self):
+        """``update_row`` 不发父参数 —— 实测**没有**验过 PUT 也要它，
+        与其猜一个，不如让服务端在真需要时报它自己的错（信息明确、可诊断）。"""
+        t = _FakeTransport({("PUT", "/bugs/7"): {"status": "success"}})
+        a = _adapter(t)
+        a.update_row("Bug", "7", {"标题": "改标题"})
+        self.assertEqual(t.calls[0][2], {})
+
+    def test_all_parent_query_entities_are_marked_and_have_the_column(self):
+        """**结构性铁律**：parent_query 指向的字段必须真的是可写列，且服务端确实要它。
+
+        防止有人「把 parent_query 抄到别的实体上」而不去想那个实体到底要不要。
+        """
+        have = {n for n, s in ENTITY_SPECS.items() if s.get("parent_query")}
+        self.assertEqual(have, {"需求", "Bug", "测试用例", "测试单",
+                                "产品计划", "发布", "业务需求", "用户需求", "应用"})
+        for name in have:
+            spec = ENTITY_SPECS[name]
+            label, field = spec["parent_query"]
+            cols = {c[0]: c[1] for c in spec["columns"]}
+            self.assertEqual(cols.get(label), field, name)
+            self.assertIn(label, spec["required"], name)
+            # 走 query 的是「产品」这个父资源 —— 禅道里产品系实体才是这样
+            self.assertEqual(field, "productID", name)
+
+    def test_task_parent_goes_through_body_not_query(self):
+        """任务是**反例**：它的父字段 ``executionID`` 实测走 **body**。
+
+        没有把这条钉住的话，很容易「看到 productID 走 query 就把所有父字段都改成 query」，
+        那会让任务的写入全挂。
+        """
+        t = _FakeTransport({("POST", "/tasks"): {"status": "success", "id": 3}})
+        a = _adapter(t)
+        a.append_row("任务", {"名称": "工序", "所属执行": 2})
+        _m, _p, query, body = t.calls[0]
+        self.assertEqual(query, {})
+        self.assertEqual(body.get("executionID"), 2)
+        self.assertNotIn("parent_query", ENTITY_SPECS["任务"])
+
+
+class ChildListTests(unittest.TestCase):
+    """第 39 条：顶层列表回 0 字节的实体，**经父资源都能读到**。
+
+    这是「读不了就是读不了」与「其实有正路」的分界线 —— 没有这条能力，
+    任务/需求/业务需求/用户需求/产品计划/发布/应用 在适配器里就全是只写不读。
+    """
+
+    def test_list_children_uses_parent_path(self):
+        t = _FakeTransport({
+            ("GET", "/executions/2/tasks"): _ok(
+                tasks=[TASK_ROW], pager=_pager(1, 1, 100, 1)),
+        })
+        a = _adapter(t)
+        rows = a.list_children("任务", 2)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["名称"], "工序A")
+        self.assertEqual(rows[0]["__row_id__"], 15)
+        self.assertEqual(t.calls[0][1], "/executions/2/tasks")
+
+    def test_list_children_requires_parent_id(self):
+        a = _adapter(_FakeTransport({}))
+        with self.assertRaises(ZentaoError):
+            a.list_children("任务", "")
+
+    def test_children_paging_terminates_on_page_total_not_on_empty_page(self):
+        """第 26 条：超范围页码会被**钳制到最后一页**，本页永远不为空。
+
+        所以「读到空页就停」会死循环、「本页与上页重复就报错」会误报。
+        必须用 ``pager.pageTotal``。这里造一个「永远回同一页」的服务端来证明
+        终止不是靠内容判断的。
+        """
+        hops = []
+
+        def stuck(query, _body):
+            hops.append(int(query.get("pageID") or 1))
+            return _ok(tasks=[TASK_ROW],
+                       pager=_pager(rec_total=1, page=1, size=1, page_total=1))
+        t = _FakeTransport({("GET", "/executions/2/tasks"): stuck})
+        a = _adapter(t)
+        rows = a.list_children("任务", 2)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(hops, [1], "pageTotal=1 时读到第 1 页就该收工")
+
+    def test_children_wrong_array_key_raises(self):
+        t = _FakeTransport({
+            ("GET", "/executions/2/tasks"): _ok(somethingElse=[], pager=_pager(0, 1, 100, 0)),
+        })
+        a = _adapter(t)
+        with self.assertRaises(ZentaoError) as cm:
+            a.list_children("任务", 2)
+        self.assertIn("tasks", str(cm.exception))
+
+    def test_top_level_list_unsupported_message_points_to_children(self):
+        """顶层读不了时，报错必须**指出正路** —— 只说「不支持」等于把人堵死。"""
+        a = _adapter(_FakeTransport({}))
+        with self.assertRaises(Unsupported) as cm:
+            a.list_rows("任务")
+        msg = str(cm.exception)
+        self.assertIn("list_children", msg)
+        self.assertIn("执行", msg)
+
+    def test_every_children_of_points_at_a_real_listable_parent(self):
+        """**结构性铁律**：``children_of`` 的三段都必须对得上。
+
+        ``(父实体, 子字段, 数组键)`` —— 注意**第二段是「子实体自己的列」**
+        （``任务.executionID`` 指向执行），不是父实体的列。
+        写错的话 ``list_children`` 会抛一个指不到病根的错。
+        """
+        for name, spec in ENTITY_SPECS.items():
+            co = spec.get("children_of")
+            if not co:
+                continue
+            self.assertEqual(len(co), 3, name)
+            parent, field, arr_key = co
+            self.assertIn(parent, ENTITY_SPECS, name)
+            self.assertTrue(arr_key and isinstance(arr_key, str), name)
+            # 父实体必须自己读得到（否则「经父读子」这条路是死的）
+            self.assertTrue(ENTITY_SPECS[parent].get("listable"),
+                            "父实体「%s」自己都不可列表" % parent)
+            # 第二段必须是**子实体自己**的列
+            child_cols = {c[1] for c in spec["columns"]}
+            self.assertIn(field, child_cols,
+                          "%s 的 children_of 字段 %s 不是它自己的列" % (name, field))
+            # 该字段必须也是声明过的可写列（用于建关联）
+            self.assertIn(field, {c[1] for c in spec["columns"] if c[3] == "W"}, name)
+
+    def test_children_of_is_declared_for_every_not_listable_entity_that_has_one(self):
+        """**反向**：声明了 ``children_of`` 的实体，要么顶层读得了（多一条路），
+        要么 ``not_listable_why`` 必须写清楚为什么 —— 不许两者都空。"""
+        for name, spec in ENTITY_SPECS.items():
+            if spec.get("listable"):
+                continue
+            self.assertTrue(spec.get("not_listable_why"), "%s 少了 not_listable_why" % name)
+            self.assertTrue(spec.get("children_of"),
+                            "%s 既不可列表、又没有 children_of —— 那它就是纯只写实体" % name)
+
+
+class CreateIdRecoveryTests(unittest.TestCase):
+    """第 33 条：``POST /epics`` ``/requirements`` ``/systems`` 成功**但不回 id**。
+
+    不处理的话，调用方拿到的是「建好了但不知道是哪一条」—— 无法更新、无法删除，
+    而且**看不出哪里不对**（响应里确实写着 success）。
+    """
+
+    def _children_fn(self):
+        state = {"n": 0}
+
+        def fn(_query, _body):
+            state["n"] += 1
+            rows = [{"id": "1", "title": "旧业务需求"}]
+            if state["n"] >= 2:                      # POST 之后再读，多出一条
+                rows = rows + [{"id": "2", "title": "新业务需求"}]
+            return _ok(epics=rows, pager=_pager(len(rows), 1, 100, 1))
+        return fn
+
+    def test_id_is_recovered_by_diffing_children(self):
+        t = _FakeTransport({
+            ("POST", "/epics"): {"status": "success", "message": "保存成功",
+                                 "load": "/zentao/index.php?m=product&f=browse&t=json"},
+            ("GET", "/products/9/epics"): self._children_fn(),
+        })
+        a = _adapter(t)
+        rid = a.append_row("业务需求",
+                           {"标题": "新业务需求", "所属产品": 9, "评审人": ["admin"]})
+        self.assertEqual(rid, "2")
+        # 反查用的是 id 差集，不是标题匹配 —— 标题重复时也能对
+        gets = [c for c in t.calls if c[0] == "GET"]
+        self.assertEqual(len(gets), 2, "应当在 POST 前后各读一次子列表")
+
+    def test_recovery_matches_by_title_when_several_are_new(self):
+        """一次多出几条时，用标题再筛一次；仍然拿不准就报错，**不猜**。"""
+        state = {"n": 0}
+
+        def fn(_query, _body):
+            state["n"] += 1
+            if state["n"] == 1:
+                return _ok(epics=[], pager=_pager(0, 1, 100, 0))
+            return _ok(epics=[{"id": "8", "title": "别的"},
+                              {"id": "9", "title": "目标"}],
+                       pager=_pager(2, 1, 100, 1))
+        t = _FakeTransport({
+            ("POST", "/epics"): {"status": "success"},
+            ("GET", "/products/9/epics"): fn,
+        })
+        a = _adapter(t)
+        rid = a.append_row("业务需求",
+                           {"标题": "目标", "所属产品": 9, "评审人": ["admin"]})
+        self.assertEqual(rid, "9")
+
+    def test_ambiguous_recovery_raises_instead_of_guessing(self):
+        state = {"n": 0}
+
+        def fn(_query, _body):
+            state["n"] += 1
+            rows = [] if state["n"] == 1 else [{"id": "8", "title": "甲"},
+                                               {"id": "9", "title": "乙"}]
+            return _ok(epics=rows, pager=_pager(len(rows), 1, 100, 1))
+        t = _FakeTransport({
+            ("POST", "/epics"): {"status": "success"},
+            ("GET", "/products/9/epics"): fn,
+        })
+        a = _adapter(t)
+        with self.assertRaises(ZentaoError) as cm:
+            a.append_row("业务需求",
+                         {"标题": "丙", "所属产品": 9, "评审人": ["admin"]})
+        self.assertIn("不猜", str(cm.exception))
+
+    def test_entities_that_do_not_return_id_are_declared(self):
+        """**结构性铁律**：声明了 ``create_id_via`` 的实体必须①不可顶层列表
+        （否则直接查列表就行）②有 ``children_of``（否则没法反查）。"""
+        declared = {n for n, s in ENTITY_SPECS.items() if s.get("create_id_via")}
+        self.assertEqual(declared, {"业务需求", "用户需求", "应用"})
+        for name in declared:
+            spec = ENTITY_SPECS[name]
+            self.assertTrue(spec.get("children_of"), name)
+            parent, _field, arr_key = spec["children_of"]
+            # create_id_via = (父列的**中文列名**, 子列表数组键) —— 两处都要对得上
+            self.assertEqual(spec["create_id_via"][0], spec["parent_query"][0], name)
+            self.assertEqual(spec["create_id_via"][1], arr_key, name)
+            self.assertEqual(parent, "产品", name)
+
+
+class ActionTests(unittest.TestCase):
+    """第 41 条：状态流转动作 —— 「专业 PM 软件」与「一张表」的分水岭。
+
+    用 ``update_row`` 把 ``status`` 改成 ``doing`` 是做不出动作的副作用的
+    （记工时、写实际开始/完成时间、按服务端规则算剩余）。
+    """
+
+    def test_actions_of_lists_measured_required_fields(self):
+        a = _adapter(_FakeTransport({}))
+        acts = {x["动作"]: x for x in a.actions_of("任务")}
+        self.assertEqual(set(acts), {"启动", "完成", "激活", "关闭"})
+        self.assertEqual(acts["启动"]["路径"], "start")
+        self.assertEqual(acts["启动"]["必填"], ["消耗工时", "预计剩余"])
+        self.assertEqual(acts["完成"]["必填"], ["实际开始", "本次消耗", "实际完成"])
+        self.assertEqual(acts["关闭"]["必填"], [])
+
+    def test_actions_of_is_empty_for_entities_without_actions(self):
+        """**真的没有** —— 不是读不到。禅道只为部分实体提供流转子路径。"""
+        a = _adapter(_FakeTransport({}))
+        for name in ("产品", "项目", "项目集", "执行", "用户", "构建", "发布", "应用"):
+            self.assertEqual(a.actions_of(name), [], name)
+
+    def test_run_action_maps_labels_to_measured_fields(self):
+        t = _FakeTransport({("PUT", "/tasks/15/start"): {"status": "success"}})
+        a = _adapter(t)
+        a.run_action("任务", 15, "启动", {"消耗工时": "2", "预计剩余": "6"})
+        method, path, query, body = t.calls[0]
+        self.assertEqual((method, path), ("PUT", "/tasks/15/start"))
+        self.assertEqual(body, {"consumed": "2", "left": "6"})
+        self.assertEqual(query, {})
+
+    def test_run_action_refuses_when_measured_required_is_missing(self):
+        """必填是**实测**出来的（规范里一个都没写）→ 客户端必须拦，
+        否则服务端只会回一句 `"总计消耗"和"预计剩余"不能同时为0`，很难对上是哪个字段。"""
+        t = _FakeTransport({})
+        a = _adapter(t)
+        with self.assertRaises(ZentaoError) as cm:
+            a.run_action("任务", 15, "完成", {"本次消耗": "1"})
+        self.assertIn("实际开始", str(cm.exception))
+        self.assertIn("实际完成", str(cm.exception))
+        self.assertEqual(t.calls, [])
+
+    def test_run_action_unknown_action_raises_and_lists_available(self):
+        t = _FakeTransport({})
+        a = _adapter(t)
+        with self.assertRaises(Unsupported) as cm:
+            a.run_action("任务", 15, "起飞", {})
+        self.assertIn("启动", str(cm.exception))
+        self.assertEqual(t.calls, [])
+
+    def test_run_action_accepts_the_raw_path_segment_too(self):
+        t = _FakeTransport({("PUT", "/bugs/7/close"): {"status": "success"}})
+        a = _adapter(t)
+        a.run_action("Bug", "7", "close")          # 也可以用禅道原路径段
+        self.assertEqual(t.calls[0][1], "/bugs/7/close")
+
+    def test_run_action_wraps_array_typed_action_fields(self):
+        """``openedBuild`` 实测要数组 —— 传裸值必须被包起来，否则服务端报「不能为空」。"""
+        t = _FakeTransport({("PUT", "/bugs/7/activate"): {"status": "success"}})
+        a = _adapter(t)
+        a.run_action("Bug", "7", "激活", {"影响版本": "trunk"})
+        self.assertEqual(t.calls[0][3], {"openedBuild": ["trunk"]})
+
+    def test_run_action_rejects_unknown_field_names(self):
+        t = _FakeTransport({})
+        a = _adapter(t)
+        with self.assertRaises(ZentaoError) as cm:
+            a.run_action("任务", 15, "关闭", {"随便一个列": "x"})
+        self.assertIn("随便一个列", str(cm.exception))
+        self.assertEqual(t.calls, [])
+
+    def test_run_action_requires_row_id(self):
+        a = _adapter(_FakeTransport({}))
+        with self.assertRaises(ZentaoError):
+            a.run_action("任务", "", "关闭", {})
+
+    def test_close_action_sends_empty_body(self):
+        """实测「关闭」空 body 即可 —— 不要自作聪明塞一个 ``{"status":"closed"}``，
+        那是个未知字段，服务端会**静默忽略**（第 13 条）。"""
+        t = _FakeTransport({("PUT", "/tasks/15/close"): {"status": "success"}})
+        a = _adapter(t)
+        a.run_action("任务", 15, "关闭")
+        self.assertEqual(t.calls[0][3], {})
+
+    def test_action_fields_are_not_entity_columns(self):
+        """**动作专属**字段不进 ``columns`` —— 它们只在某个动作的请求体里有意义，
+        混进列会让「这个实体有哪些列」变糊，也会让 ``update_row`` 误以为可以随便改。
+
+        ⚠️ 例外是 ``openedBuild``：它**既是** Bug 的真列（影响版本），
+        **又是** ``激活`` 动作的必填 —— 这是真实重叠，不是设计缺陷。
+        所以这里比的是「词表减去真列」之后的差集。
+        """
+        from adapters.zentao import ACTION_FIELDS
+        all_cols = {c[1] for spec in ENTITY_SPECS.values() for c in spec["columns"]}
+        # openedBuild 本来就该在两处都出现
+        self.assertIn("openedBuild", all_cols)
+        for f in ACTION_FIELDS.values():
+            if f == "openedBuild":
+                continue
+            self.assertNotIn(f, all_cols,
+                             "动作专属字段 %s 混进了某个实体的列" % f)
+
+    def test_every_measured_action_required_field_is_in_the_vocabulary(self):
+        """动作的必填清单只能引用词表里的字段 —— 写错的字面量会让必填校验
+        **永远失败**（拦死所有动作调用），而且报错指向一个不存在的字段名。"""
+        from adapters.zentao import ACTION_FIELDS
+        for name, spec in ENTITY_SPECS.items():
+            for _lab, _act, req, _desc in (spec.get("actions") or ()):
+                for f in req:
+                    self.assertIn(f, ACTION_FIELDS, "%s 的必填 %s 不在词表里" % (name, f))
+
+
+class DeleteQueryTests(unittest.TestCase):
+    """第 29 / 36 / 37 条：删除的三处坑。"""
+
+    def test_epics_delete_uses_storyID_query(self):
+        """规范写 ``DELETE /epics/:epicID``，实现要 ``?storyID=`` —— 规范错。"""
+        t = _FakeTransport({("DELETE", "/epics/2"): {"status": "success"}})
+        a = _adapter(t)
+        a.delete_rows("业务需求", ["2"])
+        method, path, query, _body = t.calls[0]
+        self.assertEqual((method, path), ("DELETE", "/epics/2"))
+        self.assertEqual(query, {"storyID": "2"})
+
+    def test_requirements_delete_uses_storyID_query(self):
+        t = _FakeTransport({("DELETE", "/requirements/5"): {"status": "success"}})
+        a = _adapter(t)
+        a.delete_rows("用户需求", ["5"])
+        self.assertEqual(t.calls[0][2], {"storyID": "5"})
+
+    def test_normal_entities_delete_without_query(self):
+        t = _FakeTransport({("DELETE", "/bugs/7"): {"status": "success"}})
+        a = _adapter(t)
+        a.delete_rows("Bug", ["7"])
+        self.assertEqual(t.calls[0][2], {})
+
+    def test_system_delete_raises_unsupported(self):
+        """``/systems`` 规范里也只有 POST/PUT —— 没有删除接口。
+        发一个注定失败的请求、让上层从报错里猜「是不是没权限」，是更糟的做法。"""
+        t = _FakeTransport({})
+        a = _adapter(t)
+        with self.assertRaises(Unsupported) as cm:
+            a.delete_rows("应用", ["3"])
+        self.assertIn("DELETE", str(cm.exception))
+        self.assertEqual(t.calls, [], "不该发出任何请求")
+
+    def test_only_systems_is_declared_undeletable(self):
+        declared = {n for n, s in ENTITY_SPECS.items() if s.get("no_delete_why")}
+        self.assertEqual(declared, {"应用"})
+
+    def test_delete_query_entities_have_no_delete_why(self):
+        """互斥：能删的才写 delete_query，不能删的写 no_delete_why —— 不许两个都写。"""
+        for name, spec in ENTITY_SPECS.items():
+            if spec.get("no_delete_why"):
+                self.assertFalse(spec.get("delete_query"), name)
+
+
+class SuccessButEmptyTests(unittest.TestCase):
+    """第 34 条：``status:"success"`` 也可能是「什么都没有」。
+
+    ``GET /epics/3``（不存在）回的是
+    ``{"status":"success","load":{"alert":"抱歉，您访问的对象不存在！"}}``。
+    只看 ``status`` 的 ``get_row`` 会把它当成「存在但字段全空」——
+    比抛异常更糟，因为上层会**照着一行空数据继续走**。
+    """
+
+    def test_get_row_returns_none_for_success_with_load_only(self):
+        t = _FakeTransport({
+            ("GET", "/tasks/999"): {
+                "load": {"alert": "抱歉，您访问的对象不存在！",
+                         "locate": "/zentao/index.php?m=product&f=index&t=json"},
+                "status": "success",
+            },
+        })
+        a = _adapter(t)
+        self.assertIsNone(a.get_row("任务", 999))
+
+    def test_get_row_finds_detail_under_resource_key(self):
+        t = _FakeTransport({("GET", "/tasks/15"): _ok(task=TASK_ROW)})
+        a = _adapter(t)
+        row = a.get_row("任务", "15")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["名称"], "工序A")
+
+    def test_get_row_ignores_load_when_real_data_is_present(self):
+        """``load`` 是跳转指令，不是数据 —— 有真数据时不能被它带偏。"""
+        t = _FakeTransport({
+            ("GET", "/tasks/15"): {"status": "success",
+                                   "load": {"locate": "/x"},
+                                   "task": TASK_ROW},
+        })
+        a = _adapter(t)
+        row = a.get_row("任务", "15")
+        self.assertEqual(row["__row_id__"], 15)
+
+    def test_get_row_raises_when_response_has_no_entity_object(self):
+        """既没有业务对象、也没有 ``load`` → 结构不符，必须报错而不是给空行。"""
+        t = _FakeTransport({("GET", "/tasks/15"): {"status": "success", "a": 1, "b": 2}})
+        a = _adapter(t)
+        with self.assertRaises(ZentaoError):
+            a.get_row("任务", "15")
+
+
+class FullCoverageMappingTests(unittest.TestCase):
+    """第二轮把覆盖从 10 个实体扩到 16 个 —— 这里钉住「扩了哪些、没扩哪些」。"""
+
+    def test_entity_set_is_the_measured_16(self):
+        self.assertEqual(set(entity_tables()), {
+            "项目集", "项目", "执行", "任务", "产品", "需求", "Bug", "测试用例",
+            "测试单", "用户",
+            "产品计划", "构建", "发布", "业务需求", "用户需求", "应用",
+        })
+
+    def test_entities_that_do_not_exist_on_this_build_are_absent(self):
+        """``工单``/``反馈``/``文件`` 在本版禅道上 POST 回 0 字节（路由不存在）——
+        不建实体映射。**建了只会让人以为能用。**"""
+        for name in ("工单", "反馈", "文件", "史诗"):
+            self.assertNotIn(name, ENTITY_SPECS, name)
+        # 但「史诗」作为别名指向「业务需求」是可以的（敏捷术语的对译）
+        self.assertEqual(ALIASES.get("史诗"), "业务需求")
+
+    def test_aliases_all_point_at_real_entities(self):
+        """别名指向不存在的实体 → 调用方拿到的是一个指不到病根的 KeyError。"""
+        for alias, target in ALIASES.items():
+            self.assertIn(target, ENTITY_SPECS, "%s → %s" % (alias, target))
+
+    def test_every_not_listable_entity_says_why(self):
+        for name, spec in ENTITY_SPECS.items():
+            if not spec.get("listable"):
+                self.assertTrue(spec.get("not_listable_why"),
+                                "%s 没写 not_listable_why" % name)
+
+    def test_ticket_and_feedback_are_not_claimed_anywhere(self):
+        """反向断言：适配器**不许**在任何地方悄悄声称支持工单/反馈。"""
+        from adapters.zentao import entity_tables as et
+        joined = " ".join(et()) + " " + " ".join(ALIASES)
+        for name in ("工单", "反馈"):
+            self.assertNotIn(name, joined, name)
 
 
 if __name__ == "__main__":

@@ -97,12 +97,118 @@
 24. ``PUT`` 成功后立刻读回是**强一致**的（实测改完 name 立刻 GET 到新值）——
     与飞书那套「写完 ~2.7s 才可见」完全不同，不需要 ``_eventually`` 轮询。
 
+**实测依据·第二轮（2026-10-01，全量覆盖 19 资源 × 88 路径）**
+──────────────────────────────────────────────────────────
+探测脚本：``probes/zentao_full_read_probe.py``（只发 GET）、
+``probes/zentao_full_write_probe.py``、``probes/zentao_param_probe.py``、
+``probes/zentao_round2_probe.py``、``probes/zentao_round3_probe.py``（都带标记 + 级联清理）。
+
+这一轮**推翻了第一轮的一条结论**，并补出 17 条新事实：
+
+25. ⚠️ **推翻第 6 条：分页 ``recPerPage`` + ``pageID`` 是生效的。**
+    第一轮说「不生效」是**我自己参数名写错了**（用了 ``limit``/``page``，而规范写的是
+    ``recPerPage``/``pageID``）。实测 ``recPerPage=1`` 时第 1 页 id=10、第 2 页 id=11。
+    **教训：得出「服务端不支持 X」之前，先确认自己把 X 的名字写对了。**
+
+26. ⚠️ **超范围的页码会被「钳制到最后一页」，不是返回空。**
+    只有 2 页时，``pageID=3`` 与 ``pageID=99`` 都返回第 2 页的数据、且 ``pager.pageID`` 回 2。
+    所以**判断「读完了」只能靠 ``pager.pageTotal`` / ``recTotal``**；
+    靠「本页为空」会死循环，靠「本页与上页重复」会把正常收尾误判成故障。
+
+27. ⚠️⚠️ **``productID`` 必须作为 query string 传，放进 JSON body 会被当成「没传」。**
+    实测：``POST /bugs?productID=20`` + body ``{title, openedBuild}`` → **成功**；
+    同一个 body 里带 ``productID``（字符串或整数都一样）→
+    ``Missing required parameter: productID.``
+    而 **官方规范把它声明为 requestBody 里的 ``integer`` 属性 —— 规范是错的。**
+    逐实体实测（见 ``parent_query``）：``/productplans`` 两种位置**都认**，
+    ``/stories`` ``/bugs`` ``/testcases`` **只认 query**。
+    所以适配器**统一走 query**（对两者都成立）。
+
+28. ``/releases``、``/systems``、``/productplans`` 的**列表 GET 也需要 ``productID`` query**。
+    规范里 ``/releases`` 与 ``/systems`` **根本没声明 GET**，但实现里有；
+    不带参数时报的正是 ``Missing required parameter: productID.``
+    （所以「不带参数读不到」≠「没有这个路由」）。
+
+29. ⚠️ ``/epics`` 与 ``/requirements`` 的 **DELETE 需要 ``storyID`` query 参数**，
+    而规范写的是路径参数 ``:epicID`` / ``:requirementID`` —— **规范又错了**。
+    实测 ``DELETE /epics/2`` → ``Missing required parameter: storyID.``；
+    ``DELETE /epics/2?storyID=2`` → 成功。
+
+30. ⚠️ ``/stories`` ``/epics`` ``/requirements`` 的 ``reviewer`` **必须是数组**。
+    传字符串 ``"admin"`` → ``reviewer：『评审人』不能为空。``；
+    传 ``["admin"]`` → 成功。**规范把它声明为 string —— 规范错。**
+
+31. ``/testtasks`` 还需要 ``status`` 字段；``/productplans`` 实测需要 ``begin`` + ``end``。
+    两者规范里的 ``required`` 都没写全。
+
+32. ``/executions`` 的 ``begin`` 必须 **≥ 所属项目的 ``begin``**
+    （项目只给 ``name``+``end`` 时 ``begin`` 自动填当天，于是 ``2026-01-01`` 会被拒）。
+
+33. ⚠️⚠️ **``POST /epics`` ``/requirements`` ``/systems`` 成功时不返回 ``id``。**
+    只回 ``{"status":"success","message":"保存成功","load":"..."}``。
+    要拿到刚建那行的 id，**只能反查父资源子列表**
+    （``/products/:id/epics`` 等）。``append_row`` 因此必须做「创建后反查」，
+    否则就违反了「返回服务端行 id」的契约。详见 ``create_id_via``。
+
+34. ⚠️⚠️ **``status:"success"`` 也可能是「什么都没有」。**
+    ``GET /<资源>/:id`` 对**不存在的 id** 返回
+    ``{"status":"success","load":{"alert":"抱歉，您访问的对象不存在！","locate":"..."}}``。
+    判据不能只看 ``status``，还必须看**有没有业务数据对象**（``load`` 键就是「没有」）。
+    这是本适配器见过最阴的一种失败形状 —— 只看 ``status`` 的 ``get_row`` 会把
+    「不存在」当成「存在但字段全空」。
+
+35. 详情字段数（用于判断"响应被截断"）：产品 65 / 项目集 80 / 项目 80 / 执行 86 /
+    构建 26 / 测试用例 56 / Bug 72 / 任务 76 / 发布 29 / 产品计划 17。
+    **列表与详情的 ``id`` 一律是字符串**（POST 回的才是数字）。
+
+36. ``/systems`` **没有 DELETE**（规范里也只有 POST/PUT）→ 应用记录建了就删不掉。
+    → ``delete_rows`` 对「应用」如实抛 ``Unsupported``，而不是发一个注定失败的请求。
+
+37. **DELETE 是软删除**：删完 ``deleted`` 变成 ``"1"``，记录仍能 ``GET`` 到、名字仍被占用。
+    「删成功」不等于「真的没了」。
+
+38. **哪些路由在本版确实不存在**（HTTP 200 + **0 字节**）：
+    · 顶层列表：``/builds`` ``/epics`` ``/feedbacks`` ``/files`` ``/requirements``
+      ``/stories`` ``/tasks`` ``/tickets``
+    · 顶层 ``/productplans`` 回**整页 HTML**（回落到 web 路由）
+    · POST：``/tickets`` ``/feedbacks``
+    · 子列表：``/products/:id/{feedbacks,tickets,builds}``
+    这些一律 ``listable=False`` / 如实抛 ``Unsupported``，**不返回 [] 冒充「没有数据」**。
+
+39. **父资源子列表（实测全部可用）** —— 这是读「顶层列表不可用」那些实体的**唯一正路**：
+    · ``/products/:id/{bugs,epics,productplans,releases,requirements,stories,systems,testcases,testtasks}``
+    · ``/projects/:id/{bugs,builds,executions,stories,testcases,testtasks}``
+    · ``/executions/:id/{bugs,builds,stories,tasks,testcases,testtasks}``
+    · ``/programs/:id/{products,projects}``
+    → 见 ``list_children()``。
+
+40. ⚠️ **用 bogus id 探路由会产生假阴性。**
+    第一轮用 ``/executions/999999/...`` 探，6 条子列表全回 HTML，于是记成「路由不存在」；
+    第二轮用**真实执行 id** 探，**6 条全部可用**。
+    教训：路由存在性必须用**真实存在的父 id** 复验，假 id 的失败形状不可作数。
+
+41. **状态流转动作**（``PUT /<资源>/:id/<动作>``）—— 规范里的子路径，这是专业 PM 软件的
+    核心能力，实测各动作的**真实必填 body**（都在规范里找不到）：
+    · ``tasks/start``    要 ``consumed`` + ``left``（「"总计消耗"和"预计剩余"不能同时为0」）
+    · ``tasks/finish``   要 ``realStarted`` + ``currentConsumed`` + ``finishedDate``
+    · ``tasks/activate`` 要 ``left``
+    · ``tasks/close``    **空 body 即可**；副作用 ``status=closed`` + ``closedDate``
+    · ``bugs/resolve``   要 ``resolution`` + ``resolvedBuild``；
+      副作用 ``status=resolved`` + ``resolvedBy`` + ``resolvedDate``
+    · ``bugs/close``     **空 body 即可**
+    · ``bugs/activate``  要 ``openedBuild``
+    动作成功后**不返回 id**，且**读取是强一致的**（做完立刻 GET 就能看到新状态，
+    这点与飞书那 ~2.7s 的可见性延迟不同）。
+    → 见 ``run_action()`` / ``actions_of()``。
+
 **仍未实测**
 ────────────
-· ``recPerPage`` / ``pageID`` 在数据量大时究竟生不生效（见第 6 条）。
-· 各实体**列表不可用**那部分（``/tasks`` ``/stories``）是否与服务端权限/版本有关。
-· 写路径只实测了「项目」与「产品」；``项目集/执行/任务/需求/Bug/用例/测试单/用户``
-  的 POST/PUT 只按规范实现，未实写。
+· 分页在**超过 1 页真实数据**时的表现（本机数据量始终很小，只验到 2 条 / 2 页）。
+· 各实体「列表不可用」是否与服务端**权限或版本**有关（本机是单用户 admin 的全新实例）。
+· 剩余动作：``stories`` ``epics`` ``requirements`` 的 ``activate/change/close``，
+  ``feedbacks`` / ``tickets`` 的 ``activate/close``（后两个实体在本版根本建不出来）。
+· ``/files``（附件）全程不可用，没有实测。
+· 富文本字段（``spec`` / ``steps``）的真实存储形状。
 """
 import json
 import urllib.error
@@ -175,6 +281,16 @@ _ENUMS: Dict[str, Dict[str, Dict[str, str]]] = {
     "用户": {
         "visions": {"rnd": "研发综合界面", "lite": "运营管理界面"},
     },
+    "发布": {
+        "status": {"wait": "未开始", "normal": "已发布", "fail": "发布失败",
+                   "terminate": "停止维护"},
+    },
+    "应用": {
+        # 规范把它声明为 integer(0 否 | 1 是)，但**禅道把一切都回成字符串**，
+        # 所以这里的键必须是字符串 —— 用 int 键的话 _enum_label 永远命中不了
+        # （它的第一句就是 `if not isinstance(code, str): return code`）。
+        "integrated": {"0": "否", "1": "是"},
+    },
 }
 
 
@@ -202,6 +318,32 @@ def _enum_code(table: str, field: str, label) -> Any:
 
 
 # ══════════════════════════════════════════════════════════════════
+# 状态流转动作的字段词表
+#
+# 为什么单独一张表：动作要的字段（``consumed`` / ``left`` / ``realStarted`` …）
+# **不是实体的通用列** —— 它们只在某个动作的请求体里有意义，
+# 平时既读不出来也不该当普通列写。混进 ``ENTITY_SPECS["任务"]["columns"]``
+# 会让「任务有哪些列」这个问题变糊。
+#
+# 每个字面值都来自实测（第 41 条），不是从规范抄的 —— 规范里一个都没写。
+# ══════════════════════════════════════════════════════════════════
+ACTION_FIELDS: Dict[str, str] = {
+    "消耗工时": "consumed",          # tasks/start
+    "预计剩余": "left",              # tasks/start、tasks/activate
+    "实际开始": "realStarted",       # tasks/finish
+    "本次消耗": "currentConsumed",   # tasks/finish
+    "实际完成": "finishedDate",      # tasks/finish
+    "解决方案": "resolution",        # bugs/resolve
+    "解决版本": "resolvedBuild",     # bugs/resolve
+    "影响版本": "openedBuild",       # bugs/activate（数组）
+    "备注": "comment",               # 多数动作都接受，可选
+}
+
+#: 值的类型提示（只用于把「数组」型动作字段转对 —— ``openedBuild`` 实测要数组）。
+ACTION_ARRAY_FIELDS = frozenset({"openedBuild"})
+
+
+# ══════════════════════════════════════════════════════════════════
 # 实体映射层
 #
 # 每个实体声明：怎么读（resource / list_key / listable）、有哪些列
@@ -215,9 +357,19 @@ def _enum_code(table: str, field: str, label) -> Any:
 #
 # ``required`` 是**客户端的礼貌性校验**，不是接口契约。来源标在 ``required_source``：
 #   · ``"spec"``     —— 取自 OpenAPI 规范的 ``required`` 列表。
-#   · ``"measured"`` —— 实测出来的**最小可成功集合**（规范在这两处≥实际要求）。
-# 规范可能比服务端更严（第 18 条：项目的 model/begin/workflowGroup 规范要、实际不要），
-# 所以真正的兜底是「把服务端的字段级校验错误format成人话」（见 ``_format_failure``）。
+#   · ``"measured"`` —— 实测出来的**最小可成功集合**（规范在这些地方与实际不符）。
+# 规范可能比服务端更严（第 18 条），也可能**更松**（第 31 条：测试单漏了 status），
+# 所以真正的兜底是「把服务端的字段级校验错误 format 成人话」（见 ``_format_failure``）。
+#
+# 第二轮新增的映射键（全部对应一条实测事实）：
+#   · ``parent_query``   —— 该父字段必须作为 **query 参数**发送（第 27 条）。
+#                          值形如 ``("所属产品", "productID")``。
+#   · ``children_of``    —— ``(父实体, 父字段名, 子列表数组键)``：经父资源读子列表
+#                          的路径（第 39 条）。这是读「顶层列表不可用」实体的唯一正路。
+#   · ``create_id_via``  —— POST 成功但**不回 id**，靠反查这个子列表拿 id（第 33 条）。
+#   · ``delete_query``   —— 删除时必须带的 query 参数名（第 29 条，规范写错了参数名）。
+#   · ``no_delete_why``  —— 该实体**没有删除接口**，如实拒绝（第 36 条）。
+#   · ``actions``        —— ``(中文动作名, 禅道路径段, 必填字段, 说明)``（第 41 条）。
 #
 # 列的类型是**给下游看的**（text/number/date/select/array/secret/longtext），
 # 禅道自己把一切都回成字符串。
@@ -299,9 +451,13 @@ ENTITY_SPECS: Dict[str, Dict[str, Any]] = {
         "resource": "tasks",
         # ⚠️ 实测 /tasks 的列表 GET 返回 HTTP 200 + 空响应体（模块 docstring 第 7 条），
         #    所以这里 listable=False：读不了就是读不了，不返回 [] 冒充「没有任务」。
+        #    但**执行子列表可以读**（第 39 条）—— 见 children_of，那才是读任务的正路。
         "list_key": "tasks",
         "listable": False,
         "not_listable_why": "实测 GET /tasks 返回 HTTP 200 + 空响应体（开源版未开放任务列表接口）",
+        # ⚠️ 「所属执行」走 **body**（实测 POST /tasks {name, executionID} 成功），
+        #    与产品系的 productID 走 query 不同 —— 所以这里**没有** parent_query。
+        "children_of": ("执行", "executionID", "tasks"),
         "columns": (
             ("名称", "name", "text", W),
             ("所属执行", "executionID", "number", W),
@@ -318,6 +474,17 @@ ENTITY_SPECS: Dict[str, Dict[str, Any]] = {
         "required": ("名称", "所属执行"),
         "required_source": "spec",      # 规范 required: name / executionID
         "link_cols": (("所属执行", "executionID", "执行"), ("相关需求", "story", "需求")),
+        # 第 41 条：每个动作的必填 field **全部实测**，规范里一个都没写。
+        # 「预计剩余」「实际开始」「本次消耗」「实际完成」都是**工时/日期**语义，
+        # 不是可以随手给个默认值的 —— 所以它们标成必填，逼调用方明确表达。
+        "actions": (
+            ("启动", "start", ("消耗工时", "预计剩余"),
+             "开始任务（需给本次消耗与预计剩余，两者不能同时为 0）"),
+            ("完成", "finish", ("实际开始", "本次消耗", "实际完成"),
+             "完成任务（需给实际开始/本次消耗/实际完成三个日期与工时）"),
+            ("激活", "activate", ("预计剩余",), "重新激活任务"),
+            ("关闭", "close", (), "关闭任务（空 body 即可）"),
+        ),
     },
     "产品": {
         "resource": "products",
@@ -348,6 +515,11 @@ ENTITY_SPECS: Dict[str, Dict[str, Any]] = {
         # 同「任务」：实测列表 GET 空响应体
         "listable": False,
         "not_listable_why": "实测 GET /stories 返回 HTTP 200 + 空响应体",
+        # ⚠️ 第 27/39 条：顶层读不了，但**父资源子列表可以** —— 这是读需求的唯一正路。
+        #    `parent_query` 只管「POST 时这个父字段放哪」；读子列表看 `children_of`。
+        "parent_query": ("所属产品", "productID"),
+        # (父实体, 父字段名, 子列表响应里的数组键)
+        "children_of": ("产品", "productID", "stories"),
         "columns": (
             ("标题", "title", "text", W),
             ("所属产品", "productID", "number", W),
@@ -362,14 +534,26 @@ ENTITY_SPECS: Dict[str, Dict[str, Any]] = {
             ("需求描述", "spec", "longtext", W),
             ("验收标准", "verify", "longtext", W),
         ),
-        "required": ("标题", "所属产品"),
-        "required_source": "spec",      # 规范 required: productID / title
+        "required": ("标题", "所属产品", "评审人"),
+        # 实测最小集：标题 + productID(query) + **reviewer 数组**。
+        # 第 30 条：reviewer 传字符串会被判「不能为空」，必须传 ["admin"]。
+        "required_source": "measured",
         "link_cols": (("所属产品", "productID", "产品"), ("所属执行", "execution", "执行")),
+        # 第 41 条：需求的状态流转。**必填字段全部来自实测**，规范里一个都没写。
+        "actions": (
+            ("激活", "activate", (), "把已关闭的需求重新激活"),
+            ("关闭", "close", (), "关闭需求（空 body 即可）"),
+            ("变更", "change", (), "走需求变更流程"),
+        ),
     },
     "Bug": {
         "resource": "bugs",
         "list_key": "bugs",
         "listable": True,
+        # 第 27 条：productID 只认 query。虽然 /bugs 顶层列表可用（「全产品」视角），
+        # 但按产品筛仍然要靠子列表 —— 顶层列表**没有**可用的 productID 过滤语义。
+        "parent_query": ("所属产品", "productID"),
+        "children_of": ("产品", "productID", "bugs"),
         "columns": (
             ("标题", "title", "text", W),
             ("所属产品", "productID", "number", W),
@@ -378,20 +562,31 @@ ENTITY_SPECS: Dict[str, Dict[str, Any]] = {
             ("严重程度", "severity", "number", W),
             ("优先级", "pri", "number", W),
             ("Bug类型", "type", "select", W),
-            ("影响版本", "openedBuild", "text", W),
+            # 规范声明 openedBuild 是 **array of string**（主干用 "trunk"）——
+            # 标 array 后 _to_value 会把裸值包成 [值]，与实测成功的传法一致。
+            ("影响版本", "openedBuild", "array", W),
             ("重现步骤", "steps", "longtext", W),
             ("相关需求", "story", "number", W),
             ("状态", "status", "text", R),
         ),
         "required": ("标题", "所属产品", "影响版本"),
-        "required_source": "spec",      # 规范 required: productID / title / openedBuild
+        # 字段名与规范一致，但**「所属产品」必须走 query**（第 27 条）→ 标 measured。
+        "required_source": "measured",
         "link_cols": (("所属产品", "productID", "产品"), ("所属执行", "execution", "执行")),
+        # 第 41 条：字段级必填全部实测，规范里一个都没写。
+        "actions": (
+            ("解决", "resolve", ("解决方案", "解决版本"), "标记为已解决（需给方案 + 解决版本）"),
+            ("关闭", "close", (), "关闭 Bug（空 body 即可）"),
+            ("激活", "activate", ("影响版本",), "把已关闭的 Bug 重新激活"),
+        ),
     },
     "测试用例": {
         "resource": "testcases",
         # ⚠️ 实测键名是 cases，不是 testcases（见模块 docstring 第 11 条）
         "list_key": "cases",
         "listable": True,
+        "parent_query": ("所属产品", "productID"),
+        "children_of": ("产品", "productID", "testcases"),
         "columns": (
             ("标题", "title", "text", W),
             ("所属产品", "productID", "number", W),
@@ -403,7 +598,7 @@ ENTITY_SPECS: Dict[str, Dict[str, Any]] = {
             ("相关需求", "story", "number", W),
         ),
         "required": ("标题", "所属产品"),
-        "required_source": "spec",      # 规范 required: productID / title
+        "required_source": "measured",  # 规范字段名对，但「所属产品」必须走 query（第 27 条）
         "link_cols": (("所属产品", "productID", "产品"),),
     },
     "测试单": {
@@ -411,6 +606,8 @@ ENTITY_SPECS: Dict[str, Dict[str, Any]] = {
         # ⚠️ 实测键名是 tasks（不是 testtasks）
         "list_key": "tasks",
         "listable": True,
+        "parent_query": ("所属产品", "productID"),
+        "children_of": ("产品", "productID", "testtasks"),
         "columns": (
             ("名称", "name", "text", W),
             ("所属产品", "productID", "number", W),
@@ -423,8 +620,9 @@ ENTITY_SPECS: Dict[str, Dict[str, Any]] = {
             ("结束日期", "end", "date", W),
             ("描述", "desc", "longtext", W),
         ),
-        "required": ("名称", "所属产品", "提测构建", "开始日期", "结束日期"),
-        "required_source": "spec",      # 规范 required: productID / name / build / begin / end
+        "required": ("名称", "所属产品", "提测构建", "状态", "开始日期", "结束日期"),
+        # 第 31 条：规范 required 漏了 ``status``（实测不给报「『当前状态』不能为空」）。
+        "required_source": "measured",
         "link_cols": (("所属执行", "execution", "执行"),),
     },
     "用户": {
@@ -448,6 +646,169 @@ ENTITY_SPECS: Dict[str, Dict[str, Any]] = {
         "required": ("用户名", "姓名", "密码"),
         "required_source": "spec",      # 规范 required: account / realname / password
     },
+
+    # ── 以下 6 个实体是第二轮探测补出来的（第一版只覆盖了 10 个 PM 实体）──────
+    "产品计划": {
+        "resource": "productplans",
+        "list_key": "productplans",
+        # ⚠️ 第 38 条：顶层 GET 回**整页 HTML**（回落到 web 路由），不是 0 字节。
+        "listable": False,
+        "not_listable_why": "实测 GET /productplans 返回 HTTP 200 + 整页 HTML（回落到 web 路由）",
+        # 第 28 条：GET 需要 productID query —— 这就是读计划的正路（子列表实测有数据）。
+        "parent_query": ("所属产品", "productID"),
+        "children_of": ("产品", "productID", "productplans"),
+        "columns": (
+            ("名称", "title", "text", W),
+            ("所属产品", "productID", "number", W),
+            ("父计划", "parent", "number", W),
+            ("计划开始", "begin", "date", W),
+            ("计划完成", "end", "date", W),
+            ("分支", "branchID", "number", W),
+            ("描述", "desc", "longtext", W),
+            ("状态", "status", "text", R),
+            ("创建人", "createdBy", "text", R),
+            ("创建日期", "createdDate", "date", R),
+        ),
+        "required": ("名称", "所属产品", "计划开始", "计划完成"),
+        # 第 31 条：规范 required 只有 productID/title，实测不给 begin+end 会报
+        # 「『结束日期』不能为空」。
+        "required_source": "measured",
+        "link_cols": (("所属产品", "productID", "产品"),),
+    },
+    "构建": {
+        "resource": "builds",
+        "list_key": "builds",
+        # 顶层 GET 0 字节；POST **可用**（第一轮以为不行，是因为 executionID=1 不存在）。
+        "listable": False,
+        "not_listable_why": "实测 GET /builds 返回 HTTP 200 + 空响应体（顶层列表不可用）",
+        # 经 /executions/:id/builds 或 /projects/:id/builds 读（第 39 条，实测可用）。
+        # ⚠️ executionID 走 **body**（实测），没有 parent_query。
+        "children_of": ("执行", "executionID", "builds"),
+        "columns": (
+            ("名称", "name", "text", W),
+            ("所属执行", "executionID", "number", W),
+            ("所属产品", "product", "number", W),
+            ("所属应用", "system", "number", W),
+            ("构建者", "builder", "text", W),
+            ("打包日期", "date", "date", W),
+            ("源代码地址", "scmPath", "text", W),
+            ("下载地址", "filePath", "text", W),
+            ("描述", "desc", "longtext", W),
+        ),
+        "required": ("名称", "所属执行", "所属产品", "所属应用", "构建者", "打包日期"),
+        "required_source": "spec",
+        "link_cols": (("所属执行", "executionID", "执行"), ("所属产品", "product", "产品")),
+    },
+    "发布": {
+        "resource": "releases",
+        "list_key": "releases",
+        "listable": False,
+        "not_listable_why": "实测 GET /releases 不带 productID 报 Missing required parameter（第 28 条）",
+        "parent_query": ("所属产品", "productID"),
+        "children_of": ("产品", "productID", "releases"),
+        "columns": (
+            ("名称", "name", "text", W),
+            ("所属产品", "productID", "number", W),
+            ("所属应用", "system", "number", W),
+            ("包含构建", "build", "array", W),
+            ("状态", "status", "select", W),
+            ("计划发布日期", "date", "date", W),
+            ("描述", "desc", "longtext", W),
+        ),
+        "required": ("名称", "所属产品", "所属应用", "包含构建", "计划发布日期"),
+        # 字段名与规范一致，但「所属产品」必须走 query（第 28 条）→ 判据算实测。
+        "required_source": "measured",
+        "link_cols": (("所属产品", "productID", "产品"),),
+    },
+    "业务需求": {
+        # 禅道的三层需求模型：业务需求(epic) → 用户需求(requirement) → 研发需求(story)。
+        # 三者是**三个不同的实体**，不是同一张表的三种视图。
+        "resource": "epics",
+        "list_key": "epics",
+        "listable": False,
+        "not_listable_why": "实测 GET /epics 返回 HTTP 200 + 空响应体",
+        "parent_query": ("所属产品", "productID"),
+        "children_of": ("产品", "productID", "epics"),
+        # 第 33 条：POST 成功但**不返回 id** → 只能创建后反查子列表拿 id。
+        "create_id_via": ("所属产品", "epics"),
+        # 第 29 条：DELETE 要 storyID query（规范写的是 :epicID —— 规范错）。
+        "delete_query": ("storyID",),
+        "columns": (
+            ("标题", "title", "text", W),
+            ("所属产品", "productID", "number", W),
+            ("父需求", "parent", "number", W),
+            ("优先级", "pri", "number", W),
+            ("类别", "category", "select", W),
+            ("来源", "source", "select", W),
+            ("预计工时", "estimate", "number", W),
+            ("指派给", "assignedTo", "text", W),
+            ("评审人", "reviewer", "array", W),
+            ("需求描述", "spec", "longtext", W),
+            ("验收标准", "verify", "longtext", W),
+        ),
+        "required": ("标题", "所属产品", "评审人"),
+        # 第 30 条：reviewer 必须数组（规范说是 string）。
+        "required_source": "measured",
+        "link_cols": (("所属产品", "productID", "产品"),),
+        "actions": (
+            ("激活", "activate", (), "重新激活业务需求"),
+            ("关闭", "close", (), "关闭业务需求"),
+            ("变更", "change", (), "走业务需求变更流程"),
+        ),
+    },
+    "用户需求": {
+        "resource": "requirements",
+        "list_key": "requirements",
+        "listable": False,
+        "not_listable_why": "实测 GET /requirements 返回 HTTP 200 + 空响应体",
+        "parent_query": ("所属产品", "productID"),
+        "children_of": ("产品", "productID", "requirements"),
+        "create_id_via": ("所属产品", "requirements"),      # 第 33 条
+        "delete_query": ("storyID",),                        # 第 29 条
+        "columns": (
+            ("标题", "title", "text", W),
+            ("所属产品", "productID", "number", W),
+            ("父需求", "parent", "number", W),
+            ("优先级", "pri", "number", W),
+            ("类别", "category", "select", W),
+            ("来源", "source", "select", W),
+            ("预计工时", "estimate", "number", W),
+            ("指派给", "assignedTo", "text", W),
+            ("评审人", "reviewer", "array", W),
+            ("需求描述", "spec", "longtext", W),
+            ("验收标准", "verify", "longtext", W),
+        ),
+        "required": ("标题", "所属产品", "评审人"),
+        "required_source": "measured",
+        "link_cols": (("所属产品", "productID", "产品"),),
+        "actions": (
+            ("激活", "activate", (), "重新激活用户需求"),
+            ("关闭", "close", (), "关闭用户需求"),
+            ("变更", "change", (), "走用户需求变更流程"),
+        ),
+    },
+    "应用": {
+        "resource": "systems",
+        "list_key": "systems",
+        "listable": False,
+        "not_listable_why": "实测 GET /systems 不带 productID 报 Missing required parameter（第 28 条）",
+        "parent_query": ("所属产品", "productID"),
+        "children_of": ("产品", "productID", "systems"),
+        "create_id_via": ("所属产品", "systems"),           # 第 33 条
+        # 第 36 条：**没有 DELETE 接口**（规范里也只有 POST/PUT）→ 建了就删不掉。
+        "no_delete_why": "禅道没有 DELETE /systems 接口（规范里也只有 POST/PUT），建了就删不掉",
+        "columns": (
+            ("名称", "name", "text", W),
+            ("所属产品", "productID", "number", W),
+            ("是否集成应用", "integrated", "number", W),
+            ("集成子应用", "children", "array", W),
+            ("描述", "desc", "longtext", W),
+        ),
+        "required": ("名称", "所属产品", "是否集成应用", "集成子应用"),
+        # 「所属产品」必须走 query（第 28 条）→ 判据算实测。
+        "required_source": "measured",
+        "link_cols": (("所属产品", "productID", "产品"),),
+    },
 }
 
 #: 逻辑表名 → 禅道实体名。**这就是「实体映射层」的全部**：
@@ -458,11 +819,18 @@ ALIASES: Dict[str, str] = {
     "生产计划": "执行",     # 一轮「执行」= 一版生产计划
     "生产工序": "任务",     # 一道工序 = 一个任务
     "迭代": "执行",
+    "产品线": "项目集",
     "资源": "用户",         # 只对得上「人」那一部分（设备/外协无对应实体）
     "人员": "用户",
     "缺陷": "Bug",
     "用例": "测试用例",
     "测试任务": "测试单",
+    "计划": "产品计划",     # 禅道的「计划」= 产品计划（排期），不是项目计划
+    "版本": "发布",         # 「发布」= 对外版本；对内打包叫「构建」，别混
+    "打包": "构建",
+    "史诗": "业务需求",     # 敏捷术语 epic 的常见中文译法
+    "RR": "用户需求",       # 禅道术语 requirement = 用户需求
+    "US": "需求",           # user story
 }
 
 
@@ -871,11 +1239,14 @@ class ZentaoAdapter(BaseAdapter):
     def _iter_rows(self, ename: str, spec: dict, page_size: int = None):
         """按 ``pager`` 翻页产出行。**三重保护，绝不返回部分数据冒充全量。**"""
         if not spec.get("listable"):
+            co = self._children_of(spec)
+            hint = ("　→ 这个实体**可以经父资源读**：用 "
+                    "list_children('%s', <父 id>)，父实体是「%s」。"
+                    % (ename, co[0])) if co else ""
             raise Unsupported(
-                "禅道实体「%s」的列表接口在本版不可用（%s）。"
-                "读不了就是读不了 —— 适配器不返回空列表冒充「没有数据」。"
-                "改用 get_row(按 id 取详情) / append_row / update_row / delete_rows。"
-                % (ename, spec.get("not_listable_why") or "原因未知"))
+                "禅道实体「%s」的**顶层列表**接口在本版不可用（%s）。"
+                "读不了就是读不了 —— 适配器不返回空列表冒充「没有数据」。%s"
+                % (ename, spec.get("not_listable_why") or "原因未知", hint))
         size = page_size or _PAGE
         page = 1
         prev_sig = None
@@ -945,6 +1316,77 @@ class ZentaoAdapter(BaseAdapter):
         ename, spec = self._resolve(table)
         return [dict(r) for r in self._iter_rows(ename, spec)]
 
+    # ── 父资源子列表（第 39 条：读「顶层列表不可用」那些实体的**唯一正路**）──
+    def _children_of(self, spec: dict) -> Optional[tuple]:
+        co = spec.get("children_of")
+        return tuple(co) if co else None
+
+    def _iter_children(self, ename: str, spec: dict, parent_id, page_size: int = None):
+        """按 ``/<父资源>/:id/<子路径>`` 翻页产出行。
+
+        实测这些子列表**都是可用的**（第 39 条），哪怕该实体自己的顶层列表
+        回的是 0 字节。所以「读不了」的实体里，只有真正没有父路径的那些
+        （如**构建**只能经执行/项目读）才需要如实拒绝。
+        """
+        co = self._children_of(spec)
+        if not co:
+            raise Unsupported(
+                "禅道实体「%s」既没有可用顶层列表，也没有声明的父资源路径，"
+                "读不了就是读不了（不返回 [] 冒充「没有数据」）。" % ename)
+        parent_ename, _field, arr_key = co
+        p_ename, p_spec = self._resolve(parent_ename)
+        base = "/%s/%s/%s" % (p_spec["resource"], parent_id, spec["resource"])
+        size = page_size or _PAGE
+        page = 1
+        while True:
+            d = self._call("GET", base, {"recPerPage": size, "pageID": page})
+            arr = d.get(arr_key)
+            if not isinstance(arr, list):
+                raise ZentaoError(
+                    "禅道 %s 的子列表响应里没有 %r 数组（实际键：%s）。"
+                    % (base, arr_key, "/".join(sorted(d))), body=d)
+            if not arr:
+                return
+            for raw in arr:
+                if isinstance(raw, dict):
+                    yield raw
+            pager = d.get("pager") if isinstance(d.get("pager"), dict) else {}
+            try:
+                total = int(pager["recTotal"]) if pager.get("recTotal") is not None else None
+                page_total = int(pager["pageTotal"]) if pager.get("pageTotal") is not None else None
+            except (TypeError, ValueError, KeyError):
+                total = page_total = None
+            # 第 26 条：终止**只能**靠 pageTotal/recTotal ——
+            # 超范围页码会被钳制到最后一页，本页永远不为空。
+            if page_total is not None and page >= page_total:
+                return
+            if total is not None and total <= page * size:
+                return
+            if total is None and page_total is None and len(arr) < size:
+                return
+            page += 1
+            if page > _MAX_PAGES:
+                raise ZentaoError("禅道 %s 子列表翻页超过 %d 页仍未读完，已中止。"
+                                  % (base, _MAX_PAGES))
+
+    def list_children(self, table: str, parent_id) -> List[Dict[str, Any]]:
+        """**扩展方法**（不在契约里）：按父 id 读子列表。
+
+        用途：``任务``/``需求``/``业务需求``/``用户需求``/``产品计划``/``发布``/``应用``
+        的顶层列表在禅道本版回 0 字节或 HTML，**只有经父资源才读得到**。
+        另一个用途是性能：读「某个执行下的任务」比全量扫再过滤快得多，
+        而且**结果就是全体**（不需要再筛）。
+
+        ``parent_id`` 传的是**父实体在禅道里的 id**（如 productID / executionID）。
+        父 id 对不上时服务端报 ``... does not exist``，这里如实抛出。
+        """
+        ename, spec = self._resolve(table)
+        pid = str(parent_id or "").strip()
+        if not pid:
+            raise ZentaoError("读禅道实体「%s」的子列表必须给 parent_id。" % ename)
+        return [self._flat_row(ename, raw, spec)
+                for raw in self._iter_children(ename, spec, pid)]
+
     def get_row(self, table: str, row_id: str) -> Optional[Dict[str, Any]]:
         """按 id 取单行；不存在返回 ``None``。
 
@@ -980,9 +1422,17 @@ class ZentaoAdapter(BaseAdapter):
                               body=data)
         detail = data.get(spec.get("detail_key") or spec["resource"])
         if not isinstance(detail, dict):
-            keys = [k for k in data if isinstance(data[k], dict)]
+            # ⚠️ 第 34 条（本文件里最阴的一条）：不存在的 id 回的是
+            #    ``{"status":"success","load":{"alert":"抱歉，您访问的对象不存在！"}}``
+            #    —— **status 是 success**。所以不能靠 status 判存在性；
+            #    判据是「除了 status/load/message 之外，还有没有业务数据对象」。
+            #    ``load`` 是禅道的「跳转指令」字段，不是数据。
+            keys = [k for k in data
+                    if k not in ("status", "load", "message") and isinstance(data[k], dict)]
             if len(keys) == 1:
                 detail = data[keys[0]]
+            elif not keys and "load" in data:
+                return None                # 「success 但什么都没有」= 不存在
             else:
                 raise ZentaoError("禅道 %s#%s 详情响应里找不到实体对象（键：%s）"
                                   % (ename, target, "/".join(sorted(data))), body=data)
@@ -1083,6 +1533,67 @@ class ZentaoAdapter(BaseAdapter):
             return str(value)
         return value if isinstance(value, str) else str(value)
 
+    # ── 写 ─────────────────────────────────────────────
+    def _parent_param(self, ename: str, spec: dict, data: dict) -> dict:
+        """挑出**必须走 query string** 的父参数（第 27 条）。
+
+        为什么不能像别的字段一样待在 body 里：实测 ``productID`` 放进 body 会被
+        服务端当成「没传」（报 ``Missing required parameter: productID.``），
+        而**官方规范恰恰把它声明为 requestBody 里的 integer 属性** —— 规范错了。
+        调用方只管在 ``data`` 里照列名给值，放 query 还是放 body 由映射层决定。
+        """
+        pq = spec.get("parent_query")
+        if not pq:
+            return {}
+        _label, field = pq
+        by_label = self._by_label(spec)
+        by_field = self._by_field(spec)
+        for k, v in (data or {}).items():
+            col = by_label.get(k) or by_field.get(k)
+            if col and col[1] == field and v is not None and str(v).strip() != "":
+                return {field: v}
+        return {}
+
+    def _child_id_set(self, ename: str, spec: dict, parent_id) -> set:
+        return {str(r.get("id")) for r in self._iter_children(ename, spec, parent_id)}
+
+    def _recover_created_id(self, ename: str, spec: dict, query: dict, data: dict,
+                            pre_ids: set) -> Any:
+        """第 33 条：``POST /epics`` ``/requirements`` ``/systems`` **成功但不回 id**。
+
+        只能反查父资源子列表、取「新增出来的那一条」。按 id 差集找（不是按标题匹配）——
+        标题可能重复，id 不会。
+        """
+        co = self._children_of(spec)
+        parent_id = next(iter(query.values()), None)
+        if not co or parent_id is None:
+            raise ZentaoError(
+                "禅道创建 %s 成功但响应里没有 id，而该实体**没有声明 create_id_via**、"
+                "也没有可用的父资源路径，无法反查新建行的 id。"
+                "（上层要靠 id 才能更新/删除，静默返回 None 会让记录「建好了但找不回来」。）"
+                % ename)
+        after = list(self._iter_children(ename, spec, parent_id))
+        fresh = [r for r in after if str(r.get("id")) not in pre_ids]
+        if len(fresh) == 1:
+            return fresh[0].get("id")
+        if len(fresh) > 1:
+            # 并发或残留导致一次多出几条 —— 用标题再筛一次（仍拿不准就报错，不猜）
+            want = None
+            for k, v in (data or {}).items():
+                col = self._by_label(spec).get(k) or self._by_field(spec).get(k)
+                if col and col[1] in ("title", "name"):
+                    want = str(v)
+                    break
+            hit = [r for r in fresh
+                   if want is not None
+                   and str(r.get("title") or r.get("name") or "") == want]
+            if len(hit) == 1:
+                return hit[0].get("id")
+        raise ZentaoError(
+            "禅道创建 %s 成功但响应里没有 id，回查父资源子列表时找到 %d 条新增记录"
+            "（无法确定是哪一条，不猜）。请到禅道界面确认后按 id 手工处理。"
+            % (ename, len(fresh)))
+
     def append_row(self, table: str, data: Dict[str, Any]) -> str:
         """新增一行，返回**字符串**形式的 id。
 
@@ -1091,14 +1602,30 @@ class ZentaoAdapter(BaseAdapter):
         这里统一 ``str()`` 化，两边的 id 才能互相对得上（``get_row``/``update_row``
         都按字符串比）。
 
+        ⚠️ **第 33 条**：``业务需求`` / ``用户需求`` / ``应用`` 三个实体**成功也不回 id**，
+        适配器会**反查父资源子列表**把 id 找回来（见 ``create_id_via``）。
+        这条不做的话，调用方拿到的是「建好了但不知道是哪一条」。
+
         ⚠️ **写「项目」有副作用**：实测创建 scrum 项目会顺手建一个**同名产品**
         （列表里 ``hasProduct: "1"``）。删掉项目**不会**删掉那个产品。
         批量建项目前请先想清楚产品线要怎么收。
         """
         ename, spec = self._resolve(table)
+        query = self._parent_param(ename, spec, data)
+        if spec.get("parent_query") and not query:
+            raise ZentaoError(
+                "创建禅道实体「%s」必须给「%s」（它是必填的父资源，"
+                "且在禅道里必须作为 query 参数发送，见模块 docstring 第 27 条）。"
+                % (ename, spec["parent_query"][0]))
         payload = self._to_payload(ename, spec, data, for_create=True)
-        d = self._call("POST", "/" + spec["resource"], body=payload)
+        for f in query:
+            payload.pop(f, None)        # 已经在 query 里了，别再往 body 发一份
+        pre_ids = (self._child_id_set(ename, spec, next(iter(query.values())))
+                   if spec.get("create_id_via") else None)
+        d = self._call("POST", "/" + spec["resource"], query, body=payload)
         rid = d.get("id")
+        if rid is None and spec.get("create_id_via"):
+            rid = self._recover_created_id(ename, spec, query, data, pre_ids or set())
         if rid is None:
             raise ZentaoError(
                 "禅道创建 %s 返回成功但没有 id（键：%s）。上层要靠 id 才能后续更新/删除，"
@@ -1138,11 +1665,109 @@ class ZentaoAdapter(BaseAdapter):
         ``"Project does not exist."``（不是静默成功）。所以逐条删、
         把任何非 success 都当失败抛出是**被实测支持**的 ——
         当成成功会产生「上层以为清了、实际还在」的幽灵数据。
+
+        ⚠️ 两处与规范不符、都已实测确认：
+
+        · **第 29 条**：``业务需求`` / ``用户需求`` 的删除要 ``?storyID=<id>``
+          作为 **query 参数**，而规范写的是路径参数 ``:epicID`` / ``:requirementID``。
+          不带它服务端报 ``Missing required parameter: storyID.``
+
+        · **第 36 条**：``应用`` **根本没有 DELETE 接口**（规范里也只有 POST/PUT）→
+          直接抛 ``Unsupported``，而不是发一个注定失败的请求、
+          再让上层从报错里去猜「是不是没权限」。
+
+        ⚠️ 另注**第 37 条**：删除是**软删除** —— 删完 ``deleted`` 变 ``"1"``，
+        记录仍能 ``GET`` 到、名字仍被占用。所以「删成功」≠「真的没了」。
         """
         ename, spec = self._resolve(table)
+        why = spec.get("no_delete_why")
+        if why:
+            raise Unsupported("禅道实体「%s」不能删除：%s" % (ename, why))
         ids = [str(x).strip() for x in (row_ids or []) if str(x or "").strip()]
         for rid in ids:
-            self._call("DELETE", "/%s/%s" % (spec["resource"], rid))
+            q = {p: rid for p in (spec.get("delete_query") or ())}
+            self._call("DELETE", "/%s/%s" % (spec["resource"], rid), q)
+
+    # ── 状态流转动作（第 41 条：专业 PM 软件最核心的能力）──────
+    def actions_of(self, table: str) -> List[Dict[str, Any]]:
+        """**扩展方法**（不在契约里）：列出该实体支持的状态流转动作。
+
+        返回 ``[{"动作","说明","必填"}, …]``；不支持动作的实体返回 ``[]``
+        —— 这里是**真的没有**（禅道只为部分实体提供流转子路径），不是读不到。
+
+        为什么要把它做成可查询的：动作的**必填字段全靠实测**（规范里一个都没写），
+        而且每个动作要的字段不一样（``start`` 要工时、``finish`` 还要三个日期）。
+        调用方能先问一句「这个动作要什么」再决定怎么调，比试错省事。
+        """
+        ename, spec = self._resolve(table)
+        return [{"动作": lab, "说明": desc, "必填": list(req), "路径": act}
+                for lab, act, req, desc in (spec.get("actions") or ())]
+
+    def run_action(self, table: str, row_id, action: str,
+                   data: Dict[str, Any] = None) -> None:
+        """**扩展方法**（不在契约里）：执行状态流转动作。
+
+        ``PUT /<资源>/:id/<动作>`` —— 这类接口是「专业 PM 软件」和「一张表」
+        的分水岭：``start`` 不是把 ``status`` 改成 ``doing`` 那么简单，
+        它要记工时、写实际开始时间、按服务端规则算剩余；
+        ``resolve`` 要记解决方案与解决版本。**用 ``update_row`` 改 ``status``
+        是做不出这些副作用的。**
+
+        实测要点（第 41 条）：
+
+        · 每个动作的**必填字段都不一样**，且规范里一个都没写 ——
+          必填清单来自实测，见 ``actions_of()``。
+        · ``启动``/``完成``/``激活`` 少了工时字段会被拒
+          （``"总计消耗"和"预计剩余"不能同时为0``）。
+        · ``关闭`` 是**空 body 即可**的，但它**有副作用**：会写 ``closedDate``。
+        · 动作**成功时不返回 id**（与 ``append_row`` 不同），所以本方法返回 ``None``。
+        · **读是强一致的**：动作做完立刻 ``get_row`` 就能看到新状态
+          （这点与飞书那 ~2.7s 的可见性延迟不一样）。
+        """
+        ename, spec = self._resolve(table)
+        rid = str(row_id or "").strip()
+        if not rid:
+            raise ZentaoError("执行禅道实体「%s」的动作必须给 row_id（禅道 id）。" % ename)
+        acts = spec.get("actions") or ()
+        hit = [a for a in acts if action in (a[0], a[1])]
+        if not hit:
+            avail = " / ".join("%s(%s)" % (a[0], a[1]) for a in acts) or "（该实体没有动作）"
+            raise Unsupported(
+                "禅道实体「%s」没有动作 %r。可用的是：%s。"
+                "　（动作是**服务端固定的子路径**，不像字段那样可以任意新增；"
+                "要改普通属性请用 update_row。）" % (ename, action, avail))
+        _lab, act, required, _desc = hit[0]
+        by_label = self._by_label(spec)
+        by_field = self._by_field(spec)
+
+        payload: Dict[str, Any] = {}
+        unknown: List[str] = []
+        for k, v in (data or {}).items():
+            f = ACTION_FIELDS.get(str(k))
+            if f is None:
+                col = by_label.get(k) or by_field.get(k)
+                f = col[1] if col else None
+            if f is None:
+                unknown.append(str(k))
+                continue
+            if v is None or (isinstance(v, str) and not v.strip()):
+                continue                          # 空值不发送（同 _to_payload 的规矩）
+            if f in ACTION_ARRAY_FIELDS and not isinstance(v, (list, tuple)):
+                v = [v]                           # 实测 openedBuild 要数组
+            payload[f] = v
+        if unknown:
+            raise ZentaoError(
+                "动作「%s」不认识这些字段：%s。可用的是：%s"
+                % (_lab, " / ".join(unknown),
+                   " / ".join(sorted(ACTION_FIELDS))))
+        missing = [lab for lab in required
+                   if ACTION_FIELDS.get(lab, lab) not in payload]
+        if missing:
+            raise ZentaoError(
+                "禅道动作「%s（%s/%s/%s）」缺少必填字段：%s。"
+                "　（这些必填是**实测**出来的，规范里没有写；可先调 actions_of('%s') 查。）"
+                % (_lab, spec["resource"], rid, act, " / ".join(missing), ename))
+        self._call("PUT", "/%s/%s/%s" % (spec["resource"], rid, act), body=payload)
 
     # ── 表结构 ─────────────────────────────────────────
     def ensure_table(self, table: str,

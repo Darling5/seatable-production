@@ -201,6 +201,7 @@ def read_only(a):
     """只读验证。进来时会把 ``a._t`` 套上 ``_MethodGuard``。"""
     from adapters.base import Unsupported, capabilities_of
     from adapters.zentao import ENTITY_SPECS
+    SPECS = ENTITY_SPECS                 # 下面用短名，读起来清爽些
 
     print("\n── 只读验证（传输层已套上「只发 GET」闸门）──")
     a._t = _MethodGuard(a._t)
@@ -286,6 +287,42 @@ def read_only(a):
             ("ensure_table", lambda: a.ensure_table("项目", None),
              "实体与字段固定，没有建表/加列接口")):
         check("%s 如实抛 Unsupported" % label, _raises(fn, Unsupported), why)
+
+    # ── 第二轮的扩展能力（全部对应实测事实）───────────────
+    print("\n  ── 扩展能力（第二轮实测：19 资源 × 88 路径全量覆盖）──")
+    check("实体覆盖 16 个", len(entities) == 16,
+          "新增：产品计划 / 构建 / 发布 / 业务需求 / 用户需求 / 应用")
+    absent = {"工单", "反馈", "文件"} & set(entities)
+    check("本版不存在的实体没有被硬塞进来", not absent,
+          "工单/反馈/文件 的 POST 实测回 0 字节（路由不存在）→ 不建映射")
+
+    reachable = [t for t in entities if SPECS[t].get("children_of")]
+    check("顶层读不了的实体都指出了「经父资源读」的正路", len(reachable) >= 7,
+          "；".join("%s←%s" % (t, SPECS[t]["children_of"][0]) for t in reachable[:8]))
+
+    pq = sorted(t for t in entities if SPECS[t].get("parent_query"))
+    check("父参数走 query 的实体标全了", len(pq) == 9,
+          "%s（实测：放 body 会被当成「没传」，而规范恰恰把它声明在 body 里）"
+          % " / ".join(pq))
+
+    acts = {t: a.actions_of(t) for t in entities}
+    with_acts = {t: v for t, v in acts.items() if v}
+    check("状态流转动作能报出来（含实测必填）", bool(with_acts),
+          "；".join("%s：%s" % (t, "/".join(x["动作"] for x in v)) for t, v in with_acts.items()))
+    for t, v in with_acts.items():
+        for x in v:
+            note("· %s.%s → /%s  必填=%s（%s）"
+                 % (t, x["动作"], x["路径"], "、".join(x["必填"]) or "空 body 即可",
+                    x["说明"]))
+    check("动作必填清单非空或显式声明空 body 即可",
+          all(isinstance(x["必填"], list) for v in with_acts.values() for x in v))
+
+    rec = sorted(t for t in entities if SPECS[t].get("create_id_via"))
+    check("「建成功但不回 id」的实体已声明回查路径", len(rec) == 3,
+          "%s —— POST 成功只回 message，靠反查父资源子列表拿 id" % " / ".join(rec))
+    nd = sorted(t for t in entities if SPECS[t].get("no_delete_why"))
+    check("没有删除接口的实体已如实标注", nd == ["应用"],
+          "应用：禅道没有 DELETE /systems，建了就删不掉")
 
     check("describe() 不含令牌",
           (TOKEN not in a.describe()) if TOKEN else True, redact(a.describe()))
@@ -433,6 +470,145 @@ def write_test(a, table):
                   "（这就是实测到的副作用，见 adapters/zentao.py 模块 docstring 第 17 条）")
 
 
+def deep_write_test(a):
+    """第二轮新增能力的**真实**写路径验证。
+
+    为什么值得单独跑一遍：这四项在第一版里**根本不存在**，而它们恰恰是
+    「禅道是 PM 软件」与「禅道是一张表」的分界线 ——
+
+      · ``list_children``    —— 读「顶层列表回 0 字节」那些实体的**唯一正路**
+      · ``run_action``       —— 状态流转（其副作用是 ``update_row`` 改 status 做不出来的）
+      · ``create_id_via``    —— 「建成功却不回 id」的三个实体的反查
+      · ``delete_query``     —— 业务需求/用户需求删除要的 ``?storyID=``
+
+    全部名字带本次运行的时间戳，``finally`` 里**反序**删除 + 清理级联产品。
+    """
+    from adapters.zentao import ACTION_FIELDS  # noqa: F401  （说明用）
+
+    mark = run_mark()
+    print("\n" + "=" * 70)
+    print("── 深度写路径验证（子列表 / 流转动作 / 回查 id / storyID 删除）──")
+    print("   本次标记：%s" % mark)
+    note("这一节会建 产品→项目→执行→任务 与一条业务需求，收尾全部删除。")
+    note("⚠️ 建「项目」会**顺手建一个同名产品**且**项目名用过一次就不可回收** —— "
+         "所以名字必须唯一（见 adapters/zentao.py 模块 docstring 第 23 条）。")
+
+    before = _snapshot(a, ("产品", "项目", "执行", "任务"))
+    made = []            # [(实体, id)] 按创建顺序，收尾反序删
+
+    def mk(table, data):
+        rid = a.append_row(table, data)
+        made.append((table, rid))
+        return rid
+
+    try:
+        pid = mk("产品", {"名称": mark + "_产品"})
+        check("① 产品建立（required 只有 name）", bool(pid), "id=%s" % pid)
+
+        jid = mk("项目", {"名称": mark + "_项目", "计划完成": "2027-12-31"})
+        check("② 项目建立（实测最小集 = name + end）", bool(jid), "id=%s" % jid)
+
+        eid = mk("执行", {"名称": mark + "_执行", "所属项目": jid,
+                          "计划开始": "2026-10-01", "计划完成": "2026-12-31"})
+        check("③ 执行建立（begin 必须 ≥ 项目的 begin）", bool(eid), "id=%s" % eid)
+
+        tid = mk("任务", {"名称": mark + "_任务", "所属执行": eid})
+        check("④ 任务建立（父字段 executionID 走 **body**）", bool(tid), "id=%s" % tid)
+
+        # ── A. list_children：真实执行 id 读它下面的任务 ─────────────
+        try:
+            kids = a.list_children("任务", eid)
+            hit = [r for r in kids if str(r.get("__row_id__")) == str(tid)]
+            check("A. list_children 按真实执行 id 读到了刚建的任务",
+                  len(hit) == 1,
+                  "/executions/%s/tasks 共 %d 行，含本次任务 %s 条" % (eid, len(kids), len(hit)))
+            check("A2. 顶层 list_rows(任务) 仍然如实拒绝（指路 list_children）",
+                  _raises(lambda: a.list_rows("任务"), Exception))
+        except Exception as e:
+            check("A. list_children", False, redact(str(e))[:180])
+
+        # ── B. run_action：关闭任务（实测空 body 即可，且有副作用）──
+        try:
+            r0 = a.get_row("任务", tid) or {}
+            a.run_action("任务", tid, "关闭")
+            r1 = a.get_row("任务", tid) or {}
+            check("B. run_action 关闭任务生效（status → closed 且写了 closedDate）",
+                  str(r1.get("状态")) == "closed" and bool(r1.get("__row_id__")),
+                  "状态 %r → %r（读回是强一致的，与飞书的可见性延迟不同）"
+                  % (r0.get("状态"), r1.get("状态")))
+            check("B2. 动作缺必填 → 客户端拦下并说清缺哪个",
+                  _raises(lambda: a.run_action("任务", tid, "启动",
+                                               {"消耗工时": "1"}), Exception),
+                  "实测服务端只会回「总计消耗和预计剩余不能同时为0」，指不到具体字段")
+            check("B3. 不存在的动作 → Unsupported 并列出可用的",
+                  _raises(lambda: a.run_action("任务", tid, "起飞"), Exception))
+        except Exception as e:
+            check("B. run_action", False, redact(str(e))[:180])
+
+        # ── C. 「建成功但不回 id」的三个实体靠反查拿 id ─────────────
+        for t, body in (("业务需求", {"标题": mark + "_业务需求", "所属产品": pid,
+                                      "评审人": ["admin"]}),
+                        ("用户需求", {"标题": mark + "_用户需求", "所属产品": pid,
+                                      "评审人": ["admin"]})):
+            try:
+                rid = mk(t, body)
+                check("C. %s：POST 不回 id，反查父资源子列表拿到 id" % t,
+                      bool(rid) and str(rid).isdigit(),
+                      "id=%s（实测响应只有 message，没有 id）" % rid)
+            except Exception as e:
+                check("C. %s 回查 id" % t, False, redact(str(e))[:180])
+
+        # ── D. 业务需求删除要 ?storyID=（规范写的是 :epicID）────────
+        try:
+            epic = next((i for tb, i in made if tb == "业务需求"), None)
+            if epic:
+                a.delete_rows("业务需求", [epic])
+                made[:] = [(tb, i) for tb, i in made if not (tb == "业务需求" and i == epic)]
+                check("D. 业务需求删除（带 ?storyID=）成功", True, "id=%s" % epic)
+            else:
+                check("D. 业务需求删除", False, "上一节没建出业务需求，跳过")
+        except Exception as e:
+            check("D. 业务需求删除（带 ?storyID=）", False, redact(str(e))[:180])
+
+        check("E. 应用没有删除接口 → 如实抛 Unsupported，且不发请求",
+              _raises(lambda: a.delete_rows("应用", ["1"]), Exception),
+              "禅道没有 DELETE /systems（规范里也只有 POST/PUT）")
+    except Exception as e:
+        check("深度写路径", False, redact(str(e))[:200])
+    finally:
+        print("\n── 清理深度验证建立的记录（反序）──")
+        for t, rid in reversed(made):
+            try:
+                a.delete_rows(t, [str(rid)])
+                print("      · 已删 %s#%s" % (t, rid))
+            except Exception as e:
+                print("      ! 删 %s#%s 失败，请手工处理：%s" % (t, rid, redact(str(e))[:120]))
+        # 级联：建项目顺手建的同名产品
+        for t in CASCADE_WATCH:
+            b = before.get(t)
+            if b is None:
+                continue
+            after = _snapshot(a, (t,)).get(t)
+            if after is None:
+                continue
+            fresh = {k: v for k, v in after.items() if k not in b}
+            for cid, nm in fresh.items():
+                try:
+                    a.delete_rows(t, [cid])
+                    print("      · 已清理级联产生的「%s」#%s（%r）" % (t, cid, nm))
+                except Exception as e:
+                    print("      ! 级联清理失败 %s#%s：%s" % (t, cid, redact(str(e))[:120]))
+        left = _snapshot(a, ("产品", "项目", "执行", "任务"))
+        stuck = []
+        for t, snap in left.items():
+            b = before.get(t) or {}
+            for k, v in (snap or {}).items():
+                if k not in b:
+                    stuck.append("%s#%s(%s)" % (t, k, v))
+        check("深度验证后全部回到基线", not stuck,
+              "残留：%s" % " / ".join(stuck) if stuck else "产品/项目/执行/任务 均与开跑前一致")
+
+
 def main():
     global TOKEN
     ap = argparse.ArgumentParser(description="禅道后端连通性与契约验证")
@@ -447,6 +623,8 @@ def main():
                     help="额外做写路径验证；**必须**同时给 --table，且会真实写入该实体")
     ap.add_argument("--table", default="",
                     help="写路径验证用的实体/逻辑表名（禅道没有建表接口，故必须显式指定）")
+    ap.add_argument("--skip-deep", action="store_true",
+                    help="跳过深度写验证（子列表/流转动作/回查 id/storyID 删除）")
     args = ap.parse_args()
 
     if args.write_test and not args.table:
@@ -482,6 +660,11 @@ def main():
     read_only(a)
     if args.write_test and not args.read_only:
         write_test(a, args.table)
+        # 第二轮新增能力的真实验证（子列表 / 流转动作 / 回查 id / storyID 删除）。
+        # 默认跟着 --write-test 一起跑：这四项是「禅道是 PM 软件」的核心，
+        # 只验证「能建一行项目」等于没摸到它真正的能力。
+        if not args.skip_deep:
+            deep_write_test(a)
 
     bad = [x for x in RESULTS if not x[1]]
     print("\n══ 结果：%d 项通过 / %d 项失败 ══" % (len(RESULTS) - len(bad), len(bad)))
