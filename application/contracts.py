@@ -245,11 +245,32 @@ class RunResult:
 
 # ────────────────────────────────────────────────────────────────────
 # 业务对象 ID（§1：ID 是主键，名称只是展示）
+#
+# ★ 2026-10-03（批次 1 / G29 前置）：**前缀一律 3 个字母**。
+#   实测缺口：原先 `production_order` / `purchase_order` / `after_sales` 用的是
+#   **2 字母**前缀（MO / PO / AS），而跨层校验器
+#   `application/decision_support/alignment.py::is_valid_id` 的 `ID_RE` 要求
+#   `[A-Z]{3}` → 这三类业务 ID **被跨层校验直接拒绝**。
+#   实测（12 类对象）：仅 `project`(PRJ) 通过，其余 11 类全被拒 ——
+#   3 类因形态不符（MO/PO/AS）、8 类因未登记进 `KNOWN_PREFIXES`。
+#   批次 1 要建 `PO → GR → 付款单` 这条线，PO 的 ID 必须先跨层合法，故在此收口。
+#
+#   向后兼容：旧前缀保留在 `LEGACY_ID_PREFIX` 里继续**可校验**（历史数据不失效），
+#   但不再用于生成新 ID。legacy 名单是显式且有限的，由测试锁定。
 # ────────────────────────────────────────────────────────────────────
 _ID_PREFIX = {
     "customer": "CUS", "lead": "LED", "opportunity": "OPP", "requirement": "REQ",
     "solution": "SOL", "quote": "QUO", "contract": "CTR", "project": "PRJ",
-    "production_order": "MO", "purchase_order": "PO", "shipment": "SHP",
+    "production_order": "MFO", "purchase_order": "PUR", "shipment": "SHP",
+    "after_sales": "AFS",
+}
+
+# 历史两字母前缀：只用于**读**旧数据，不再用于生成。
+# 例：`MO-20260913-ab12` 是合法历史 ID，改前缀后仍须能通过 validate_object_id，
+# 否则「改名把历史数据变成非法数据」。
+LEGACY_ID_PREFIX = {
+    "production_order": "MO",
+    "purchase_order": "PO",
     "after_sales": "AS",
 }
 
@@ -264,9 +285,39 @@ def new_object_id(kind: str, seq: int = 0, now: Optional[_dt.datetime] = None) -
     return "%s-%s-%s" % (prefix, now.strftime("%Y%m%d"), tail)
 
 
-def validate_object_id(kind: str, value: str) -> bool:
-    """校验业务 ID 是否匹配对象类型及 ``PREFIX-YYYYMMDD-XXXX`` 格式。"""
+def is_canonical_object_id(kind: str, value: str) -> bool:
+    """**严格**判定：只认 `_ID_PREFIX` 里的规范前缀，**不接受**历史前缀。
+
+    与 `decision_support.alignment.is_canonical_id` 对称 ——
+    两层各有一个「只认规范形态」的入口，给**新写入**用：
+
+        validate_object_id       = 规范 ∪ 历史   → 读旧数据
+        is_canonical_object_id   = 规范           → 写新数据
+
+    为什么要有严格版：跨层引用的校验（如 `G23` 要求付款单挂的 PO 号
+    必须能与 `L_proj` 对上账）如果连历史形态都放行，
+    `PO-…` 这种已废弃形态就会被判成「合法」，于是
+    「形态非法」那条原因码**永远取不到** —— 一个写在 `__all__` 里的死分支。
+    """
     prefix = _ID_PREFIX.get(str(kind).lower())
+    if not prefix or not isinstance(value, str):
+        return False
+    return bool(re.fullmatch(r"%s-\d{8}-[0-9A-Za-z]{4}" % re.escape(prefix), value))
+
+
+def validate_object_id(kind: str, value: str) -> bool:
+    """校验业务 ID 是否匹配对象类型及 ``PREFIX-YYYYMMDD-XXXX`` 格式。
+
+    接受**规范化前缀**与 ``LEGACY_ID_PREFIX`` 里的历史前缀（只读兼容）。
+    需要严格判定（新写入、跨层引用）时用 ``is_canonical_object_id``。
+    """
+    return (is_canonical_object_id(kind, value)
+            or _validate_legacy_object_id(kind, value))
+
+
+def _validate_legacy_object_id(kind: str, value: str) -> bool:
+    """只读兼容：仅认 ``LEGACY_ID_PREFIX`` 里的历史前缀。"""
+    prefix = LEGACY_ID_PREFIX.get(str(kind).lower())
     if not prefix or not isinstance(value, str):
         return False
     return bool(re.fullmatch(r"%s-\d{8}-[0-9A-Za-z]{4}" % re.escape(prefix), value))
@@ -375,6 +426,10 @@ __all__ = [
     "STATUS_DEGRADED",
     "run_status",
     "new_run_id", "RunContext", "StepResult", "StepSpec", "ApprovalRequest", "RunResult",
-    "new_object_id", "validate_object_id", "EvidenceLink", "StateTransition",
+    "new_object_id", "validate_object_id", "is_canonical_object_id",
+    "EvidenceLink", "StateTransition",
+    # 注：`_ID_PREFIX` 是私有实现细节（下划线开头），**不进公开 API**，
+    # 需要它的测试直接按属性名访问。这里只公开历史前缀表。
+    "LEGACY_ID_PREFIX",
     "PROJECT_STATES", "can_transition", "transition_severity",
 ]

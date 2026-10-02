@@ -54,9 +54,36 @@ SOURCE_FIELDS = (
 )
 
 # ID 形态：与二期 application/project_brain/ids.py 完全一致
+# ★ 2026-10-03（批次 1 / G29 前置）：规范形态一律 **3 个字母**。
+#   实测缺口：本表原先只登记了 `ids.KIND_PREFIX` 的 15 个前缀，而
+#   `application/contracts.py::_ID_PREFIX` 的 12 类业务对象里 **11 类被本校验器拒绝**
+#   —— 3 类因前缀只有 2 字母（MO/PO/AS，被 `[A-Z]{3}` 挡掉）、
+#   8 类因根本没登记（CTR/CUS/LED/OPP/QUO/REQ/SHP/SOL）。
+#   批次 1 的 `PO → GR → 付款单` 这条线要求 PO 的 ID 跨层合法，故一并收口。
+#   ⚠️ 本模块**刻意不 import 二期**（见文件头：二期不可用时本层仍须可用），
+#   所以这张表是硬编码的并集 —— 靠 `tests/test_cross_layer_ids.py` 的
+#   交叉一致性测试防它与那两张表漂移（同 G30 的「防双口径」做法）。
 ID_RE = re.compile(r"^(?P<prefix>[A-Z]{3})-(?P<date>\d{8})-(?P<tail>[0-9A-Za-z]{4})$")
+# 历史两字母形态：只读兼容，不再用于生成（名单有限且显式，由测试锁定）
+LEGACY_ID_RE = re.compile(r"^(?P<prefix>[A-Z]{2})-(?P<date>\d{8})-(?P<tail>[0-9A-Za-z]{4})$")
+
+# 规范前缀 = `project_brain.ids.KIND_PREFIX` ∪ `contracts._ID_PREFIX`
+#            ∪ `exec_plane.schema.KIND_PREFIX`（去重）
 KNOWN_PREFIXES = ("PRJ", "PLN", "ACT", "EVD", "DEC", "MEM", "OBS", "FCT",
-                  "CMT", "PRD", "MSG", "RMD", "SNP", "RUN", "EVT")
+                  "CMT", "PRD", "MSG", "RMD", "SNP", "RUN", "EVT",
+                  # ↓ contracts 侧业务对象（2026-10-03 补登记）
+                  "CUS", "LED", "OPP", "REQ", "SOL", "QUO", "CTR",
+                  "MFO", "PUR", "SHP", "AFS",
+                  # ↓ exec_plane 侧执行平面实体（2026-10-03 批次 1 补登记）
+                  #   ★ 实测教训：这 7 个前缀是 `exec_plane` 新建实体时加的，
+                  #     第一版**忘了登记到这里**，于是执行平面所有 ID 被跨层校验
+                  #     全数拒绝 —— 与本次修的 G29 缺口**症状完全一样**。
+                  #     抓到它的是 `tests/test_exec_plane.py` 的并集一致性断言，
+                  #     不是人记得同步。这正是覆盖矩阵里那句
+                  #     「随 G14–G28 逐层建立，每层接入时补跨层 ID 一致性用例」的落地。
+                  "ITM", "BOM", "BLN", "PRQ", "GRN", "PAY", "WKO")
+# 历史前缀（两字母）：与 `contracts.LEGACY_ID_PREFIX` 一一对应
+LEGACY_PREFIXES = ("MO", "PO", "AS")
 
 # ────────────────────────── 语义分歧裁决表 ──────────────────────────
 # 这不是「注意事项」，是对齐结论：同名字段归谁、谁不得写谁。
@@ -202,13 +229,33 @@ def new_run_id(now: _dt.datetime = None, seq: int = 0) -> str:
 
 
 def is_valid_id(value: str, prefix: str = "") -> bool:
-    """校验 ``PREFIX-YYYYMMDD-XXXX``；给了 prefix 就要求前缀一致。"""
+    """校验 ``PREFIX-YYYYMMDD-XXXX``；给了 prefix 就要求前缀一致。
+
+    默认**同时接受规范（3 字母）与历史（2 字母）形态** ——
+    改前缀不该让历史数据变成「非法数据」，否则跨层校验会把真行判成脏行。
+    需要严格判定新写入时用 ``is_canonical_id``。
+    """
+    return is_canonical_id(value, prefix) or is_legacy_id(value, prefix)
+
+
+def is_canonical_id(value: str, prefix: str = "") -> bool:
+    """**严格**规范判定：3 字母前缀且已在 ``KNOWN_PREFIXES`` 登记。新写入用这个。"""
     m = ID_RE.match(str(value or ""))
     if not m:
         return False
     if prefix and m.group("prefix") != prefix.upper():
         return False
     return m.group("prefix") in KNOWN_PREFIXES
+
+
+def is_legacy_id(value: str, prefix: str = "") -> bool:
+    """**只读**兼容判定：2 字母历史前缀且已在 ``LEGACY_PREFIXES`` 登记。"""
+    m = LEGACY_ID_RE.match(str(value or ""))
+    if not m:
+        return False
+    if prefix and m.group("prefix") != prefix.upper():
+        return False
+    return m.group("prefix") in LEGACY_PREFIXES
 
 
 def make_unified(*, project_id: str, run_id: str = "", snapshot_id: str = "",
@@ -785,8 +832,10 @@ def field_map_json() -> str:
 
 __all__ = ["ALIGN_VERSION", "UNIFIED_FIELDS", "SOURCE_FIELDS", "SEMANTIC_SPLITS",
            "FIELD_MAP", "EXECUTION_GATE", "DATE_ONLY_HOUR",
+           "ID_RE", "LEGACY_ID_RE", "KNOWN_PREFIXES", "LEGACY_PREFIXES",
            "PREDICTION_SOURCE_MODEL", "PREDICTION_SOURCE_HUMAN", "PREDICTION_SOURCES",
-           "new_run_id", "is_valid_id", "make_unified", "compare_versions",
+           "new_run_id", "is_valid_id", "is_canonical_id", "is_legacy_id",
+           "make_unified", "compare_versions",
            "parse_time", "normalize_time", "is_iso_t", "read_context",
            "check_alignment", "check_no_authored_decision_id",
            "prediction_source_of", "human_prediction_records",
