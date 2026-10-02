@@ -248,14 +248,14 @@ class WorkflowRunner:
             if res.status == C.STATUS_FAILED and s.failure_policy == "abort":
                 aborted = True
         rr.finished_at = _dt.datetime.now().isoformat(timespec="seconds")
-        # 整次状态三档（2026-10-02 修 G1/G6）。
+        # 整次状态三档（2026-10-02 修 FIX-1/FIX-6）。
         # 旧实现：`all(st in (success, skipped))` —— **完全不看 blocking**，
         # 于是 evening 里声明 blocking=False 的 partdb_snap 一失败，整次就判 failed；
         # 而发布门禁（gates.py）要求整次 ∈ {success, skipped}，一拦到底 ——
         # 「非阻断失败只告警」那条善意逻辑**永远到不了**，只能靠人工改 final.json 绕过。
         # 现在判定收敛到 `contracts.run_status()`（全仓库唯一一份）：
         # 只有**阻断型**失败判 failed；纯非阻断失败判 degraded（降级可见、发布放行）。
-        # 不在此处再写一遍条件 —— 见 contracts.run_status 的 docstring（G6）。
+        # 不在此处再写一遍条件 —— 见 contracts.run_status 的 docstring（FIX-6）。
         rr.status = C.run_status(rr.steps)
         try:
             with open(os.path.join(self._run_dir, "final.json"), "w", encoding="utf-8") as f:
@@ -280,6 +280,12 @@ def make_step(cmd: Sequence[str], step_id: str, name: str, **kw) -> C.StepSpec:
       3        → skipped（数据源不可用/开关关闭，产物不刷新是正常结果，
                   不是失败也不是成功——验收器不查其产物新鲜度）
       其他非 0 → failed（retry 生效）
+
+    ⚠️ 这是**步骤脚本级**命名空间。**工作流级**另有一套
+    （`workflows/workflow.py::cmd_run`：0=success / 2=degraded / 1=failed），
+    两者层级不同、不要互相参照 —— 特别注意 `cockpit/publish.py` 在步骤级用
+    2 表示「上传失败」（落成 failed），而工作流级 2 表示「跑完但有非阻断失败」
+    （可发布）。
 
     参数里可用占位符 ``{run_id}`` / ``{skill_dir}``（运行时替换），
     供「发布门禁」这类需要知道本次运行编号的步骤使用。

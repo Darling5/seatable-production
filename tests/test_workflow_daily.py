@@ -6,10 +6,12 @@
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from application import contracts as C
+from workflows import workflow
 from workflows.daily_refresh import build_steps, WORKFLOWS
 
 
@@ -39,11 +41,18 @@ class TestDailyDag(unittest.TestCase):
                           "%s 副作用越界：%s" % (s.id, s.side_effect))
 
     def test_loop_sync_step_shape(self):
-        """loop_sync：CRM 镜像写入，幂等 upsert，依赖 seatable_sync。"""
+        """loop_sync：CRM 镜像写入，幂等 upsert，依赖 seatable_sync。
+
+        blocking=False（2026-10-03 收口）：它是**叶子步骤**（全 DAG 无任何步骤
+        depends_on 它），且 CRM 镜像不是驾驶舱的展示必要项 —— 一个云端后端挂掉
+        不该带走整链。失败时整次判 degraded（可发布 + 强制告警），
+        而不是 failed（拒绝发布）。判据与 partdb_sync / loop_trigger 一致。
+        """
         by = {s.id: s for s in self.steps}
         ls = by["loop_sync"]
         self.assertEqual(ls.side_effect, C.SIDE_ONLINE_WRITE)
         self.assertEqual(ls.failure_policy, "continue")
+        self.assertFalse(ls.blocking)
         self.assertIn("seatable_sync", ls.depends_on)
 
     def test_sync_steps_are_abort(self):
@@ -126,6 +135,57 @@ class TestCli(unittest.TestCase):
         a = build_steps()
         b = build_steps()
         self.assertEqual([s.id for s in a], [s.id for s in b])
+
+
+class TestRunExitCode(unittest.TestCase):
+    """`cmd_run` 的**工作流级**退出码三档（2026-10-03 收口）。
+
+    为什么要单独钉住它：全仓**没有任何消费者**读这个退出码（实测无 `$?` /
+    `%ERRORLEVEL%` / `returncode` 分支），所以它是**纯语义契约** —— 一旦被改回去，
+    不会有任何东西报错，自动化只能看到"非 0"，`degraded` 与 `failed` 重新变得
+    不可区分，"降级"就白做了。
+
+    ⚠️ 勿与**步骤脚本级**退出码混淆（`application/runner.py::make_step`：0 / 3 / 其它），
+    那是另一套命名空间；`cockpit/publish.py` 在步骤级用 2 表示"上传失败"。
+    """
+
+    def _rc(self, status):
+        """离线取一次 `cmd_run` 的返回值：不真跑工作流，只喂一个假结果。"""
+        import argparse
+        import contextlib
+        import io
+        fake = type("_FakeRunResult", (), {
+            "status": status,
+            "steps": [{"step_id": "x", "status": status, "error": ""}],
+            "summary": {},
+        })()
+        args = argparse.Namespace(
+            workflow="daily", mode="preview", actor="test", yes=False,
+            run_id="daily-test-00000000-0000", resume=None)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with patch.object(workflow, "run_workflow", return_value=fake):
+                return workflow.cmd_run(args)
+
+    def test_success_是_0(self):
+        self.assertEqual(self._rc(C.STATUS_SUCCESS), 0)
+
+    def test_degraded_是_2(self):
+        """降级必须与硬失败分开 —— 这是运行级三态改造的最后一公里。"""
+        self.assertEqual(self._rc(C.STATUS_DEGRADED), 2)
+
+    def test_failed_是_1(self):
+        self.assertEqual(self._rc(C.STATUS_FAILED), 1)
+
+    def test_未知状态保守按失败(self):
+        """未知状态不许被当成成功，也不许被当成降级。"""
+        self.assertEqual(self._rc("zz_unknown_status"), 1)
+
+    def test_三档互不相同(self):
+        """三档退出码必须两两可区分（曾经 degraded 与 failed 同为 1）。"""
+        codes = [self._rc(s) for s in
+                 (C.STATUS_SUCCESS, C.STATUS_DEGRADED, C.STATUS_FAILED)]
+        self.assertEqual(len(set(codes)), 3, "退出码无法区分三档：%r" % (codes,))
 
 
 if __name__ == "__main__":

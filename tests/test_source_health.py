@@ -9,7 +9,7 @@
   ④ 无内嵌时间戳的 CSV 必须退到文件 mtime 兜底；
   ⑤ `_parse_ts` 返回**带时区**时间（曾因 naive/aware 混算直接 TypeError 崩掉整页）；
   ⑥ `_latest_run_summary` 按**时间**取最近一次运行，不按目录名字典序
-     （字典序会把 `daily-` 排在 `evening-` 前，就是 G5 那个坑）。
+     （字典序会把 `daily-` 排在 `evening-` 前，就是 FIX-5 那个坑）。
 
 全程使用临时目录，不读真实 data/、不写任何文件。
 """
@@ -225,7 +225,7 @@ class TestParseTs(unittest.TestCase):
 
 
 # ────────────────────────────────────────────────────────────────────
-# ④ 最近一次运行：按时间，不按目录名字典序（G5 同源坑）
+# ④ 最近一次运行：按时间，不按目录名字典序（FIX-5 同源坑）
 # ────────────────────────────────────────────────────────────────────
 class TestLatestRun(SourceSpecCase):
     def _run(self, run_id, status="success", steps=None):
@@ -250,7 +250,7 @@ class TestLatestRun(SourceSpecCase):
         self.assertIsNone(CK._latest_run_summary(self.tmp))
 
     def test_非步骤_JSON_不会被当成步骤(self):
-        """context.json 没有 step_id —— 它绝不能被算进 steps（G2 同源坑）。"""
+        """context.json 没有 step_id —— 它绝不能被算进 steps（FIX-2 同源坑）。"""
         d = self._run("daily-20261002-0900-cccc", steps=[
             {"step_id": "seatable_sync", "status": "success", "blocking": True}])
         _write_json(os.path.join(d, "context.json"), {"run_id": "daily-20261002-0900-cccc",

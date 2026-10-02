@@ -174,7 +174,7 @@ class TestRunStatus(unittest.TestCase):
                          C.STATUS_SUCCESS)
 
     def test_非阻断失败判降级(self):
-        """核心语义：有降级但仍可发布 —— 修 G1 之前系统里没有这个合法值。"""
+        """核心语义：有降级但仍可发布 —— 修 FIX-1 之前系统里没有这个合法值。"""
         self.assertEqual(C.run_status([self._s("a", C.STATUS_SUCCESS),
                                        self._s("b", C.STATUS_FAILED, False)]),
                          C.STATUS_DEGRADED)
@@ -245,7 +245,7 @@ class TestRunStatus(unittest.TestCase):
                     if pat.search(src):
                         offenders.append(os.path.relpath(p, root))
         self.assertEqual(offenders, [],
-                         "运行级状态又出现第二份实现（G6 回归）：%s" % offenders)
+                         "运行级状态又出现第二份实现（FIX-6 回归）：%s" % offenders)
 
 
 if __name__ == "__main__":

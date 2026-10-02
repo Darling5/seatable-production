@@ -69,7 +69,16 @@ def cmd_run(args):
         print("  %s %-16s %s" % (mark, st["step_id"], st.get("error") or ""))
     print("  合计：%s" % json.dumps(rr.summary, ensure_ascii=False))
     print("  结果文件：%s" % final_path)
-    return 0 if rr.status == C.STATUS_SUCCESS else 1
+    # 工作流级退出码三档（2026-10-03 收口）。⚠️ 这是**另一套命名空间**，
+    # 与「步骤脚本退出码」不要混：
+    #   工作流级（本函数）：0 = success ｜ 2 = degraded ｜ 1 = failed
+    #   步骤脚本级（application/runner.py::make_step）：0 = success ｜
+    #                       3 = skipped ｜ 其它非 0 = failed
+    # 特别注意字面冲突：cockpit/publish.py 在**步骤级**也用 2 表示「上传失败」，
+    # 那会落成步骤 failed；而这里的 2 表示**整次跑完但有非阻断失败**，可以发布。
+    # 两者层级不同，别互相参照。
+    return {C.STATUS_SUCCESS: 0, C.STATUS_DEGRADED: 2, C.STATUS_FAILED: 1}.get(
+        rr.status, 1)
 
 
 def cmd_status(args):
@@ -157,11 +166,11 @@ def cmd_note(args):
     data["summary"] = C.RunResult(run_id=data.get("run_id", ""),
                                   workflow=data.get("workflow", ""),
                                   steps=steps).summary
-    # 2026-10-02 修 G6：这里原先是**第三份**整次状态实现，且用的是旧口径
+    # 2026-10-02 修 FIX-6：这里原先是**第三份**整次状态实现，且用的是旧口径
     # （任一非 success/skipped 即 failed，完全不看 blocking）。evening 自动化
     # Prompt 会连调三次 note 补记 AI 步骤，每调一次就把 runner 刚判好的
     # `degraded` 覆盖回 `failed` —— 于是发布门禁在下一次 publish 时又拦死，
-    # 等于静默撤销 G1 修复。现在统一走 contracts.run_status()。
+    # 等于静默撤销 FIX-1 修复。现在统一走 contracts.run_status()。
     data["status"] = C.run_status(steps)
     with open(final, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -297,7 +306,7 @@ def _scan_password_leak(path: str) -> str:
 def _latest_run_id() -> str:
     """取最近一次**已跑完**（有 final.json）的 run。
 
-    2026-10-02 修 G5：原实现用 ``sorted(os.listdir())`` 取末个，注释写「字典序即时间序」
+    2026-10-02 修 FIX-5：原实现用 ``sorted(os.listdir())`` 取末个，注释写「字典序即时间序」
     —— 该假设**只在单一 workflow 内成立**。一旦同时存在 ``daily-*`` 与 ``evening-*``，
     ``daily-`` < ``evening-``，就会永远命中 evening、无视当天更晚生成的 daily。
     现统一复用 ``gates.run_sort_key``（按目录名内嵌时间戳），与发布门禁同一份逻辑，

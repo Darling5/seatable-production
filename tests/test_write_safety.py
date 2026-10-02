@@ -616,7 +616,7 @@ class TestWxmatchPartialBatch(TempCase):
 class TestLatestRunResolution(TempCase):
     """`find_run_dir("latest")` 必须按**时间**取最近一次运行，不能按目录名字典序。
 
-    这是 G5：daily 09:00 的发布命令漏写 `--gate`，于是走默认值 "latest"；
+    这是 FIX-5：daily 09:00 的发布命令漏写 `--gate`，于是走默认值 "latest"；
     而旧实现是 `max(listdir)`（字典序）。因为 `'d' < 'e'`，**任何一天的 evening 目录
     都比当天的 daily 目录「大」** —— 于是每天早上 9:00 的发布都会去校验昨晚 19:00
     的账本，artifact 哈希必然对不上 → 发布天天被拒，而 Prompt 当时把失败合理化成
@@ -640,7 +640,7 @@ class TestLatestRunResolution(TempCase):
         self._mk(want)
         got = os.path.basename(GATES.find_run_dir("latest", self.tmp))
         self.assertEqual(got, want,
-                         "命中了前一晚的 evening 账本 → 09:00 发布必然被拒（G5 复发）")
+                         "命中了前一晚的 evening 账本 → 09:00 发布必然被拒（FIX-5 复发）")
 
     def test_字典序陷阱确实存在(self):
         """反向自证：如果退回 `max(listdir)`，结论一定是错的。
@@ -688,12 +688,12 @@ class TestLatestRunResolution(TempCase):
 
 
 class TestLedgerReading(TempCase):
-    """`gates.load_steps` 的「什么算步骤文件」契约（G2 / G10）。
+    """`gates.load_steps` 的「什么算步骤文件」契约（FIX-2 / FIX-10）。
 
     共同病根：run 目录里**任何**一个非步骤 JSON 都能把整次运行判成「账本不可信」，
     连 final.json 都读不到，发布永久被拒。两次真实事故：
-      · G2 —— `context.json`（RunContext 序列化，无 step_id）被打成步骤，evening 天天拒发；
-      · G10 —— `daily-20260930-1903-6c9e/unsent_outbox.json`（顶层是**数组**）让该次
+      · FIX-2 —— `context.json`（RunContext 序列化，无 step_id）被打成步骤，evening 天天拒发；
+      · FIX-10 —— `daily-20260930-1903-6c9e/unsent_outbox.json`（顶层是**数组**）让该次
         运行 11 个完好步骤文件全部作废。
     现在的契约：只有 `NN_<step>.json` 才算步骤文件（有资格 fail-closed），其余一律跳过。
     """
@@ -714,9 +714,9 @@ class TestLedgerReading(TempCase):
             json.dump({"run_id": run_id, "workflow": workflow, "status": status,
                        "steps": steps or [], "summary": {}}, f, ensure_ascii=False)
 
-    # ── G2 / G10：非步骤 JSON 不得判死 ──
+    # ── FIX-2 / FIX-10：非步骤 JSON 不得判死 ──
     def test_context_json_不被当成步骤(self):
-        """G2：context.json 没有 step_id，绝不能算步骤（否则 evening 天天拒发）。"""
+        """FIX-2：context.json 没有 step_id，绝不能算步骤（否则 evening 天天拒发）。"""
         d = self._run()
         self._step(d, 1, "seatable_sync")
         with open(os.path.join(d, "context.json"), "w", encoding="utf-8") as f:
@@ -726,7 +726,7 @@ class TestLedgerReading(TempCase):
         self.assertEqual([s["step_id"] for s in steps], ["seatable_sync"])
 
     def test_顶层是数组的杂项_json_被跳过而不是判死(self):
-        """G10：真实事故 daily-20260930-1903-6c9e/unsent_outbox.json（list）。"""
+        """FIX-10：真实事故 daily-20260930-1903-6c9e/unsent_outbox.json（list）。"""
         d = self._run()
         self._step(d, 1, "seatable_sync")
         self._step(d, 2, "cockpit")
@@ -786,7 +786,7 @@ class TestLedgerReading(TempCase):
         _final, steps, _err = GATES.load_steps(d)
         self.assertEqual(steps[0]["status"], "success", "final.json 是汇总后的权威版本")
 
-    # ── G8：账本自洽性 ──
+    # ── FIX-8：账本自洽性 ──
     def test_status_与步骤不自洽要告警(self):
         """实测 2026-10-02 晚的真实账本：11 步里 1 步非阻断失败，status 却写 success
         —— 仓库内三条代码路径没有一条能算出该值，且文件比 finished_at 晚 3.5 分钟。"""

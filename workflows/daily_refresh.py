@@ -109,10 +109,14 @@ def build_steps() -> list[C.StepSpec]:
           side_effect=C.SIDE_LOCAL_APPEND,
           depends_on=("seatable_sync",), failure_policy="continue",
           retry=1, blocking=False),
+        # loop_sync 是**叶子步骤**（全 DAG 无任何步骤 depends_on 它），
+        # 且 CRM 镜像不是驾驶舱的展示必要项 —— 一个云端后端挂掉不该带走整链。
+        # 故显式声明非阻断：它失败时整次运行判 degraded（可发布 + 强制告警），
+        # 而不是 failed（拒绝发布）。判据与 partdb_sync / loop_trigger 一致。
         s("loop_sync", "业务闭环台账镜像 CRM", "loop_sync", ["--yes"],
           side_effect=C.SIDE_ONLINE_WRITE,
           depends_on=("seatable_sync", "loop_trigger"),
-          failure_policy="continue", retry=1),
+          failure_policy="continue", retry=1, blocking=False),
 
         # ── 4. 摘要与驾驶舱（生成）──
         s("daily_brief", "站会摘要 + 发件箱", "daily_brief", ["--push"],

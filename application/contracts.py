@@ -62,7 +62,7 @@ def run_status(steps: Sequence[Mapping[str, Any]]) -> str:
     | 只有非阻断失败（降级）                    | ``degraded``      |
     | 其余                                   | ``success``       |
 
-    为什么必须是唯一一份（2026-10-02 修 G6）：
+    为什么必须是唯一一份（2026-10-02 修 FIX-6）：
     原先这段判定在 **三处**各自实现过 —— ``runner.py`` 收尾、``gates.py`` 白名单、
     ``workflows/workflow.py::cmd_note``。三处口径不一致，于是：
       · runner 判出的 degraded 会被后跑的 ``cmd_note``（旧口径：任一非 success/skipped

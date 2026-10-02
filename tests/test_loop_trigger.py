@@ -7,7 +7,7 @@
      「来单扫描成功」而实际一条都没扫（典型假指标）。
   ② 幂等 —— 同一客户重复扫描不重复开案。
   ③ 残缺空壳自愈 —— 建案崩在中途留下的「有 customer、无 lead/opportunity」
-     空壳必须能被补建（修 G9：此前被「已有案件」短路，永不修复）。
+     空壳必须能被补建（修 FIX-9：此前被「已有案件」短路，永不修复）。
   ④ 死单过滤。
 
 全程只碰临时目录，不触真实控制平面，不触 CRM。
@@ -130,7 +130,7 @@ class TestIdempotency(LoopTriggerCase):
 
 
 # ────────────────────────────────────────────────────────────────────
-# ③ 残缺空壳自愈（修 G9 —— 此前 repaired 分支是不可达的死代码）
+# ③ 残缺空壳自愈（修 FIX-9 —— 此前 repaired 分支是不可达的死代码）
 # ────────────────────────────────────────────────────────────────────
 class TestHalfWrittenCaseHeal(LoopTriggerCase):
     def _make_half_written(self, customer="客户丁"):
@@ -156,7 +156,7 @@ class TestHalfWrittenCaseHeal(LoopTriggerCase):
 
         这是既有设计（幂等键含 source_event_id），不是本批引入的缺陷；
         写成测试是为了让它**可见**——将来若改成「按客户名 + 产品」判重，
-        本用例会失败，提醒改动者重新评估 G9 的自愈路径。
+        本用例会失败，提醒改动者重新评估 FIX-9 的自愈路径。
         """
         cust = "客户庚"
         Service(self.tmp).start_case(cust, "UWB标签", owner="项目经理",

@@ -26,15 +26,15 @@
     sha256 且哈希一致，改过的 HTML 不能用旧账本蒙混过关。
 
 2026-10-02 修订（全链降级 / Plan B 专项，四处）：
-  · **G2**：``_NON_STEP_JSON`` 统一「非步骤 JSON」口径（``final.json`` + ``context.json``），
+  · **FIX-2**：``_NON_STEP_JSON`` 统一「非步骤 JSON」口径（``final.json`` + ``context.json``），
     ``load_steps`` 与 ``_has_ledger`` 共用，并收紧 step_id 推导 —— 拿不到就跳过，
     不再「造一个 key」，否则下游仍会判「账本不可信」而误杀发布；
-  · **G1**：整次状态白名单扩为 ``{success, skipped, degraded}``。此前与
+  · **FIX-1**：整次状态白名单扩为 ``{success, skipped, degraded}``。此前与
     ``runner.py`` 的整次判定语义矛盾（runner 不看 blocking 就判 failed），
     导致 ``blocking=False`` 声明的降级**永远到不了发布**；
-  · **G5**：``find_run_dir("latest")`` 改为**按时间**取最新，不再是目录名字典序
+  · **FIX-5**：``find_run_dir("latest")`` 改为**按时间**取最新，不再是目录名字典序
     （``daily-`` < ``evening-`` 会让 latest 永远命中 evening）；
-  · **G3**：关键阶段按账本的 ``workflow`` 字段分开取（``CRITICAL_BY_WORKFLOW``），
+  · **FIX-3**：关键阶段按账本的 ``workflow`` 字段分开取（``CRITICAL_BY_WORKFLOW``），
     不再用「只有 evening 的 id」的全局常量。
 
 设计约束：纯读 + 纯计算，不 import 任何业务模块，可离线单测。
@@ -51,7 +51,7 @@ from typing import Any, Mapping, Optional, Sequence
 from . import contracts as C
 
 # 账本目录里**不是步骤**的 JSON（运行元数据）。
-# 2026-10-02 修 G2：原先只排除 final.json，于是 context.json（RunContext 的序列化，
+# 2026-10-02 修 FIX-2：原先只排除 final.json，于是 context.json（RunContext 的序列化，
 # 含 run_id/workflow/mode/skill_dir…，**没有 step_id 字段**）被当成步骤读，
 # 触发「存在缺少 step_id 的步骤记录 —— 账本不可信」→ fail-closed 误杀发布。
 # 实测：evening 的 publish 天天被拒（「本次未上传任何内容」），对外驾驶舱长期没更新。
@@ -59,7 +59,7 @@ from . import contracts as C
 _NON_STEP_JSON = ("final.json", "context.json")
 
 # 步骤文件的命名契约（runner._step_file / workflow.py cmd_note 都按 "%02d_%s.json" 写）。
-# 2026-10-02 加（修 G10）：run 目录里**只有**匹配它的 JSON 才算步骤文件，
+# 2026-10-02 加（修 FIX-10）：run 目录里**只有**匹配它的 JSON 才算步骤文件，
 # 其余 .json（人工 dump、旁路产物）一律跳过 —— 否则一份顶层是数组的杂项 JSON
 # 就能把整次运行的账本判成「不可信」，连 final.json 都读不到、发布永久被拒。
 _STEP_FILE_RE = re.compile(r"^\d+_.+\.json$")
@@ -70,7 +70,7 @@ _RELEASABLE_RUN_STATUSES = (C.STATUS_SUCCESS, C.STATUS_SKIPPED, C.STATUS_DEGRADE
 _LEGACY_DEGRADED_RUN_STATUSES = ("completed_with_errors",)
 
 # 各工作流的「关键阶段」：这几步一旦没跑成，看板就不该发出去。
-# 2026-10-02 修 G3：原先是全局常量且四个 id 全是 evening 的，而 daily 用的是
+# 2026-10-02 修 FIX-3：原先是全局常量且四个 id 全是 evening 的，而 daily 用的是
 # wechat_pull / wechat_summary → daily 侧的关键步骤检查一次都不命中，保护形同虚设。
 CRITICAL_BY_WORKFLOW = {
     "evening": ("wechat_collect", "wxmedia_ocr", "wxmatch_scan", "evening_write"),
@@ -95,7 +95,7 @@ _RUN_NAME_RE = re.compile(r"-(\d{8})-(\d{4})")
 def run_sort_key(run_dir: str) -> tuple:
     """run 目录的「时间」排序键。
 
-    2026-10-02 修 G5：原 ``find_run_dir("latest")`` 用 ``sorted(os.listdir())`` 取末个
+    2026-10-02 修 FIX-5：原 ``find_run_dir("latest")`` 用 ``sorted(os.listdir())`` 取末个
     —— 那是**目录名字典序**，而 ``daily-`` < ``evening-``，只要存在任何 evening 目录，
     latest 就永远命中 evening，无视当天更晚生成的 daily。
     直接后果：daily 的发布命令不带 ``--gate``（走默认 latest）→ 拿到 evening 的账本
@@ -157,7 +157,7 @@ def _has_ledger(run_dir: str) -> bool:
 def find_run_dir(run_id: str, runs_dir: str = "") -> str:
     """解析 run_id（支持 latest / 空）→ 运行目录绝对路径。
 
-    ``latest`` = **时间上最新**的一次运行（2026-10-02 修 G5），不是目录名字典序。
+    ``latest`` = **时间上最新**的一次运行（2026-10-02 修 FIX-5），不是目录名字典序。
     """
     rd = runs_dir or default_runs_dir()
     if run_id in ("", "latest"):
@@ -178,14 +178,14 @@ def load_steps(run_dir: str) -> tuple[Optional[dict], list, str]:
     ``steps`` 为步骤记录列表（final.json 里的记录优先，因为它是汇总后的权威
     版本），``error`` 非空表示账本不可信、必须阻断。
 
-    **只有 ``NN_<step>.json`` 才算步骤文件**（2026-10-02 修 G10）。
+    **只有 ``NN_<step>.json`` 才算步骤文件**（2026-10-02 修 FIX-10）。
     这是 runner 的落盘契约（``_step_file`` / ``cmd_note`` 都按 ``%02d_%s.json`` 写），
     因此它有资格 fail-closed：拿不到 step_id、或内容不是表结构 → 账本不可信。
     其它任何 .json 一律**跳过**，绝不能让它们把整次运行判死 ——
     实测事故：`data/runs/daily-20260930-1903-6c9e/` 里被手工丢进一份
     `unsent_outbox.json`（顶层是数组），旧实现遍历到它就 `return error`，
     于是该次运行**连 final.json 都没被读到**、11 个完好步骤文件全部作废、
-    门禁永久拒绝发布（「本次未上传任何内容」）。这与 G2 是同一类：
+    门禁永久拒绝发布（「本次未上传任何内容」）。这与 FIX-2 是同一类：
     一个非步骤 JSON = 整条发布链被带走。
     """
     if not os.path.isdir(run_dir):
@@ -208,7 +208,7 @@ def load_steps(run_dir: str) -> tuple[Optional[dict], list, str]:
             return None, [], "步骤账本 %s 不是表结构（NN_ 前缀的文件必须是步骤记录）" % fn
         # step_id：优先取记录里的字段，其次从 ``NN_<step>.json`` 文件名推。
         # 推导出的 id 要**写回记录** —— 否则下游 evaluate_steps 读不到 step_id，
-        # 又会判「存在缺少 step_id 的步骤记录」把发布误杀掉（G2 的同一个坑）。
+        # 又会判「存在缺少 step_id 的步骤记录」把发布误杀掉（FIX-2 的同一个坑）。
         sid = str(data.get("step_id") or "").strip()
         if not sid:
             sid = fn[:-5].split("_", 1)[-1].strip()
@@ -262,7 +262,7 @@ def evaluate_steps(run_id: str, final: Optional[Mapping[str, Any]], steps: Seque
                    critical: Optional[Sequence[str]] = None) -> GateResult:
     """对「按步骤文件合并出来的账本」做门禁判定（fail-closed 校验）。
 
-    ``critical`` 留空时**按账本的 workflow 字段**取该链路的关键阶段（2026-10-02 修 G3）。
+    ``critical`` 留空时**按账本的 workflow 字段**取该链路的关键阶段（2026-10-02 修 FIX-3）。
     ⚠️ 默认值必须是 ``None`` 而不是常量 —— Python 的默认参数在**定义时**求值，
     写常量会让「按 workflow 取」永远不生效。
     """
@@ -288,7 +288,7 @@ def evaluate_steps(run_id: str, final: Optional[Mapping[str, Any]], steps: Seque
         elif run_id and f_run != run_id:
             reasons.append("账本 run_id=%s 与本次运行的 %s 不一致" % (f_run, run_id))
 
-        # 账本自洽性（2026-10-02 加 G8）：status 必须等于「按步骤重算」的结果。
+        # 账本自洽性（2026-10-02 加 FIX-8）：status 必须等于「按步骤重算」的结果。
         # 实测 2026-10-02 晚的 final.json：11 步里 partdb_snap 为 failed(blocking=False)，
         # 而 status 写的是 success —— 用仓库内三条代码路径（旧 runner / 新 runner /
         # cmd_note）**没有一条**能算出该值；且该文件 mtime 比 finished_at 晚 3.5 分钟

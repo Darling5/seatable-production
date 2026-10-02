@@ -7,7 +7,7 @@
 原则：
   · 默认 preview：只列出将创建的案件计划，--yes 才落控制平面。
   · 幂等：客户名 + 产品 → start_case 幂等键，重复扫描零重复创建。
-  · **「已有案件」必须看案件是否完整**（2026-10-02 修 G9）：只凭 customer 对象存在就判
+  · **「已有案件」必须看案件是否完整**（2026-10-02 修 FIX-9）：只凭 customer 对象存在就判
     「复用」，会让建案中途崩掉留下的空壳永久卡死（repaired 分支变死代码）。
     现在缺任一 `CASE_SEED_KINDS` 就继续走 start_case → 补建（preview 如实报「待补」。）
   · 单向触发：本脚本只建控制平面案件，不写 CRM 线索表（那条路由 crm_dispatch 管）。
@@ -40,7 +40,7 @@ DEFAULT_DATA_DIR = os.path.join(HERE, "data", "business_loop")
 def _existing_cases(svc: Service) -> dict[str, dict]:
     """控制平面里已建档的客户名 -> ``{"root_id": …, "kinds": {对象类型}}``。
 
-    **不能只认 customer 对象就判「已有案件」**（2026-10-02 修 G9）。
+    **不能只认 customer 对象就判「已有案件」**（2026-10-02 修 FIX-9）。
     建案是分多次 append 的（customer → lead → opportunity → evidence …），
     中途崩掉会留下「有 customer 行、缺 lead/opportunity」的**残缺空壳**。
     旧实现（`_existing_customers`）据此直接判「已有案件，复用」并 continue，
@@ -170,7 +170,7 @@ def trigger(apply: bool = False, data_dir: str = DEFAULT_DATA_DIR,
             continue
         # 走到这里有两种情况：① 从没建过案；② **残缺空壳**（缺 lead/opportunity）。
         # ② 必须继续往下调 start_case —— 它内部按幂等键命中后会走 _repair_case 补建，
-        # 这正是 loop_trigger 里 repaired 分支存在的意义（修 G9：此前被上面的
+        # 这正是 loop_trigger 里 repaired 分支存在的意义（修 FIX-9：此前被上面的
         # 「已有案件」短路，该分支是死代码，残缺案件永久留疤）。
         outcome = svc.start_case(params["customer"], params["product"], owner=owner,
                                  source_event_id=params["source_event_id"],
