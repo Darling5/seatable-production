@@ -1019,6 +1019,47 @@ class TestExecPlaneFacade(_Base):
         self.assertEqual(ExecPlane.default_root(),
                          os.path.join(HERE, "data", "exec_plane"))
 
+    # ── 结论必须带 as_of（DEV-KICKOFF §7 交付判据）─────────────
+    def test_结论都带_as_of(self):
+        """★ 「每步带 ID、带 `as_of`」是阶段一的交付判据，不是可选项。
+
+        `as_of` 是**结论上的字段**（G30 上行新鲜度），所以本层由「读了哪些行」算出它 ——
+        这样「这个结论是按哪一刻的数据算出来的」永远答得上来。
+        """
+        self.assertTrue(self.put(FG, CT).ok)
+        self.assertEqual(self.ep.validate_bom()["as_of"],
+                         self.ep.bom_versions()[0]["created_at"])
+        self.assertEqual(self.ep.explode(FG, quantity=1)["as_of"],
+                         max([self.ep.bom_versions()[0]["created_at"],
+                              self.ep.bom_lines()[0]["created_at"]]))
+        self.add_gr(claim=S.CLAIM_ARRIVED, got=10, ordered=10, accepted=10,
+                    state=S.GR_ACCEPTED)
+        pay = self.payment(qty=10)
+        self.assertEqual(self.ep.can_pay(pay)["as_of"],
+                         self.ep.goods_receipts()[0]["created_at"])
+
+    def test_没有数据时_as_of_为空而不是瞎编(self):
+        """★ 取不到就是空串 —— 不许拿「现在」冒充数据时间。"""
+        self.assertEqual(self.ep.as_of([]), "")
+        self.assertEqual(self.ep.validate_bom()["as_of"], "")
+        self.assertEqual(self.ep.can_pay(self.payment())["as_of"], "")
+        self.assertEqual(ExecPlane.as_of([{}], [{"created_at": ""}]), "")
+
+    def test_as_of_取最新而不是最早(self):
+        rows = [{"created_at": "2026-10-01 09:00:00"},
+                {"created_at": "2026-10-03 18:30:00"},
+                {"created_at": "2026-10-02 12:00:00"}]
+        self.assertEqual(ExecPlane.as_of(rows), "2026-10-03 18:30:00")
+
+    def test_工单开工结论带_as_of(self):
+        wo = self._wo()
+        self.add_gr(claim=S.CLAIM_ARRIVED, got=20, ordered=20)
+        res = self.ep.release_work_order(wo["wo_id"], mode=APPLY, grant=self.grant)
+        slot = res.evidence["__verdict__"]["G22"]
+        self.assertTrue(slot["as_of"], "开工结论没带 as_of")
+        self.assertGreaterEqual(slot["as_of"],
+                                self.ep.goods_receipts()[0]["created_at"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

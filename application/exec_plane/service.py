@@ -163,6 +163,27 @@ class ExecPlane:
                 return v
         raise ValueError("缺少主键字段：%s" % "/".join(names))
 
+    # 结论上要带的时间戳字段（取这些字段里的最大值作为 as_of）
+    _AS_OF_FIELDS = ("created_at", "received_at", "accepted_at", "released_at")
+
+    @classmethod
+    def as_of(cls, *row_groups: Sequence[Mapping[str, Any]]) -> str:
+        """结论的 `as_of`：这组行里**最新的那个时间戳**（取不到则空串）。
+
+        `DEV-KICKOFF.md` §7 阶段一的交付判据是「**每步带 ID、带 `as_of`**」——
+        `as_of` 是**结论/读取结果**上的字段（G30 上行新鲜度），不是存储行字段，
+        所以本层由「读了哪些行」算出它：本层任何一条**判定结论**都带 `as_of`，
+        这样「这个结论是按哪一刻的数据算出来的」永远答得上来。
+        """
+        best = ""
+        for rows in row_groups:
+            for r in (rows or ()):
+                for f in cls._AS_OF_FIELDS:
+                    v = str(r.get(f) or "")
+                    if v and v > best:
+                        best = v
+        return best
+
     @staticmethod
     def _carry_verdict(res: WriteResult, code: str, verdict: Mapping[str, Any]) -> WriteResult:
         """把业务判定结论挂到结果上，让调用方**看得见**。
@@ -229,12 +250,19 @@ class ExecPlane:
         return res
 
     def validate_bom(self) -> dict:
-        return BOM.validate_bom(self.bom_versions(), self.bom_lines())
+        """全库 BOM 结构校验结论（带 `as_of`）。"""
+        versions, lines = self.bom_versions(), self.bom_lines()
+        out = BOM.validate_bom(versions, lines)
+        out["as_of"] = self.as_of(versions, lines)
+        return out
 
     def explode(self, parent_item_id: str, *, quantity: float = 1.0,
                 version: str = "") -> dict:
-        return BOM.explode(self.bom_versions(), self.bom_lines(), parent_item_id,
-                           quantity=quantity, version=version)
+        versions, lines = self.bom_versions(), self.bom_lines()
+        out = BOM.explode(versions, lines, parent_item_id,
+                          quantity=quantity, version=version)
+        out["as_of"] = self.as_of(versions, lines)
+        return out
 
     # ════════════════════════════════════════════════════════════════
     # G23：到货验收 + 付款
@@ -269,7 +297,11 @@ class ExecPlane:
         return self._carry_verdict(res, "G23", verdict)
 
     def can_pay(self, payment: Mapping[str, Any]) -> dict:
-        return PROC.can_pay(payment, self.goods_receipts())
+        """这笔付款能不能付的结论（带 `as_of`）。"""
+        grs = self.goods_receipts()
+        out = PROC.can_pay(payment, grs)
+        out["as_of"] = self.as_of(grs)
+        return out
 
     # ════════════════════════════════════════════════════════════════
     # G22：工单
@@ -329,8 +361,10 @@ class ExecPlane:
                           row_id=wo_id,
                           expected_version=int(current.get(PBS.F_VERSION) or 0))
         # 判定结论（含缺料清单与放行授权三态）一并带出，别只留在局部变量里
-        return self._carry_verdict(res, "G22", {
-            k: v for k, v in outcome.items() if k != "patch"})
+        verdict = {k: v for k, v in outcome.items() if k != "patch"}
+        verdict["as_of"] = self.as_of(self.bom_versions(), self.bom_lines(),
+                                      self.goods_receipts())
+        return self._carry_verdict(res, "G22", verdict)
 
 
 __all__ = ["ExecPlane", "R_PRECONDITION", "R_DUPLICATE", "R_STALE",

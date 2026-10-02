@@ -137,8 +137,8 @@ alignment.compare_versions(ctx_version, current_version)
 |---|---|---|---|---|
 | 1 | 三期样例/测试 | `plan_id = PLN-20260928-A`，尾码仅 1 位 | 二期 `validate_id("plan", ...)` **拒绝**；合并后联表键直接失效 | 全量改为 `PLN-20260928-A001`（112 处），并用二期校验器逐一复核 |
 | 2 | 二期 `context.py::_brief()` | 投影时漏掉 `plan_id` / `run_id` / `snapshot_id` / `version` | **记忆与生产计划在契约层断链**，下游只能拿名称去猜——而合同 §1.1 恰恰禁止名称做键 | 投影补齐八个统一字段 |
-| 3 | 二期 `context.py::actions_out` / `blockers` | 行动行同样缺 `plan_id` / `run_id` / `snapshot_id` | 行动无法归属到计划 | 同上 |
-| 4 | 二期 `service.py::add_evidence` | 构建器 `build_evidence_row` 支持 `plan_id`，但调用方**没往下传** | 所有证据行 `plan_id` 恒为空 | 补参数并透传；`scenario` 侧默认跟随所指向行动 |
+| 3 | 二期 `application/project_brain/context.py::actions_out` / `blockers` | 行动行同样缺 `plan_id` / `run_id` / `snapshot_id` | 行动无法归属到计划 | 同上 |
+| 4 | 二期 `application/project_brain/service.py::add_evidence` | 构建器 `build_evidence_row` 支持 `plan_id`，但调用方**没往下传** | 所有证据行 `plan_id` 恒为空 | 补参数并透传；`scenario` 侧默认跟随所指向行动 |
 | 5 | 二期 `context.py` | `data_as_of` 把 `action.updated_at`（系统写入时刻）算了进去 | `data_as_of ≈ generated_at ≈` 永远「现在」，与合同「**不是「现在几点」**」矛盾；三期拿它对齐快照会误判成「数据一样新」 | 改为只取 `captured_at`（采集时间），并显式排除 `occurred_at`（可能是**将来**的业务日期，会把「截至时间」顶到未来） |
 
 修复后：二期 **220 项**测试全绿，三期 **78 + 44 项**全绿。

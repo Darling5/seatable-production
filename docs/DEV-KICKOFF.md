@@ -369,7 +369,7 @@ grep -rnoE '\bG[0-9]{1,2}\b' --include=*.py .   # 期望：无输出
 > 理由 —— 本地是最总兜底方案，**必须先在本地把不变量跑通**，再决定落到 SeaTable / 禅道 / 其他。
 > 原则不变：先跑通**一条线**，再扩展为**一个面**。
 
-### 阶段一（向下）· 制造执行最小闭环 ⬅ 从这里开始
+### 阶段一（向下）· 制造执行最小闭环 ✅ 已闭合（2026-10-03 批次 1）
 
 | 要接的一段 | 新增实体 | 不变量 |
 |---|---|---|
@@ -381,6 +381,27 @@ grep -rnoE '\bG[0-9]{1,2}\b' --include=*.py .   # 期望：无输出
 **落点**：新建 `domain/manufacturing.py`（或按 `decision_support/` 风格建
 `domain/manufacturing/` 包），复用 `domain/order_to_cash.py` 已有的
 **对象 / 状态 / 证据 / 审批 / 转移**五件套范式（不要另造一套）。
+
+> ★ **实际落点与本文的差异（2026-10-03 批次 1，commit `e9ab364`）**：
+> 实建在 **`application/exec_plane/`**（`schema` / `store` / `bom` / `procurement` /
+> `work_order` / `service`），**不是** `domain/manufacturing/`。两点原因，均为实测所得：
+>
+>   1. `domain/` 是**第一期的业务对象层**（`order_to_cash.py` 那套），而 `L_exec`
+>      要挂的是**第二期的授权闸门与 `DataService`**（写入必须与二期同构）。
+>      放 `application/` 下才能直接 `from .. import authorization`，不必跨层反向依赖。
+>   2. 本文要求的「复用五件套」**事实上被 `project_brain` 更彻底地满足了**：
+>      `evidence_ledger`（到货/验收判定）、`store.LocalMemoryAdapter`（append-only + 折叠 + 乐观锁）、
+>      `actions.R_PARTIAL_NOT_KITTING`（齐套口径）、`dataservice`（写入闸门）**一行没改就复用**。
+>      没有另造一套 —— 但复用的是**二期**那套，不是一期那套。
+>
+> **`as_of` 已落实**：本层所有**判定结论**都带 `as_of`
+> （`ExecPlane.validate_bom()` / `explode()` / `can_pay()` /
+> 开工结论 `evidence["__verdict__"]["G22"]["as_of"]`），
+> 取值是「这条结论读了哪些行、那些行里最新的时间戳」——
+> 取不到就是空串，**不拿「现在」冒充数据时间**（`tests/test_exec_plane.py` 有专门用例）。
+>
+> **未做**：`PR → PO` 的转换动作（`请购单` 实体与状态已建，但「PR 转 PO」未接线）；
+> 排产侧对接（`decision_support` 按 `plan_id` 的对接留待阶段三）。
 
 > 排产**不重造**：工序/资源/日历/关键路径直接消费 `application/decision_support/`
 > （`PlanningSnapshot` / `resource_feasible`，按 `plan_id` 对接）。本阶段只做**排产之后**的实物执行。
