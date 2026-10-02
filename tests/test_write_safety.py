@@ -293,6 +293,32 @@ class TestPublishGate(TempCase):
         self.assertFalse(g.allowed)
         self.assertTrue(any("不在已知终态" in r for r in g.reasons))
 
+    def test_运行级_skipped_判不可发布(self):
+        """G12 单一口径（2026-10-03 收口 / merge-plan Q11·E12）。
+
+        `contracts.run_status()` 的返回域只有 {success, degraded, failed}，
+        **不可能**产出 `skipped`（31 份账本实测 0 次）。所以 final.json 一旦写
+        `status="skipped"`，只可能是人工改写 —— 旧实现把它列在「可发布集」里，
+        直接放行（实测改动前 allowed=True），与 FIX-8 那批 patch_final_*.py 同类：
+        人工改写让异常态无声消失。
+        """
+        steps = self._steps()
+        g = GATES.evaluate_dict({"run_id": "r1", "status": C.STATUS_SKIPPED, "steps": steps})
+        self.assertFalse(g.allowed)
+        self.assertTrue(any("不能发布" in r for r in g.reasons))
+
+    def test_步骤级_skipped_仍然放行(self):
+        """上一条的反面：跳过的**步骤**不是失败（G9）。
+
+        两个层级共用 "skipped" 这个词但语义不同 —— 运行级是非法值，
+        步骤级是合法值（runner 的 `-3` 语义）。别把它俩一起删掉。
+        """
+        steps = self._steps()
+        steps.append({"step_id": "zz_skipped_step", "status": C.STATUS_SKIPPED,
+                      "error": None, "counts": {}, "blocking": True})
+        g = GATES.evaluate_dict({"run_id": "r1", "status": C.STATUS_SUCCESS, "steps": steps})
+        self.assertTrue(g.allowed, g.reasons)
+
     def test_missing_or_duplicate_step_id_blocks(self):
         steps = self._steps()
         steps.append({"status": C.STATUS_SUCCESS, "counts": {}})

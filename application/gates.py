@@ -64,8 +64,16 @@ _NON_STEP_JSON = ("final.json", "context.json")
 # 就能把整次运行的账本判成「不可信」，连 final.json 都读不到、发布永久被拒。
 _STEP_FILE_RE = re.compile(r"^\d+_.+\.json$")
 
-# 允许发布的运行级状态。degraded = 链路完整跑完但有**非阻断**失败（降级可见、发布放行）。
-_RELEASABLE_RUN_STATUSES = (C.STATUS_SUCCESS, C.STATUS_SKIPPED, C.STATUS_DEGRADED)
+# 允许发布的**运行级**状态。degraded = 链路完整跑完但有**非阻断**失败（降级可见、发布放行）。
+# 2026-10-03 收口（G12 单一口径 / merge-plan Q11·E12）：
+#   **移除 `skipped`** —— `contracts.run_status()` 的返回域只有
+#   {success, degraded, failed}，**不可能**产出 `skipped`（31 份账本实测 0 次）。
+#   把它留在「可发布集」里，等于给「手写 final.json 声称 skipped」开后门：
+#   实测改动前 `evaluate_dict({"status":"skipped"})` → allowed=True ——
+#   与 FIX-8 那批 patch_final_*.py 是同一类洞（人工改写让异常态无声消失）。
+#   注意与下面 `_KNOWN_STATUSES` 区分：**步骤级** status 确实可以是 skipped
+#   （runner 的 `-3` 语义），那份名单必须保留 `skipped`，两者不是一回事。
+_RELEASABLE_RUN_STATUSES = (C.STATUS_SUCCESS, C.STATUS_DEGRADED)
 # 历史人工补丁造过的运行状态值（见 data/runs/patch_final_*.py）：按降级处理但强制告警
 _LEGACY_DEGRADED_RUN_STATUSES = ("completed_with_errors",)
 
