@@ -105,8 +105,15 @@
   值得注意的是：**阻碍两者的不是能力，而是实体**——`evidence_ledger`（到货/验收判定）、
   `graph.py`（成环检测）、`resources.py`（产能冲突）、`G_UNRESOLVED_CONFLICT`（冲突可见）
   这些**部件都已写好**，缺的是把它们挂上去的**业务实体**。
-- **阶段一（向下·制造执行）优先补的不变量**：`G21` `G22` `G23` + `G28`
-  （与 `DEV-KICKOFF.md` §7 一致；`domain-model.md` §8 曾是第三套说法，已加注收敛）
+- **阶段一（向下·制造执行）优先补的不变量**：`G21` `G22` `G23`
+  —— 与 `DEV-KICKOFF.md` §7 阶段一的表格**逐字一致**（该处「不变量」列写的正是这三个）。
+  ⚠️ **`G28` 不在阶段一**：`DEV-KICKOFF.md` §7 把它归**阶段三（成本归集 + 组合与产能）**。
+  本节初稿曾写「`G21 G22 G23` + `G28`」并声称「与 DEV-KICKOFF 一致」—— **那是错的**：
+  当时是把 `domain-model.md` §8 的口径误当成了 `DEV-KICKOFF` 的口径，正是 `merge-plan.md`
+  E9 记录的「三套说法」本身。现已按 `DEV-KICKOFF` §7 收敛（该文档同步加注）。
+- **执行序全景（以 `DEV-KICKOFF.md` §7 为唯一准绳）**：
+  阶段一 `G21 G22 G23` · 阶段二 `G16 G17` · 阶段三 `G14 G15 G18 G28` ·
+  阶段四 `G19 G20 G26 G27 G29 G30`。
 - **建议先做的第一个垂直切片**：**`G23` 付款前置** —— 最小、且复用度最高：
   以「采购单 `PO` → 到货验收记录 `GR` → 付款单」为一条线，
   到货/验收侧的判据 `application/project_brain/evidence_ledger.py::is_arrival_evidence` / `::is_acceptance_evidence` **已存在**，

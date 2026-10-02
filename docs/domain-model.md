@@ -109,9 +109,15 @@ s.t.       Σ_{p ∈ Π'} resource_need(p, r) ≤ ResourcePool.available(r)   �
 
 现有模型的 `quote / contract` 只到"签约"，没有"钱"的状态机。补：
 
+> **注（2026-10-03 批次 0b，`merge-plan.md` E13/Q10）**：本链原写
+> `Quote → Contract → **SalesOrder** → Shipment → …`，但 **`SalesOrder` 是悬空实体** ——
+> `domain/order_to_cash.py::OBJECT_SPECS` 的 `O_kind` 12 类里没有它（`CUS LED OPP REQ SOL QUO
+> CTR PRJ MO PO SHP AS`），§5/§6 也从未引用，全仓 `.py` 零命中。本业务的销售侧是
+> **合同直接发货**（无独立销售订单），故从链中移除，而非新增实体。
+
 ```
 O2C 顺序链：
-  Quote → Contract → SalesOrder → Shipment → Invoice → Receivable → CashReceipt → RevenueRecognition
+  Quote → Contract → Shipment → Invoice → Receivable → CashReceipt → RevenueRecognition
 
 Receivable 状态机：
   Receivable.state ∈ { open, partially_settled, settled, overdue, written_off }
@@ -382,10 +388,26 @@ G30 上行新鲜度  ：上层结论须带 as_of；来源过期须标注（承�
 
 ### 阶段一 · 最小贯通（先跑通「一单到底」）
 
+> **⚠️ 阶段归属一律以 `DEV-KICKOFF.md` §7 为准（2026-10-03 收敛，见 `merge-plan.md` E9）**
+>
+> 本节按「**能力贯通**」口径划分（一条线从签约看到回款），`DEV-KICKOFF` §7 按
+> 「**先下后上**」的**执行序**划分 —— 两者粒度不同，若各自当开工依据必然串号。对应关系：
+>
+> | 本节口径 | 含 | `DEV-KICKOFF` §7 执行序 |
+> |---|---|---|
+> | 向下接一段（BOM → PR/PO → GR → 工单） | `G21` `G23`（**漏 `G22`**） | **阶段一** `G21 G22 G23` |
+> | 向上接一段（合同 → … → 回款） | `G16` `G17` | **阶段二** `G16 G17` |
+> | 成本归集 | `G28` | **阶段三**（非本阶段一） |
+>
+> 三处已修正的具体点：① 本阶段一**漏登记 `G22`**（齐套开工）—— 而它正是阶段一要跑的
+> 「工单开工」的必要条件，已补；② `G28` 属阶段三，不属于本阶段一；
+> ③ `invariant-coverage.md` §D 初稿曾按本节口径写成「`G21 G22 G23 + G28`」，已改为
+> `G21 G22 G23`。**本节「新增不变量」列自此仅作能力归属，不作开工序。**
+
 - **向上接一段**：合同 → 订单 → 发货 → 开票 → 应收 → 回款（O2C 的财务链最小闭环）；
 - **向下接一段**：BOM → PR/PO → GR → 工单（制造执行最小闭环）；
 - **交付物**：一个项目能从"签约"一路看到"回款"，中间每一步都**带 ID、带 as_of**。
-- **新增不变量**：G16 G17 G21 G23 G28。
+- **新增不变量（能力归属，非开工序）**：`G16` `G17` `G21` `G22` `G23` `G28`。
 
 ### 阶段二 · 组合与产能
 

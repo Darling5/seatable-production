@@ -144,7 +144,10 @@ python workflows/workflow.py note <run_id> --step ai_summary --status success \
     --detail "12 个群 / 38 条待办" --artifact data/wechat_intake/ai_summary_24h.md
 ```
 
-**退出码约定**（`cockpit/publish.py` / `workflows/evening_write.py`）：
+**退出码约定 —— ⚠️ 这里有两套命名空间，层级不同，不要互相参照**
+（2026-10-03 批次 0b 补「层级」划分；起因见 `merge-plan.md` E10 / Q9）
+
+**① 步骤脚本级** —— 被 `runner` 调起的脚本（`cockpit/publish.py` / `workflows/evening_write.py` 等）：
 
 | 码 | 含义 |
 |---|---|
@@ -152,6 +155,27 @@ python workflows/workflow.py note <run_id> --step ai_summary --status success \
 | 1 | 门禁未通过 / 有写入读回失败 —— **未上传 / 未写入任何内容** |
 | 2 | 上传失败（网络/服务端），本地 HTML 仍可兜底 |
 | 3 | 环境不具备（无 token / 无授权 / 非 WorkBuddy 环境）→ **skipped，不算失败** |
+
+码 → 步骤状态的映射由 `application/runner.py::make_step` 承担：`0→ok` ｜ `3→skipped` ｜
+其它非 0 → `failed`（`res.fail("exit=%s …")`）。
+
+**② 工作流级** —— `workflows/workflow.py::cmd_run` 的返回值（唯一落地处是
+`workflow.py` 末尾 `raise SystemExit(args.func(args))`）：
+
+| 码 | 含义 | 对应 `RSTATUS` |
+|---|---|---|
+| 0 | 整次成功 | `success` |
+| **2** | **跑完但存在非阻断失败**（降级）—— **仍可发布**，但播报须点名是哪一步 | `degraded` |
+| 1 | 失败（含阻断型失败；未知状态保守按失败） | `failed` |
+
+> ★ **字面冲突，务必知道**：`cockpit/publish.py` 在**步骤级**也用 `2`，表示「上传失败」，
+> 那会落成步骤 `failed`；而工作流级的 `2` 表示「跑完但有非阻断失败、可以发布」。
+> **同一个数字、两个层级、两种含义。**
+>
+> 另注：工作流级退出码目前**没有消费者** —— `automations/` 的两个 prompt 只发命令、
+> 播报源是 `final.json`，不读退出码，所以 `1` 与 `2` 对它们都是「非 0」、行为不变。
+> 这一层的语义是**给人、以及后续要接的自动化**读的。
+> 相关不变量：`G12`（运行级状态单一实现）· `G9`（步骤级 `skipped` 不连坐）。
 
 ---
 

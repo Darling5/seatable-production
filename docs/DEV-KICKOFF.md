@@ -99,11 +99,23 @@
 
 ```bash
 cd C:/Users/11430/.workbuddy/skills/seatable-production-1.8.0
-git log -1 --format='%h %ad %s' --date=iso   # → b5f94ef 2026-10-02 15:21:33 +0800
-git status --short                            # ← 16 个已改 + 4 个未跟踪，见下
+git log -1 --format='%h %ad %s' --date=iso   # → b5f94ef 2026-10-02 15:21:33 +0800（开工基线）
+git status --short                            # → 当时：16 个已改 + 9 个未跟踪（计数原记错，见下注）
 ```
 
-**⚠️ 工作区不干净 —— 这是开工第一道关。**
+**⚠️（历史快照）当时工作区不干净 —— 那是开工第一道关。现况见本注。**
+
+> **★ 2026-10-03 批次 0b 收口：这道关已过。** 这批改动**已全部入库**，脏工作区问题消解。
+> 处置方式：分 4 个 commit —— `b05b7c1`（运行级三态 + 账本口径修复）/ `48dfcc5`（建模文档入库）/
+> `4926fcf`（`G*`→`FIX-*` 编号统一 + 三档退出码 + `loop_sync` 降级）/ `7766803`（独立复核补录）；
+> 其后另有 `b629b4d`（前序方案归档）/ `fb3d8f6`（G12 单一口径）/ `0760a24`（覆盖矩阵）。
+> **当前 HEAD**：`0760a24` · **工作区干净、未跟踪 0**。
+> 测试规模（实测）：冒烟 `tests/test_smoke.py` **164** 项 · `unittest discover` **905** 项。
+
+> **计数订正（`merge-plan.md` E14）**：下面两张名单的计数**原文自相矛盾** ——
+> 正文写「16 个已改 + **4** 个未跟踪」，未跟踪名单标题却写「未跟踪（**8**）」，
+> 而 `git status` **实测为 9**（三处互不相等）。原因是正文那处的「4」是别的口径被误当总数。
+> 现按实测订正为 **16 + 9**，并保留本注以防以讹传讹。
 
 已修改（16）：
 `application/contracts.py` · `application/gates.py` · `application/runner.py` ·
@@ -113,10 +125,13 @@ git status --short                            # ← 16 个已改 + 4 个未跟�
 `workflows/daily_refresh.py` · `workflows/loop_trigger.py` · `workflows/workflow.py` ·
 `wx/wx_watchlist.py`
 
-未跟踪（8）：
+未跟踪（实测 **9**，订正后）：
 `docs/formal-runtime-model.md` · `docs/domain-model.md` · `docs/DEV-KICKOFF.md` ·
 `docs/invariant-coverage.md` · `docs/OPENING-PROMPT.md` · `docs/merge-plan-template.md` ·
 `tests/test_loop_trigger.py` · `tests/test_source_health.py`
+
+> 名单只列了 **8** 项 —— 第 9 项当时未记入名单，现已随 `48dfcc5` 入库、无法逐一回溯，
+> 故**如实标注这个缺口**而不是凑数。
 
 **这批改动是 2026-10-02 那次「运行级三态（degraded）改造」的产物**，不是垃圾。
 开工前必须先做二选一（**别直接覆盖**）：

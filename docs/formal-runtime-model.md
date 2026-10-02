@@ -375,7 +375,7 @@ Ledger(run) ≡ { final.json（权威汇总） } ∪ { NN_<step>.json : step ∈
 G : Ledger → { allow, deny }
 
 G(L) ≡ deny  若任一成立：
-    (a) 整次运行状态 RSTATUS ∉ {success, skipped, degraded}；
+    (a) 整次运行状态 RSTATUS ∉ {success, degraded}；
     (b) 存在**步骤文件**（NN_<step>.json）缺 step_id / 状态 ∉ STATUS /
         counts 非表结构 —— 账本不可信；
     (c) 存在阻断型 failed 步骤（status=failed ∧ blocking=true）；
@@ -390,6 +390,19 @@ G(L) ≡ deny  若任一成立：
 > 真实事故：`data/runs/daily-20260930-1903-6c9e/` 内被丢进一份顶层是数组的
 > `unsent_outbox.json`，旧实现遍历到它就返回「账本不可信」，导致该次运行
 > **连 final.json 都读不到**、11 个完好步骤文件全部作废、发布永久被拒。
+
+> **注 7.2-c（`skipped` 为何不在 (a) 的可发布集里 —— 2026-10-03 批次 0b 修正）**：
+> 判定 (a) 原写作 `RSTATUS ∉ {success, skipped, degraded}`，把**步骤级**的 `skipped`
+> 混进了**运行级**的可发布集 —— 这是**类型混淆，不是设计**。`RSTATUS`（§5.3）的值域是
+> `{success, degraded, failed}`，`run_status()` **不可能**产出 `skipped`
+> （31 份账本实测 0 次）。更要紧的是后果：把它列在「可发布」里等于给
+> 「手写 `final.json` 声称 `skipped`」开后门 —— 实测改动前
+> `gates.evaluate_dict({"status": "skipped"}, critical=())` 返回 `allowed=True`。
+> 已随 `merge-plan.md` Q11/E12 移除（commit `fb3d8f6`），并各配一条用例锁死两个层级的
+> 语义差异：**运行级 `skipped` 非法**（`tests/test_write_safety.py::TestPublishGate::test_运行级_skipped_判不可发布`）／
+> **步骤级 `skipped` 合法**（`::test_步骤级_skipped_仍然放行`，对应 G9）。
+> ⚠️ 判别口径：**不要用「路径/名字里有没有某个字符」这类现象特征**写判据
+> （本次守卫修复时第一版自检就栽在这上面），要写因果关系。
 > 同一病根的第二个实例是 `context.json`（RunContext 序列化，无 step_id）。
 > 因此「哪些文件构成 Ledger」必须由命名契约给出（见 7.1），而不是"凡是 .json 都算"。
 
@@ -492,7 +505,17 @@ G8  发布门槛：publish 实际释放 ⟹ 门禁 allow 且产物 bind 通过�
 G9  skipped 不连坐：正常跳过不阻断发布。
 G10 fail-closed：账本缺失/不可读/格式错 ⟹ 门禁 deny。
 G11 适配器 fail-closed：未知后端名直接抛错，不静默兜底。
+G12 运行级状态单一实现：RSTATUS 的推导全系统有且只有一个函数 run_status()。
+G13 账本自洽：final.json.status == run_status(final.steps)（违反**告警不 deny**）。
+G31 案件完整性：建案必须有 CASE_SEED_KINDS 三个种子对象（customer/lead/opportunity），
+    缺失即自愈或拒建；空壳不得被谎报为复用。
 ```
+
+> **共 14 条**：`G1`–`G13` 定义于 §5–§7.2（本节为汇总，**不是**它们的定义处 ——
+> `G12`/`G13` 本节此前漏列，`§11` 曾写「11 条」，2026-10-03 补正，见 `merge-plan.md` E1）。
+> `G31` 于 2026-10-03 批次 0b **补充登记**：实现早于本模型
+> （`domain/order_to_cash.py::CASE_SEED_KINDS` / `::Service._repair_case`），
+> 与 `G1`–`G13` 同属 `L_proj`，此前从未登记故另编 `G31`（`merge-plan.md` Q2）。
 
 ---
 
@@ -504,5 +527,6 @@ G11 适配器 fail-closed：未知后端名直接抛错，不静默兜底。
 2. **控制层**——步骤按 `SIDE` 分级、按 `ρ` 路由、过 `δ_gate` 三道闸，写库必经 `WriteGrant`（置信度不构成授权），状态按 `Σ`/`T` 迁移且 `sev` 强制可见；
 3. **信任层**——执行落 `Ledger`，发布必经 `G` 门禁与 `bind` 产物绑定，全链路 `fail-closed`。
 
-所谓"可信执行"，在形式化层面就是上述 11 条不变量在每一次运行中恒为真。
+所谓"可信执行"，在形式化层面就是上述 **13 条**不变量（`G1`–`G13`）在每一次运行中恒为真
+（另有 `L_proj` 同层的 `G31` 案件完整性，2026-10-03 补充登记，见 §10 末注）。
 测试（如 `tests/test_trusted_execution.py`）本质上就是对这些不变量的抽样验证。
