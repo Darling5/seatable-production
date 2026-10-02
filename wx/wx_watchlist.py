@@ -211,15 +211,21 @@ def auto_keywords():
 # ── CLI ──
 def cmd_refresh(args):
     data = build_with_customers(args.with_customers)
+    n_ent = len(data["entities"])
+    if n_ent == 0:
+        # 2026-10-02 修：原实现**先写盘、后检查**（写在 215-216、检查在 220），
+        # 于是 SeaTable 读不到时会把 watch_auto.json 覆盖成**空词表**，旧词表直接丢失
+        # —— 微信群监控从此静默漏采（只剩一行 stderr 告警，从链路看不出来）。
+        # 现在先校验：0 实体即中止，**保留旧词表不动**，明确报错。
+        print("[!] 0 个实体 —— 多半是 SeaTable 读不到（token/网络）。")
+        print("    已保留旧词表不动：%s" % AUTO_PATH)
+        print("    检查 config.yaml 的 [seatable] 段与网络后重跑本命令。")
+        return 2
     os.makedirs(INTAKE, exist_ok=True)
     with io.open(AUTO_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
-    n_ent = len(data["entities"])
     print("[ok] 词表已刷新：%d 个实体 → %d 个匹配词" % (n_ent, len(data["keywords"])))
     print("     落盘 %s" % AUTO_PATH)
-    if n_ent == 0:
-        print("     [!] 0 个实体 —— 多半是 SeaTable 读不到（token/网络）。检查后重跑。")
-        return 2
     # 打印几个示例，便于一眼确认
     for raw in list(data["entities"])[:10]:
         print("     %-28s → %s" % (raw[:28], " / ".join(data["entities"][raw]["words"])))

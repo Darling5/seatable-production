@@ -157,9 +157,12 @@ def cmd_note(args):
     data["summary"] = C.RunResult(run_id=data.get("run_id", ""),
                                   workflow=data.get("workflow", ""),
                                   steps=steps).summary
-    data["status"] = (C.STATUS_SUCCESS if steps and all(
-        s.get("status") in (C.STATUS_SUCCESS, C.STATUS_SKIPPED) for s in steps)
-        else C.STATUS_FAILED)
+    # 2026-10-02 修 G6：这里原先是**第三份**整次状态实现，且用的是旧口径
+    # （任一非 success/skipped 即 failed，完全不看 blocking）。evening 自动化
+    # Prompt 会连调三次 note 补记 AI 步骤，每调一次就把 runner 刚判好的
+    # `degraded` 覆盖回 `failed` —— 于是发布门禁在下一次 publish 时又拦死，
+    # 等于静默撤销 G1 修复。现在统一走 contracts.run_status()。
+    data["status"] = C.run_status(steps)
     with open(final, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     try:
@@ -292,14 +295,20 @@ def _scan_password_leak(path: str) -> str:
 
 
 def _latest_run_id() -> str:
-    """按目录名排序取最新一次有 final.json 的 run（含时间戳，字典序即时间序）。"""
+    """取最近一次**已跑完**（有 final.json）的 run。
+
+    2026-10-02 修 G5：原实现用 ``sorted(os.listdir())`` 取末个，注释写「字典序即时间序」
+    —— 该假设**只在单一 workflow 内成立**。一旦同时存在 ``daily-*`` 与 ``evening-*``，
+    ``daily-`` < ``evening-``，就会永远命中 evening、无视当天更晚生成的 daily。
+    现统一复用 ``gates.run_sort_key``（按目录名内嵌时间戳），与发布门禁同一份逻辑，
+    避免「同一个 bug 两处实现」再次发生。
+    """
     if not os.path.isdir(RUNS_DIR):
         return ""
-    best = ""
-    for rid in sorted(os.listdir(RUNS_DIR)):
-        if os.path.exists(os.path.join(RUNS_DIR, rid, "final.json")):
-            best = rid
-    return best
+    from application.gates import run_sort_key
+    cands = [os.path.join(RUNS_DIR, rid) for rid in os.listdir(RUNS_DIR)
+             if os.path.exists(os.path.join(RUNS_DIR, rid, "final.json"))]
+    return os.path.basename(max(cands, key=run_sort_key)) if cands else ""
 
 
 def main():

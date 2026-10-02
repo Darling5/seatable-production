@@ -280,9 +280,15 @@ class TestPublishGate(TempCase):
         return steps
 
     def test_unknown_status_blocks(self):
-        """A10：状态不在已知终态内 → 账本不可信 → 拒绝发布（旧实现直接放行）。"""
+        """A10：状态不在已知终态内 → 账本不可信 → 拒绝发布（旧实现直接放行）。
+
+        注意：这里**必须用一个不在 CRITICAL_STEP_IDS 里的中立 step_id**。
+        原实现用了 "cockpit"，而 2026-10-02 起 cockpit 被纳入 daily 的关键阶段、
+        于是它同时出现在 _steps() 与本处追加项里 → 先撞上「重复出现」检查并
+        continue，导致「未知状态」这条断言测不到（测试自身脆弱，非代码回归）。
+        """
         steps = self._steps()
-        steps.append({"step_id": "cockpit", "status": "DONE", "counts": {}})
+        steps.append({"step_id": "zz_unknown_step", "status": "DONE", "counts": {}})
         g = GATES.evaluate_dict({"run_id": "r1", "steps": steps})
         self.assertFalse(g.allowed)
         self.assertTrue(any("不在已知终态" in r for r in g.reasons))
@@ -605,6 +611,213 @@ class TestWxmatchPartialBatch(TempCase):
         self.assertEqual(row["状态"], "已授权写入")
         self.assertEqual(summary["ok"], 1)
         self.assertEqual(len(adapter.rows), 1)
+
+
+class TestLatestRunResolution(TempCase):
+    """`find_run_dir("latest")` 必须按**时间**取最近一次运行，不能按目录名字典序。
+
+    这是 G5：daily 09:00 的发布命令漏写 `--gate`，于是走默认值 "latest"；
+    而旧实现是 `max(listdir)`（字典序）。因为 `'d' < 'e'`，**任何一天的 evening 目录
+    都比当天的 daily 目录「大」** —— 于是每天早上 9:00 的发布都会去校验昨晚 19:00
+    的账本，artifact 哈希必然对不上 → 发布天天被拒，而 Prompt 当时把失败合理化成
+    「不影响本地 HTML 兜底」。这是「对外驾驶舱长期没更新」的两个原因之一。
+
+    修复点有两处，本用例同时钉住：① 排序键；② `workflow.py::_latest_run_id` 复用同一份。
+    """
+
+    def _mk(self, run_id, ts_note=""):
+        d = os.path.join(self.tmp, run_id)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "final.json"), "w", encoding="utf-8") as f:
+            json.dump({"run_id": run_id, "workflow": run_id.split("-")[0],
+                       "status": "success", "steps": [], "note": ts_note}, f)
+        return d
+
+    def test_早上的_daily_必须胜过前一晚的_evening(self):
+        """09:00 场景：今天 daily-20261003-0900 vs 昨晚 evening-20261002-1906。"""
+        self._mk("evening-20261002-1906-9c7d")
+        want = "daily-20261003-0900-aaaa"
+        self._mk(want)
+        got = os.path.basename(GATES.find_run_dir("latest", self.tmp))
+        self.assertEqual(got, want,
+                         "命中了前一晚的 evening 账本 → 09:00 发布必然被拒（G5 复发）")
+
+    def test_字典序陷阱确实存在(self):
+        """反向自证：如果退回 `max(listdir)`，结论一定是错的。
+
+        没有这条断言，上面的用例可能只是「碰巧」通过（当前两个方向恰好人意一致时）。
+        """
+        a, b = "daily-20261003-0900-aaaa", "evening-20261002-1906-9c7d"
+        self.assertGreater(b, a, "字典序前提变了：本用例的前提是 'd' < 'e'")
+        self._mk(a)
+        self._mk(b)
+        names = [n for n in os.listdir(self.tmp) if os.path.isdir(os.path.join(self.tmp, n))]
+        self.assertEqual(max(names), b, "旧实现（字典序）应当选错 —— 前提校验")
+        self.assertEqual(os.path.basename(GATES.find_run_dir("latest", self.tmp)), a)
+
+    def test_当天多次运行取最晚(self):
+        for rid in ("daily-20261002-0900-aaaa", "daily-20261002-1400-bbbb",
+                    "daily-20261002-1000-cccc"):
+            self._mk(rid)
+        self.assertEqual(os.path.basename(GATES.find_run_dir("latest", self.tmp)),
+                         "daily-20261002-1400-bbbb")
+
+    def test_不规范命名的目录退回_mtime_而不是报错(self):
+        """历史目录名不全是 `wf-YYYYMMDD-HHMM-xxxx` 形态，不能因此崩掉。"""
+        d = self._mk("_gen_evening_ledger")
+        g = self._mk("evening-20261002-1906-9c7d")
+        os.utime(os.path.join(d, "final.json"), (1, 1))       # 老得不能再老
+        self.assertEqual(os.path.basename(GATES.find_run_dir("latest", self.tmp)),
+                         "evening-20261002-1906-9c7d")
+        self.assertEqual(GATES.run_sort_key(d)[0], 0, "不规范命名应退到 mtime 档")
+
+    def test_latest_跳过没有账本的目录(self):
+        os.makedirs(os.path.join(self.tmp, "evening-20261002-1906-9c7d"), exist_ok=True)
+        want = self._mk("daily-20261001-0900-aaaa")
+        self.assertEqual(os.path.basename(GATES.find_run_dir("latest", self.tmp)),
+                         os.path.basename(want))
+
+    def test_workflow_的_latest_run_id_与门禁同源(self):
+        """同一语义两处实现会被后面改一处的人漏掉 —— 断言它俩结果一致。"""
+        from unittest.mock import patch
+        from workflows import workflow as _w
+        self._mk("evening-20261002-1906-9c7d")
+        self._mk("daily-20261003-0900-aaaa")
+        with patch.object(_w, "RUNS_DIR", self.tmp):
+            self.assertEqual(_w._latest_run_id(), "daily-20261003-0900-aaaa")
+
+
+class TestLedgerReading(TempCase):
+    """`gates.load_steps` 的「什么算步骤文件」契约（G2 / G10）。
+
+    共同病根：run 目录里**任何**一个非步骤 JSON 都能把整次运行判成「账本不可信」，
+    连 final.json 都读不到，发布永久被拒。两次真实事故：
+      · G2 —— `context.json`（RunContext 序列化，无 step_id）被打成步骤，evening 天天拒发；
+      · G10 —— `daily-20260930-1903-6c9e/unsent_outbox.json`（顶层是**数组**）让该次
+        运行 11 个完好步骤文件全部作废。
+    现在的契约：只有 `NN_<step>.json` 才算步骤文件（有资格 fail-closed），其余一律跳过。
+    """
+
+    def _run(self, run_id="daily-20261002-0900-aaaa"):
+        d = os.path.join(self.tmp, run_id)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _step(self, d, n, sid, status="success", blocking=True, **extra):
+        rec = {"step_id": sid, "status": status, "blocking": blocking, "counts": {}}
+        rec.update(extra)
+        with open(os.path.join(d, "%02d_%s.json" % (n, sid)), "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False)
+
+    def _final(self, d, run_id, status, steps=None, workflow="daily"):
+        with open(os.path.join(d, "final.json"), "w", encoding="utf-8") as f:
+            json.dump({"run_id": run_id, "workflow": workflow, "status": status,
+                       "steps": steps or [], "summary": {}}, f, ensure_ascii=False)
+
+    # ── G2 / G10：非步骤 JSON 不得判死 ──
+    def test_context_json_不被当成步骤(self):
+        """G2：context.json 没有 step_id，绝不能算步骤（否则 evening 天天拒发）。"""
+        d = self._run()
+        self._step(d, 1, "seatable_sync")
+        with open(os.path.join(d, "context.json"), "w", encoding="utf-8") as f:
+            json.dump({"run_id": "x", "workflow": "daily", "mode": "apply"}, f)
+        _final, steps, err = GATES.load_steps(d)
+        self.assertEqual(err, "")
+        self.assertEqual([s["step_id"] for s in steps], ["seatable_sync"])
+
+    def test_顶层是数组的杂项_json_被跳过而不是判死(self):
+        """G10：真实事故 daily-20260930-1903-6c9e/unsent_outbox.json（list）。"""
+        d = self._run()
+        self._step(d, 1, "seatable_sync")
+        self._step(d, 2, "cockpit")
+        with open(os.path.join(d, "unsent_outbox.json"), "w", encoding="utf-8") as f:
+            json.dump([{"id": 36, "subject": "早间群聊增量"}], f, ensure_ascii=False)
+        _final, steps, err = GATES.load_steps(d)
+        self.assertEqual(err, "", "杂项 JSON 把整次账本判死了 —— 连 final.json 都读不到")
+        self.assertEqual([s["step_id"] for s in steps], ["seatable_sync", "cockpit"])
+
+    def test_其它命名的杂项_json_也跳过(self):
+        d = self._run()
+        self._step(d, 1, "seatable_sync")
+        for name, payload in (("manual_remaining.json", {"a": 1}),
+                              ("debug_dump.json", [1, 2, 3]),
+                              ("scratch.json", "字符串也行")):
+            with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+        _final, steps, err = GATES.load_steps(d)
+        self.assertEqual(err, "")
+        self.assertEqual(len(steps), 1)
+
+    def test_唯独_NN_前缀的文件才是_fail_closed(self):
+        """契约的另一半：NN_ 前缀是 runner 的落盘格式 → 它坏了就是账本坏了。"""
+        d = self._run()
+        self._step(d, 1, "seatable_sync")
+        with open(os.path.join(d, "02_broken.json"), "w", encoding="utf-8") as f:
+            json.dump([1, 2, 3], f)
+        _final, steps, err = GATES.load_steps(d)
+        self.assertNotEqual(err, "", "NN_ 前缀的非表结构必须 fail-closed")
+        self.assertIn("02_broken.json", err)
+
+    def test_损坏的_NN_json_必须_fail_closed(self):
+        d = self._run()
+        self._step(d, 1, "seatable_sync")
+        with open(os.path.join(d, "02_x.json"), "w", encoding="utf-8") as f:
+            f.write("{ 这不是 json")
+        _f, _s, err = GATES.load_steps(d)
+        self.assertNotEqual(err, "")
+
+    def test_文件名推导出的_step_id_要写回记录(self):
+        """否则下游 evaluate_steps 又会判「存在缺少 step_id 的步骤记录」→ 误杀发布。"""
+        d = self._run()
+        with open(os.path.join(d, "01_seatable_sync.json"), "w", encoding="utf-8") as f:
+            json.dump({"status": "success", "blocking": True}, f)   # 故意不给 step_id
+        _final, steps, err = GATES.load_steps(d)
+        self.assertEqual(err, "")
+        self.assertEqual(steps[0]["step_id"], "seatable_sync")
+        g = GATES.evaluate_steps("daily-20261002-0900-aaaa", None, steps)
+        self.assertFalse(any("缺少 step_id" in r for r in g.reasons))
+
+    def test_final_json_里的步骤优先(self):
+        d = self._run()
+        self._step(d, 1, "seatable_sync", status="failed")
+        self._final(d, "daily-20261002-0900-aaaa", "success",
+                    steps=[{"step_id": "seatable_sync", "status": "success",
+                            "blocking": True, "counts": {}}])
+        _final, steps, _err = GATES.load_steps(d)
+        self.assertEqual(steps[0]["status"], "success", "final.json 是汇总后的权威版本")
+
+    # ── G8：账本自洽性 ──
+    def test_status_与步骤不自洽要告警(self):
+        """实测 2026-10-02 晚的真实账本：11 步里 1 步非阻断失败，status 却写 success
+        —— 仓库内三条代码路径没有一条能算出该值，且文件比 finished_at 晚 3.5 分钟。"""
+        d = self._run()
+        self._step(d, 1, "seatable_sync", status="success")
+        self._step(d, 2, "partdb_snap", status="failed", blocking=False)
+        self._final(d, "daily-20261002-0900-aaaa", "success")
+        g = GATES.evaluate("daily-20261002-0900-aaaa",
+                           runs_dir=self.tmp)
+        self.assertTrue(any("疑似人工改写" in w for w in g.warnings), g.warnings)
+        self.assertEqual(g.checked.get("status_recomputed"), "degraded")
+
+    def test_自洽的账本不该有该告警(self):
+        d = self._run()
+        self._step(d, 1, "seatable_sync", status="success")
+        self._step(d, 2, "partdb_snap", status="failed", blocking=False)
+        self._final(d, "daily-20261002-0900-aaaa", "degraded")
+        g = GATES.evaluate("daily-20261002-0900-aaaa", runs_dir=self.tmp)
+        self.assertFalse(any("疑似人工改写" in w for w in g.warnings), g.warnings)
+        self.assertIn("degraded", " ".join(g.warnings))
+
+    def test_自洽性检查不拦发布(self):
+        """刻意只告警：publish 跑在 final.json 落盘之前，历史账本也多为人工补，
+        拦会误伤正常发布；真正危险的「阻断型失败写成 success」已由逐步检查拦下。"""
+        d = self._run()
+        self._step(d, 1, "seatable_sync", status="success")
+        self._step(d, 2, "cockpit", status="success")     # daily 的关键阶段必须齐
+        self._final(d, "daily-20261002-0900-aaaa", "success")
+        g = GATES.evaluate("daily-20261002-0900-aaaa", runs_dir=self.tmp)
+        self.assertEqual(g.reasons, [], "本用例只想验自洽性检查不拦，不该有其它理由")
+        self.assertTrue(g.allowed)
 
 
 if __name__ == "__main__":

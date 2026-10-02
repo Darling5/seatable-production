@@ -35,6 +35,7 @@ SCRIPTS = {
     "alerts": "workflows/alerts.py",
     "foresee": "domain/foresee.py",
     "loop_sync": "workflows/loop_sync.py",
+    "loop_trigger": "workflows/loop_trigger.py",
     "daily_brief": "workflows/daily_brief.py",
     "cockpit": "cockpit/cockpit.py",
 }
@@ -59,13 +60,18 @@ def build_steps() -> list[C.StepSpec]:
         return make_step([_PY, _script(key)] + list(args), step_id, name, **kw)
 
     return [
-        # ── 1. 数据同步（失败即中止：后面的计算全是旧数据，跑了也白跑）──
+        # ── 1. 数据同步 ─────────────────────────────────────────
+        # seatable_sync 失败即中止：业务表是所有计算的主数据源，没有它一切皆空。
+        # partdb_sync 失败则是**降级**，不是中止 —— 对齐 evening_full.py:109-114 的
+        # 实测结论（2026-09-26 partdb 502 曾 abort 全链）。库存源偶发 502 时，
+        # 快照沿用上一份、链条照跑，门禁只告警不阻断。
+        # 但降级必须**可见**：final.status=degraded + 播报点名「数据可能有多旧」。
         s("seatable_sync", "同步生产业务 Base", "seatable_sync",
           side_effect=C.SIDE_LOCAL_APPEND,
           failure_policy="abort", retry=1),
         s("partdb_sync", "同步 PartDB 库存", "partdb_sync",
           side_effect=C.SIDE_LOCAL_APPEND,
-          failure_policy="abort", retry=1),
+          failure_policy="continue", retry=1, blocking=False),
 
         # ── 2. 微信情报（pull 增量 + summary 回溯；AI 总结与分流留给 Prompt）──
         s("wechat_pull", "微信事件增量拉取", "wechat_intake", ["pull"],
@@ -93,10 +99,20 @@ def build_steps() -> list[C.StepSpec]:
           side_effect=C.SIDE_LOCAL_APPEND,
           depends_on=("foresee",), failure_policy="continue"),
 
-        # ── 3.5 控制平面 → CRM 云端镜像（幂等 upsert；本地无数据自动跳过不算失败）──
+        # ── 3.5 控制平面：来单建案 → CRM 云端镜像 ──────────────
+        # **顺序不可颠倒**：先 loop_trigger 建案件，loop_sync 才能把它们镜像到 CRM。
+        # 若 loop_sync 在前，当日新建的案件要等次日才出现在云端。
+        # loop_trigger 只写本地 data/business_loop/*.csv（不碰 SeaTable / CRM，
+        # 见 loop_trigger.py:10「单向触发」），所以副作用是 SIDE_LOCAL_APPEND。
+        # 它失败不阻断发布：控制平面台账不是驾驶舱的展示必要项。
+        s("loop_trigger", "来单线索 → 控制平面案件", "loop_trigger", ["--yes"],
+          side_effect=C.SIDE_LOCAL_APPEND,
+          depends_on=("seatable_sync",), failure_policy="continue",
+          retry=1, blocking=False),
         s("loop_sync", "业务闭环台账镜像 CRM", "loop_sync", ["--yes"],
           side_effect=C.SIDE_ONLINE_WRITE,
-          depends_on=("seatable_sync",), failure_policy="continue", retry=1),
+          depends_on=("seatable_sync", "loop_trigger"),
+          failure_policy="continue", retry=1),
 
         # ── 4. 摘要与驾驶舱（生成）──
         s("daily_brief", "站会摘要 + 发件箱", "daily_brief", ["--push"],

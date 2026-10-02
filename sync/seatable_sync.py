@@ -247,7 +247,15 @@ def main():
     ap.add_argument("--tables", help="只同步指定表，逗号分隔，如 项目,生产计划")
     args = ap.parse_args()
     only = set(t.strip() for t in args.tables.split(",")) if args.tables else None
-    sync(dry_run=args.dry_run, only_tables=only)
+    counts = sync(dry_run=args.dry_run, only_tables=only)
+    if counts is None:
+        # 2026-10-02 修：原先 main() 不看返回值也不 sys.exit ——
+        # 缺凭证时 sync() 只 print 一句就 return None，进程退出码为 **0**，
+        # DAG 会把「压根没同步」记成 success，驾驶舱照着旧数据照算（静默假成功）。
+        # 退出码 3 = skipped（runner.py:273-277 的约定），语义与「真失败（HTTP 异常，
+        # 退出码 1）」区分开：配置缺失是跳过，不是成功也不是失败。
+        print("[skip] 未同步任何表（原因见上）。退出码 3 = skipped，不是 success。")
+        sys.exit(3)
 
 
 if __name__ == "__main__":

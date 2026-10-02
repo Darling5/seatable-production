@@ -54,6 +54,11 @@ STATE_OBJECTS = {
 }
 MAIN_CHAIN = list(contracts.PROJECT_STATES[:14])
 
+# 案件起始三件套。start_case 一次建三个对象，**顺序即此元组顺序**：
+# customer 最先写（幂等键 idem 就挂在它身上），lead / opportunity 随后。
+# 顺序有意义 —— 见 Service.start_case 的半写自愈说明。
+CASE_SEED_KINDS = ("customer", "lead", "opportunity")
+
 
 def _now() -> str:
     return dt.datetime.now().replace(microsecond=0).isoformat(sep=" ")
@@ -176,6 +181,49 @@ class Service:
     def _objects(self, root_id: str) -> list[dict[str, str]]:
         return [r for r in self.store.read("objects") if r.get("root_id") == root_id]
 
+    def _repair_case(self, root_id: str, customer_row: Mapping[str, Any],
+                     customer: str, product: str, owner: str,
+                     source_event_id: str = "") -> list[str]:
+        """把半写的案件补齐（幂等，可反复调用）。返回被补出来的对象类型列表。
+
+        半写事故形态：``start_case`` 逐表 append，崩在 customer 之后、lead/opportunity
+        之前 → ``objects.csv`` 里已存在 ``idempotency_key == idem`` 的 customer 行 →
+        之后每次 ``start_case`` 都在幂等分支命中、返回 reused + 一个永远补不齐的
+        root_id，而 ``loop_trigger._existing_customers()`` 又会按客户名跳过它
+        → **该客户名永久卡死**。本方法把缺的对象补出来，让案件重新可推进。
+
+        幂等性依赖 ``store.append(table, row, key)`` 的既有语义：若 key 已存在
+        则返回原行、不重复写入（见 Store.append）。所以登记记录一并重放是安全的。
+        """
+        idem = str(customer_row.get("idempotency_key") or "")
+        customer_id = str(customer_row.get("object_id") or "")
+        have = {r.get("object_type"): r for r in self._objects(root_id)}
+        made: list[str] = []
+        for kind in CASE_SEED_KINDS:
+            if kind in have:
+                continue
+            row = self._object(kind, root_id,
+                               "" if kind == "customer" else customer_id,
+                               "", owner, "lead",
+                               customer if kind == "customer" else product,
+                               idem=idem if kind == "customer" else idem + ":" + kind)
+            if kind == "opportunity":
+                row["object_id"] = root_id      # 根对象就是这个商机
+            self.store.append("objects", row, "object_id")
+            have[kind] = row
+            made.append(kind)
+        # 登记三件套一并补齐（evidence / approval / transition 的 ID 都是确定性派生的，
+        # 幂等键已存在时会原样返回，不会重复记账）
+        opportunity = have.get("opportunity") or {}
+        evidence = self._evidence(source_event_id, "opportunity", root_id,
+                                  "%s：%s" % (customer, product))
+        approval = self._approval("start", root_id, {}, opportunity, "启动客户案件",
+                                  [evidence["event_id"]], "approved")
+        self._transition(root_id, root_id, "lead", "lead",
+                         "案件创建（半写自愈补齐）", "repair",
+                         evidence["event_id"], approval)
+        return made
+
     def start_case(self, customer: str, product: str, owner: str = "项目经理",
                    source_event_id: str = "", contact: str = "", phone: str = "",
                    amount: float = 0, due_date: str = "", actor: str = "automation",
@@ -183,7 +231,29 @@ class Service:
         idem = "case:" + _token(customer, product, source_event_id or customer)
         hit = next((r for r in self.store.read("objects") if r.get("idempotency_key") == idem), None)
         if hit:
-            return {"status": "reused", "root_id": hit["root_id"], "objects": self._objects(hit["root_id"])}
+            root_id = hit["root_id"]
+            existing = self._objects(root_id)
+            have = {r.get("object_type") for r in existing}
+            missing = [k for k in CASE_SEED_KINDS if k not in have]
+            if not missing:
+                return {"status": "reused", "root_id": root_id, "objects": existing}
+            # ── 半写自愈（2026-10-02 加固）──────────────────────────
+            # start_case 逐表 append，崩在中间会留下「有 customer 行、没有
+            # lead/opportunity」的空壳。而幂等键 idem 恰好挂在**最先写的** customer 行上
+            # → 之后每次 start_case 都在上面那行幂等命中、返回 reused，
+            # 且 loop_trigger._existing_customers() 也会按客户名跳过它
+            # → **该客户名永久卡死，没有任何自愈路径**。
+            if not approved:
+                return {"status": "plan", "idempotency_key": idem, "customer": customer,
+                        "product": product, "owner": owner, "contact": contact,
+                        "phone": phone, "amount": amount, "due_date": due_date,
+                        "repair_missing": missing,
+                        "next": "该案件上次创建时中止，缺 %s；加 --yes 自愈补齐"
+                                % "、".join(missing)}
+            repaired = self._repair_case(root_id, hit, customer, product, owner,
+                                         source_event_id)
+            return {"status": "repaired", "root_id": root_id,
+                    "objects": self._objects(root_id), "repaired": repaired}
         plan = {"status": "plan", "idempotency_key": idem, "customer": customer,
                 "product": product, "owner": owner, "contact": contact, "phone": phone,
                 "amount": amount, "due_date": due_date, "next": "确认后创建客户、线索、商机"}

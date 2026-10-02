@@ -412,6 +412,392 @@ def _load_foresee():
         return None
 
 
+# ── 业务闭环控制平面（LTC）：状态中文名 + 主链顺序 ─────────────────────────
+# 与 application/contracts.py 的 PROJECT_STATES 逐项对应。这里只加「人话」，
+# 不动契约本身 —— 契约是代码层事实，这一层是展示层。
+LOOP_STATE_ZH = {
+    "lead": "线索", "opportunity": "商机",
+    "requirement_confirming": "需求确认", "solution_confirming": "方案确认",
+    "quotation_confirming": "报价确认", "contract_pending": "待签合同",
+    "won_and_funded": "立项回款", "procurement": "采购",
+    "in_production": "在产", "quality_check": "质检",
+    "ready_to_ship": "待发货", "delivering": "发货中",
+    "acceptance": "验收", "closed": "结案",
+    "cancelled": "已取消", "after_sales": "售后",
+}
+LOOP_MAIN = ("lead", "opportunity", "requirement_confirming", "solution_confirming",
+             "quotation_confirming", "contract_pending", "won_and_funded",
+             "procurement", "in_production", "quality_check", "ready_to_ship",
+             "delivering", "acceptance", "closed")
+LOOP_SIDE = ("cancelled", "after_sales")
+LOOP_TERMINAL = {"closed", "cancelled"}
+# 状态停留超过这么多自然日 → 算「卡住」，进超时告警
+LOOP_STUCK_DAYS = 7
+# 控制平面 CSV 超过这么多天没更新 → 提示「已停更」。不用 0：跨一个周末本来就正常。
+LOOP_STALE_DAYS = 3
+# 越过「立项回款」之后才会出现的对象类型 —— 用来识别「预演空壳」
+LOOP_ADVANCED_TYPES = ("contract", "project", "production_order", "purchase_order",
+                       "shipment", "after_sales")
+
+
+def _load_loop(today):
+    """业务闭环控制平面（LTC 全链案件）模型。
+
+    数据源：``data/business_loop/*.csv`` —— ``domain/order_to_cash.py`` 的 BusinessStore
+    落盘，**不在 SeaTable 里**。驾驶舱此前只读 SeaTable，所以「微信来单 → CRM → 商机 →
+    需求/方案/报价版本 → 合同 → 立项 → 采购 → 排产 → 生产 → 出货 → 验收回款 → 售后」
+    这条链一直**看不见**。本函数把它接上：16 态漏斗 + 案件卡 + 状态停留时长。
+
+    两条诚实标注（都是实测事实，不糊过去）：
+      · ``stale``    —— CSV 超过 LOOP_STALE_DAYS 未更新时置位，界面须显式提示；
+      · ``scenario`` —— 案件的对象构成完全对称、且无一越过 ``won_and_funded`` 时，
+                        判定为「一次性预演空壳」，不是真实业务流。
+    """
+    objs = _read_local_csv(os.path.join("business_loop", "objects.csv"))
+    if not objs:
+        return None
+    trans = _read_local_csv(os.path.join("business_loop", "transitions.csv"))
+    evid = _read_local_csv(os.path.join("business_loop", "evidence.csv"))
+    appr = _read_local_csv(os.path.join("business_loop", "approvals.csv"))
+
+    # ── 数据新鲜度：控制平面还在被写入吗 ──
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "data", "business_loop", "objects.csv")
+    try:
+        mt = datetime.fromtimestamp(os.path.getmtime(src), _TZ)
+        updated_at = mt.strftime("%Y-%m-%d %H:%M")
+        stale_days = (today - mt.date()).days
+    except OSError:
+        updated_at, stale_days = "未知", None
+
+    # ── 案件根对象（root_id == object_id 的那一行）──
+    roots = [r for r in objs if _text(r.get("object_id")) == _text(r.get("root_id"))]
+
+    # ── 对象类型构成（用于识别「预演空壳」）──
+    types = {}
+    for r in objs:
+        t = _text(r.get("object_type"))
+        types[t] = types.get(t, 0) + 1
+    advanced = sum(n for t, n in types.items() if t in LOOP_ADVANCED_TYPES)
+
+    # ── 索引：证据/审批按对象计数，状态轨迹按案件取末次 ──
+    ev_n, ap_n = {}, {}
+    for e in evid:
+        k = _text(e.get("related_object_id"))
+        ev_n[k] = ev_n.get(k, 0) + 1
+    for a in appr:
+        k = _text(a.get("object_id"))
+        ap_n[k] = ap_n.get(k, 0) + 1
+    tr_by_root = {}
+    for t in trans:
+        tr_by_root.setdefault(_text(t.get("root_id")), []).append(t)
+
+    by_state = {}
+    cases = []
+    for r in roots:
+        rid = _text(r.get("object_id"))
+        state = _text(r.get("state"))
+        by_state[state] = by_state.get(state, 0) + 1
+        members = [x for x in objs if _text(x.get("root_id")) == rid]
+        mids = [_text(x.get("object_id")) for x in members]
+        customer = next((_text(x.get("summary")) for x in members
+                         if _text(x.get("object_type")) == "customer"), "")
+        product = next((_text(x.get("summary")) for x in members
+                        if _text(x.get("object_type")) in ("lead", "opportunity")), "")
+        hist = sorted(tr_by_root.get(rid, []), key=lambda x: _text(x.get("created_at")))
+        # 停留时长：末次状态迁移的时间（无迁移则回退到建档时间）
+        since = _date(hist[-1].get("created_at")) if hist else None
+        if since is None:
+            since = _date(r.get("created_at"))
+        dwell = (today - since).days if since else None
+        due = _date(r.get("due_date"))
+        left = (due - today).days if due else None
+        terminal = state in LOOP_TERMINAL
+        stuck = (dwell is not None and dwell > LOOP_STUCK_DAYS and not terminal)
+        cases.append({
+            "root_id": rid,
+            "customer": customer or "（未命名客户）",
+            "product": product or "—",
+            "state": state,
+            "state_zh": LOOP_STATE_ZH.get(state, state or "?"),
+            "owner": _text(r.get("owner")) or "—",
+            "next_action": _text(r.get("next_action")) or "—",
+            "due_date": due.strftime("%Y-%m-%d") if due else "",
+            "days_left": left,
+            "dwell": dwell,
+            "stuck": stuck,
+            "terminal": terminal,
+            "objects_n": len(members),
+            "evidence_n": sum(ev_n.get(i, 0) for i in mids),
+            "approvals_n": sum(ap_n.get(i, 0) for i in mids),
+            "has_track": bool(hist),
+            "updated_at": _text(r.get("updated_at"))[:10],
+        })
+
+    # 最需要先看的排前面：逾期 > 卡住 > 停留久
+    cases.sort(key=lambda c: ((c["days_left"] if c["days_left"] is not None else 9999),
+                              -1 if c["stuck"] else 0,
+                              -(c["dwell"] if c["dwell"] is not None else -1)))
+
+    overdue = [c for c in cases if c["days_left"] is not None and c["days_left"] < 0
+               and not c["terminal"]]
+    stuck = [c for c in cases if c["stuck"] and c not in overdue]
+
+    # ── 16 态漏斗：案件数（按根对象计，不是按全部对象计）──
+    funnel = [{"state": s, "zh": LOOP_STATE_ZH.get(s, s), "n": by_state.get(s, 0),
+               "main": s in LOOP_MAIN} for s in list(LOOP_MAIN) + list(LOOP_SIDE)]
+    advanced_n = sum(f["n"] for f in funnel if not f["main"])
+
+    # 平均停留：只看有 dwell 的案件，且按状态分组
+    dwell_by_state = {}
+    for c in cases:
+        if c["dwell"] is None:
+            continue
+        dwell_by_state.setdefault(c["state"], []).append(c["dwell"])
+    dwell_avg = {k: int(round(sum(v) / len(v))) for k, v in dwell_by_state.items() if v}
+
+    # ── 识别「预演空壳」────────────────────────────────────────────────────
+    # 两个条件**同时**成立才算。只用「没走到立项」太弱 —— 一个刚开的真实业务
+    # 本来就可能还没走到。第二条才是播种特征：人工一单一单建出来的对象构成
+    # 不可能齐到 80% 以上都是同一套。
+    #   ① 全库无一对象越过「立项回款」（无合同/项目/生产订单/采购订单/发货/售后）
+    #   ② ≥80% 的案件恰好只含 <客户+线索+商机> 这「三件套」，构成完全一致
+    seed_n = 0
+    for r in roots:
+        rid = _text(r.get("object_id"))
+        ts = {_text(x.get("object_type")) for x in objs if _text(x.get("root_id")) == rid}
+        if ts == {"customer", "lead", "opportunity"}:
+            seed_n += 1
+    seeded = len(roots) >= 5 and seed_n >= len(roots) * 0.8
+    scenario = bool(advanced == 0 and seeded)
+
+    return {
+        "available": True,
+        "updated_at": updated_at,
+        "stale_days": stale_days,
+        "stale": (stale_days is not None and stale_days > LOOP_STALE_DAYS),
+        "scenario": scenario,
+        "seeded_cases": seed_n,
+        "case_count": len(cases),
+        "object_count": len(objs),
+        "transition_count": len(trans),
+        "evidence_count": len(evid),
+        "approval_count": len(appr),
+        "types": types,
+        "funnel": funnel,
+        "max_funnel": max([f["n"] for f in funnel] or [0]),
+        "cases": cases,
+        "overdue": overdue,
+        "stuck": stuck,
+        "dwell_avg": dwell_avg,
+        "advanced_n": advanced_n,
+        "stuck_days": LOOP_STUCK_DAYS,
+    }
+
+
+# ────────────────────────────────────────────────────────────────────
+# 数据来源健康度（全链降级 / Plan B 专项，2026-10-02）
+#
+# 背景：全链原有 **5 套互不通用的「数据陈旧」判据**各自为政 ——
+#   ① 本文件 LOOP_STALE_DAYS（只看文件 mtime，只管控制平面 CSV）
+#   ② 本文件前端 syncFreshness()（硬编码 6h/24h，只认 SeaTable 单源）
+#   ③ application/project_brain/schema.py:210 DEFAULT_STALE_AFTER_HOURS=24（与驾驶舱不通）
+#   ④ domain/market.py:472 cadence 7/15/30 天（那是省 API 配额，不是陈旧告警）
+#   ⑤ workflows/workflow.py:196-204 _fresh_enough（mtime / 1 天，属验收器）
+# 下面用一张 SOURCE_SPEC 统一 ①②③④（⑤ 属验收器，本批不动），并把
+# 「最近一次运行里该源对应的步骤是成功 / 降级 / 失败」并到同一张表上。
+#
+# 两条**刻意**的设计取舍：
+#   · 零侵入：不改任何业务脚本、不新增 _source_health.json —— 需要的时间戳
+#     **都已经存在**（_sync_meta.json:synced_at / partdb_snapshot.json:generated_at /
+#     wechat_intake/latest.json:pulled_at / foresee.json:generated_at）；
+#     3 个无时间戳的 CSV 用文件 mtime 兜底（与 LOOP_STALE_DAYS 既有做法一致）。
+#   · 驾驶舱运行在 cockpit 步骤内，**本次 run 的 final.json 还没写**（runner 在所有
+#     步骤跑完后才落盘），所以只能读「最近一次已完成运行」的账本。面板上如实标注
+#     是哪一个 run —— 不假装那是「本次」。
+# ────────────────────────────────────────────────────────────────────
+SOURCE_SPEC = (
+    # (key, 显示名, 相对 data/ 的产物路径, 时间戳字段, ok 小时, bad 小时,
+    #  对应 step_id, 该源不可用时的后果)
+    #
+    # SeaTable 的 ok 档取 16h（业主 2026-10-02 定）：daily 9:00 与 evening 19:00
+    # 间隔最长 14h，沿用旧的 6h 会让驾驶舱每天大部分时间常亮 amber，稀释告警价值。
+    ("seatable", "SeaTable 业务表", "_sync_meta.json", "synced_at", 16, 24,
+     "seatable_sync", "业务表是全部计算的主数据源，不可降级（失败即中止）"),
+    ("partdb", "PartDB 库存", "partdb_snapshot.json", "generated_at", 24, 72,
+     "partdb_sync", "缺料与库存沿用上一份快照"),
+    ("wechat", "微信情报", "wechat_intake/latest.json", "pulled_at", 24, 48,
+     "wechat_pull", "群聊事件与图片 OCR 无新增"),
+    ("foresee", "风险预测", "foresee.json", "generated_at", 24, 48,
+     "foresee", "风险雷达沿用上一份"),
+    ("wxmatch", "消息核对", "核对结果.csv", None, 24, 48,
+     "wxmatch_scan", "核对结果沿用上一份"),
+    ("commodities", "原料行情", "原料行情记录.csv", None, 168, 720, None,
+     "上游原料行情停更（采集节奏 7~30 天，见 domain/market.py）"),
+    # 控制平面沿用 LOOP_STALE_DAYS 这一个源，避免同一个阈值写两遍：
+    # 3 天 = 72h 判偏旧，6 天 = 168h 判过旧。
+    ("business_loop", "业务闭环控制平面", "business_loop/objects.csv", None,
+     LOOP_STALE_DAYS * 24, LOOP_STALE_DAYS * 48,
+     "loop_trigger", "全链案件台账停更"),
+)
+
+_LEVEL_RANK = {"ok": 0, "warn": 1, "bad": 2}
+
+
+def _read_json_soft(path):
+    """读 JSON，失败一律返回 {}（健康检查不能因为某个产物损坏就崩掉整页）。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _dotted_get(obj, path):
+    """按点路径取值（如 'shortage.snapshot_at'）；取不到或为空返回 None。"""
+    cur = obj
+    for part in str(path or "").split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur or None
+
+
+def _parse_ts(value):
+    """解析产物里几种已知的时间戳写法 → **带时区** datetime；解析不了返回 None。
+
+    返回值的 tzinfo 恒为 ``_TZ``（本仓库所有产物时间戳都按东八区写）：调用方拿它
+    直接和 ``datetime.now(_TZ)`` 相减，不会再踩 naive/aware 混算的 TypeError。
+    文本自带偏移（如 ``...T10:00:00+08:00``）时以文本为准。
+    """
+    text = str(value or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z",
+                "%Y-%m-%d %H:%M:%S%z", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=_TZ)
+    return None
+
+
+def _latest_run_summary(base):
+    """读**最近一次已完成运行**的 final.json（含各步 status / blocking）。
+
+    「最近」的排序键复用 ``application.gates.run_sort_key`` —— 与发布门禁同一份
+    逻辑，不再另造一套（``daily-`` < ``evening-`` 的字典序坑见 gates.run_sort_key）。
+    """
+    runs = os.path.join(base, "data", "runs")
+    if not os.path.isdir(runs):
+        return None
+    cands = [os.path.join(runs, n) for n in os.listdir(runs)
+             if os.path.exists(os.path.join(runs, n, "final.json"))]
+    if not cands:
+        return None
+    if base not in sys.path:
+        sys.path.insert(0, base)
+    try:
+        from application.gates import run_sort_key   # 与门禁共用，避免第二套实现
+        latest = max(cands, key=run_sort_key)
+    except Exception:
+        try:
+            latest = max(cands, key=os.path.getmtime)
+        except OSError:
+            latest = sorted(cands)[-1]
+    data = _read_json_soft(os.path.join(latest, "final.json"))
+    if not data:
+        return None
+    return {
+        "run_id": data.get("run_id") or os.path.basename(latest),
+        "workflow": data.get("workflow") or "",
+        "status": data.get("status") or "",
+        "finished_at": data.get("finished_at") or "",
+        "summary": data.get("summary") or {},
+        "steps": [{"step_id": s.get("step_id"), "status": s.get("status"),
+                   "blocking": s.get("blocking", True),
+                   "error": (s.get("error") or "").replace("\n", " ")[:90]}
+                  for s in (data.get("steps") or [])],
+    }
+
+
+def _load_source_health(today, base=None):
+    """全链数据来源健康度：统一陈旧判据 + 最近一次运行的降级状态。
+
+    始终返回结构完整的 dict（sources 可能为空），让前端只需处理一种形状。
+    ``base`` 仅在测试中注入（默认=本技能目录）；生产路径不传，行为不变。
+    """
+    base = base or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    now = datetime.now(_TZ)
+    run = _latest_run_summary(base)
+    steps = {s.get("step_id"): s for s in (run or {}).get("steps") or []}
+    run_id = (run or {}).get("run_id") or ""
+
+    out = []
+    for key, name, rel, ts_path, ok_h, bad_h, step_id, consequence in SOURCE_SPEC:
+        path = os.path.join(base, "data", rel.replace("/", os.sep))
+        at, age_h = None, None
+        if os.path.exists(path):
+            if ts_path:
+                at = _dotted_get(_read_json_soft(path), ts_path)
+                dt = _parse_ts(at)
+                if dt is not None:
+                    try:
+                        age_h = max(0.0, (now - dt).total_seconds() / 3600.0)
+                    except (TypeError, OverflowError):
+                        age_h = None     # 时间戳形态异常 → 走下面的 mtime 兜底
+            if age_h is None:            # 无时间戳字段 / 解析失败 → 退回文件 mtime
+                try:
+                    mt = datetime.fromtimestamp(os.path.getmtime(path), _TZ)
+                except OSError:
+                    mt = None
+                if mt is not None:
+                    at = mt.strftime("%Y-%m-%d %H:%M")
+                    age_h = max(0.0, (now - mt).total_seconds() / 3600.0)
+        if age_h is None:
+            level, note = "bad", "产物不存在"
+        elif age_h > bad_h:
+            level, note = "bad", "数据过旧"
+        elif age_h > ok_h:
+            level, note = "warn", "数据偏旧"
+        else:
+            level, note = "ok", ""
+
+        degraded = False
+        st = steps.get(step_id) if step_id else None
+        if st:
+            sstat = str(st.get("status") or "")
+            if sstat == "failed" and not st.get("blocking", True):
+                # 真实的降级：该步骤失败但声明为非阻断（下游照跑、数据沿用）
+                degraded = True
+                note = ("最近一次运行 %s 里该步骤失败但**未阻断** —— 当前数据是沿用的"
+                        % (run_id or "?"))
+                if _LEVEL_RANK[level] < _LEVEL_RANK["warn"]:
+                    level = "warn"
+            elif sstat in ("failed", "blocked"):
+                level = "bad"
+                note = "最近一次运行 %s 里该步骤 %s" % (run_id or "?", sstat)
+
+        out.append({
+            "key": key, "name": name, "artifact": "data/" + rel,
+            "at": at, "age_h": (round(age_h, 1) if age_h is not None else None),
+            "ok_h": ok_h, "bad_h": bad_h, "level": level, "note": note,
+            "step_id": step_id or "", "degraded": degraded,
+            "consequence": consequence,
+        })
+
+    n_bad = sum(1 for x in out if x["level"] == "bad")
+    n_warn = sum(1 for x in out if x["level"] == "warn")
+    return {
+        "available": True,
+        "checked_at": now.strftime("%Y-%m-%d %H:%M"),
+        "run": run,
+        "sources": out,
+        "n_bad": n_bad, "n_warn": n_warn, "n_ok": len(out) - n_bad - n_warn,
+        "worst": "bad" if n_bad else ("warn" if n_warn else "ok"),
+    }
+
+
 def _load_wxmatch():
     """消息↔SeaTable 核对模型（wxmatch.py 维护：data/核对结果.csv）。无数据返回 None。
 
@@ -820,10 +1206,27 @@ def compute(adapter, today):
     repair_total = len(repairs)
     repair_rate = (repair_total / shipped * 100) if shipped else 0.0
     smt_rows = adapter.list_rows("贴片生产记录")
+    # ⚠️ 良率分母**只能**统计「良品数量已录」的行 —— 2026-10-02 修。
+    # 真实库里有 2 行只填了贴片数量（20260808-001 投 3000、20260919-001 投 1000）
+    # 而良品数量为空，旧写法把这两行的投入计进分母，算出 30.4% 的**假良率**
+    # （剔除后真实 94.4%）。这与「驾驶舱导航角标把积压算成今日待办」是同一类 bug：
+    # 分子有数、分母缺数的行，必须整行剔除，并把剔除量暴露给前端标注「N/M 批已录」。
+    smt_pairs = []
+    smt_missing_qty = 0
+    smt_missing_n = 0
+    for r in smt_rows:
+        raw_good = r.get("良品数量")
+        q = _num(r.get("贴片数量"))
+        if raw_good in (None, "") or q <= 0:
+            if q > 0:
+                smt_missing_n += 1
+                smt_missing_qty += q
+            continue
+        smt_pairs.append((q, _num(raw_good)))
     smt_yield = 0.0
-    if smt_rows:
-        tot = sum(_num(r.get("贴片数量")) for r in smt_rows)
-        good = sum(_num(r.get("良品数量")) for r in smt_rows)
+    if smt_pairs:
+        tot = sum(a for a, _b in smt_pairs)
+        good = sum(_b for _a, _b in smt_pairs)
         smt_yield = (good / tot * 100) if tot else 0.0
     asm_rows = adapter.list_rows("组装记录")
     asm_yields = [_num(r.get("组装良品率")) for r in asm_rows if _num(r.get("组装良品率")) > 0]
@@ -1063,6 +1466,12 @@ def compute(adapter, today):
     wxmatch_model = _load_wxmatch()
     # 风险预测（foresee.py 维护 data/foresee.json；缺失则 None）
     foresee_model = _load_foresee()
+    # 业务闭环控制平面（order_to_cash.py 维护 data/business_loop/*.csv；缺失则 None）
+    # ★ L2-0 接线：这条「微信来单 → … → 售后」的全链一直落在本地 CSV 里，
+    #   驾驶舱只读 SeaTable，所以业主自己看不到它跑到哪了。这里把它接上。
+    loop_model = _load_loop(today)
+    # 数据来源健康度（全链降级 / Plan B 专项）：统一陈旧判据 + 最近一次运行的降级状态
+    source_health = _load_source_health(today)
     # 风险预测 → 行动建议：已逾期/高风险置顶为高优，缺料必须立刻下单次之
     if foresee_model:
         fb = foresee_model.get("backward") or {}
@@ -1086,6 +1495,53 @@ def compute(adapter, today):
             actions.insert(0 if a["type"] == "停产" else len(actions),
                            {"pri": "高" if a["type"] == "停产" else "中", "cat": "market",
                             "text": "物料行情：%s %s" % (a["model"], a["text"])})
+
+    # ── 业务闭环控制平面 → 行动建议（L2-0b 状态超时告警）──────────────────
+    # 放在最后一组：insert(0) 是「后插入者站最前」，全链逾期比行情告警更该先看到。
+    #
+    # ⚠️ 两条自我约束（否则会造出假指标 —— 这正是业主反复要求杜绝的）：
+    #   ① 控制平面是**预演空壳**（无一越过立项回款）时，绝不把它的「停滞」当业务待办。
+    #      那是没接入增量入口造成的，不是有人在拖单；混进「今天要处理」就是谎报。
+    #   ② 数据**已停更**时，「停留 N 天」被停更期灌水（N = 距末次写入的天数），
+    #      拿它当「这单卡了 N 天」是错的 → 只保留有绝对日期锚点的「逾期」。
+    #   两条都不成立时才发业务告警；否则只留一条**提示级**说明（不计入角标、
+    #   不进「今天要处理」，只在「行动建议」里可见）。
+    if loop_model:
+        if not loop_model["scenario"]:
+            for c in loop_model["overdue"][:3]:
+                actions.insert(0, {"pri": "高", "cat": "sales",
+                                   "text": "全链逾期：%s「%s」卡在「%s」%d 天（应于 %s 推进）%s" % (
+                                       c["customer"][:12], c["product"][:16], c["state_zh"],
+                                       -c["days_left"], c["due_date"], c["next_action"][:30])})
+            if not loop_model["stale"]:
+                for c in loop_model["stuck"][:2]:
+                    actions.append({"pri": "中", "cat": "sales",
+                                    "text": "全链停滞：%s「%s」在「%s」停留 %d 天未推进，建议确认卡点" % (
+                                        c["customer"][:12], c["product"][:16], c["state_zh"], c["dwell"])})
+        else:
+            _why = ("已停更 %d 天（末次 %s）" % (loop_model["stale_days"], loop_model["updated_at"])
+                    if loop_model["stale"] else "数据为预演批次")
+            actions.append({"pri": "提示", "cat": "sales",
+                            "text": "全链案件（%d 单）未计入今日待办：控制平面%s，且无一越过「立项回款」。"
+                                    "详见「项目 › 全链案件」与「分析 › 来源健康」。"
+                                    % (loop_model["case_count"], _why)})
+
+    # ── 数据来源健康度 → 行动建议（全链降级 / Plan B 专项）──────────────
+    # 与上一段同一套「防假指标」双闸门：确有源过旧/降级才发业务告警，
+    # 否则只发一条**提示级**（不计角标、不进「今天要处理」）。
+    if source_health and source_health.get("worst") != "ok":
+        _bad = [s for s in source_health["sources"] if s["level"] == "bad"]
+        _warn = [s for s in source_health["sources"] if s["level"] == "warn"]
+        if _bad:
+            actions.insert(0, {"pri": "中", "cat": "risk",
+                               "text": "数据来源过旧 %d 个：%s —— 看板相关结论可能基于旧数据，"
+                                       "详见「分析 › 来源健康」" % (
+                                           len(_bad),
+                                           "、".join(s["name"] for s in _bad[:3]))})
+        elif _warn:
+            actions.append({"pri": "提示", "cat": "risk",
+                            "text": "数据来源偏旧 %d 个：%s（详见「分析 › 来源健康」）" % (
+                                len(_warn), "、".join(s["name"] for s in _warn[:3]))})
     # 核对引擎：高置信收款=钱的事必须红字置顶；中置信有匹配项目=漏登记，中优
     if wxmatch_model:
         if wxmatch_model["hi_pay_count"]:
@@ -1234,6 +1690,10 @@ def compute(adapter, today):
             "repair_rate": round(repair_rate, 2), "shipped": shipped, "repair_total": repair_total,
             "smt_yield": round(smt_yield, 1), "asm_yield": asm_yield,
             "repair_overdue": repair_overdue, "repair_avg": repair_avg, "repair_list": repair_list,
+            # 良率**样本完整度**：前端据此标注「11/13 批已录 · 2 批待补录（投 4000 片）」。
+            # 不暴露这个，看板上的 94.4% 就是个没有分母说明的数字。
+            "smt_batches": len(smt_pairs), "smt_rows": len(smt_rows),
+            "smt_missing_n": smt_missing_n, "smt_missing_qty": int(smt_missing_qty),
         },
         "supply": {
             "overdue_list": overdue_list, "supplier": supplier,
@@ -1264,6 +1724,10 @@ def compute(adapter, today):
         "wxmatch": wxmatch_model,
         # 风险预测（foresee.py 维护 data/foresee.json；缺失则 None）
         "foresee": foresee_model,
+        # 业务闭环控制平面（order_to_cash.py 维护 data/business_loop/*.csv；缺失则 None）
+        "loop": loop_model,
+        # 数据来源健康度（统一陈旧判据 + 最近一次运行的降级状态；见 SOURCE_SPEC）
+        "source_health": source_health,
     }
 
 
@@ -1296,6 +1760,11 @@ ICONS = {
     "IC_RADAR": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/><path d="M12 12L20 7"/></svg>',
     "IC_THEME": '<svg class="svg-ic" width="16" height="16" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
     "IC_USER": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3 20v-1.5C3 16 5.7 14.5 9 14.5s6 1.5 6 4V20"/><path d="M17 8.5h4"/><path d="M17 12h4"/><path d="M17 15.5h4"/></svg>',
+    # v6 外壳（2026-10-02 UX 重构）新增
+    "IC_DOTS": '<svg class="svg-ic" width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>',
+    "IC_CHEV": '<svg class="svg-ic" width="12" height="12" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>',
+    "IC_MENU": '<svg class="svg-ic" width="18" height="18" viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>',
+    "IC_INSIGHT": '<svg class="svg-ic" width="20" height="20" viewBox="0 0 24 24"><path d="M4 19V9"/><path d="M10 19V5"/><path d="M16 19v-7"/><path d="M22 19H2"/></svg>',
 }
 
 # ===== 访问口令（客户端校验，写进 HTML 源码；已 base64 混淆，开发者选项里不再一眼看到明文）=====
@@ -2001,6 +2470,297 @@ table tr.hl td{background:var(--selbg)}
   .btn,.bf-btn{min-height:40px}
   section{margin-top:22px}
 }
+/* ════════════════════════════════════════════════════════════════════════════
+   v6 外壳（2026-10-02 UX 重构）
+   背景：旧版把 22 个区块铺在一条 16 屏长的纸面上（展开后 14011px），
+        导航 20 项但只有 4 个区块可见，首屏 80% 是外壳。
+   本层只重写外壳与导航，区块渲染器一个不动 —— 靠 <section> 复用。
+   ════════════════════════════════════════════════════════════════════════════ */
+body{background:var(--bg)}
+.shell{display:flex;flex-direction:column;min-height:100vh}
+
+/* ── 顶栏：56px 单行 ───────────────────────────────────────────────── */
+.topbar{position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:10px;
+  height:56px;padding:0 16px;background:color-mix(in srgb,var(--card) 86%,transparent);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--line)}
+.topbar .brand{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;
+  color:var(--ink);white-space:nowrap;line-height:1}
+.topbar .brand svg{width:20px;height:20px;color:var(--primary);opacity:1}
+.topbar .spacer{flex:1 1 auto;min-width:8px}
+.topbar .meta{font-size:12px;color:var(--sub);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;max-width:360px;margin:0}
+.chip{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;
+  background:var(--subbg);border:1px solid var(--line);border-radius:8px;
+  font-size:12.5px;color:var(--sub);cursor:pointer;white-space:nowrap;line-height:1}
+.chip:hover{color:var(--ink);border-color:var(--bd)}
+.chip svg{width:14px;height:14px;color:currentColor}
+.chip .dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex:0 0 7px}
+/* 数据状态 chip 里的文字很长（"真实数据 · 较新 · 同步于 … · 22 小时前"），
+   不夹住的话它会 nowrap 把整个顶栏顶宽，进而在手机上把 layout viewport 撑到 570px。 */
+#dataChip{max-width:min(360px,44vw);overflow:hidden}
+#dataChip .sync-badge{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.iconbtn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;
+  padding:0;background:var(--subbg);border:1px solid var(--line);border-radius:8px;
+  color:var(--sub);cursor:pointer}
+.iconbtn:hover{color:var(--ink);border-color:var(--bd)}
+.topbar .demo-flag,.topbar .real-flag{position:static;top:auto;right:auto;
+  font-size:11px;padding:2.5px 8px;border-radius:6px;white-space:nowrap}
+.dd{position:relative}
+.dd-menu{position:absolute;top:calc(100% + 8px);right:0;min-width:216px;padding:6px;
+  background:var(--card);border:1px solid var(--line);border-radius:12px;
+  box-shadow:var(--shadow-md);display:none;z-index:70}
+.dd-menu.open{display:block}
+.dd-item{display:flex;align-items:center;gap:9px;width:100%;padding:8px 10px;border:0;
+  background:none;border-radius:8px;font-size:13px;color:var(--ink);cursor:pointer;
+  text-align:left;line-height:1.3;font-family:inherit}
+.dd-item:hover{background:var(--subbg)}
+.dd-item svg{width:15px;height:15px;flex:0 0 15px;color:var(--sub)}
+.dd-item.active{color:var(--primary);background:var(--primary-subtle)}
+.dd-item.active svg{color:var(--primary)}
+.dd-sep{height:1px;margin:5px 4px;background:var(--line)}
+
+/* ── 主体：左导航 + 内容 ───────────────────────────────────────────── */
+.bodyrow{display:flex;flex:1;align-items:flex-start;min-width:0}
+.sidenav{position:sticky;top:56px;flex:0 0 172px;width:172px;align-self:flex-start;
+  max-height:calc(100vh - 56px);overflow-y:auto;padding:14px 10px 20px;
+  display:flex;flex-direction:column;gap:2px}
+.navitem{display:flex;align-items:center;gap:9px;width:100%;padding:9px 11px;border:0;
+  background:none;border-radius:9px;font-size:13.5px;color:var(--sub);cursor:pointer;
+  text-align:left;line-height:1.2;font-family:inherit}
+.navitem:hover{background:var(--subbg);color:var(--ink)}
+.navitem.active{background:var(--primary-subtle);color:var(--primary);font-weight:600}
+.navitem svg{width:17px;height:17px;flex:0 0 17px;color:currentColor;opacity:.85}
+.navitem .badge{margin-left:auto;min-width:19px;height:19px;padding:0 5px;border-radius:10px;
+  background:var(--red);color:#fff;font-size:11px;line-height:19px;text-align:center;font-weight:600}
+.nav-sep{height:1px;margin:8px 6px;background:var(--line)}
+.nav-note{padding:6px 11px;font-size:11px;color:var(--sub);line-height:1.6}
+.main{flex:1 1 auto;min-width:0;padding:0 22px 48px}
+
+/* ── 标签条：吸顶，替代旧的滚动锚点导航 ──────────────────────────── */
+.tabstrip{position:sticky;top:56px;z-index:50;display:flex;gap:4px;overflow-x:auto;
+  padding:8px 0;background:color-mix(in srgb,var(--bg) 90%,transparent);
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);margin-bottom:16px}
+.tabstrip::-webkit-scrollbar{height:0}
+.tab{flex:0 0 auto;padding:6px 13px;border-radius:8px;border:1px solid transparent;
+  background:none;font-size:13px;color:var(--sub);cursor:pointer;white-space:nowrap;
+  line-height:1.4;font-family:inherit}
+.tab:hover{background:var(--subbg);color:var(--ink)}
+.tab.active{background:var(--card);border-color:var(--line);color:var(--ink);font-weight:600}
+.tab .tb-badge{display:inline-block;margin-left:6px;padding:0 5px;border-radius:8px;
+  background:var(--red);color:#fff;font-size:10.5px;line-height:16px;font-weight:600}
+
+/* ── 面板：一次只显示一个区块 ──────────────────────────────────────── */
+.pane{display:none}
+.pane.active{display:block;animation:panefade .16s ease-out}
+@keyframes panefade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.pane.active{animation:none}}
+.pane>section{margin-top:0}
+.pane>section+section{margin-top:22px}
+/* 页面内的锚点跳转不再需要滚动补偿（同页只显示一个区块） */
+/* ── KPI 常驻条 ──────────────────────────────────────────────────────
+   旧版是 4 张竖卡（116px 高，还只占左半边）。这里是 38px 一条横排，
+   每个标签页顶部都在，但只吃掉首屏 1/20 而不是 1/6。 */
+#kpiBar{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 2px}
+#kpiBar .kpi{flex:1 1 196px;flex-direction:row;align-items:center;gap:7px;
+  padding:9px 12px;border-radius:10px;min-width:0}
+#kpiBar .kpi:hover{transform:none;box-shadow:var(--shadow);border-color:var(--line)}
+#kpiBar .kpi .top{margin:0;flex:0 0 auto}
+#kpiBar .kpi .lbl{font-size:11.5px;white-space:nowrap}
+#kpiBar .kpi .v{font-size:18px;line-height:1.2;margin-left:auto}
+#kpiBar .kpi .sub{margin:0;font-size:10.5px;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;max-width:44%}
+
+/* ── 抽屉：新建 / 补录 ─────────────────────────────────────────────── */
+.drawer{position:fixed;inset:0;z-index:80;display:none}
+.drawer.open{display:block}
+.drawer-mask{position:absolute;inset:0;background:rgba(15,23,42,.42)}
+.drawer-panel{position:absolute;top:0;right:0;bottom:0;width:min(720px,94vw);
+  background:var(--bg);border-left:1px solid var(--line);overflow-y:auto;padding:20px 22px 40px}
+.drawer-h{display:flex;align-items:center;gap:10px;margin-bottom:14px;font-size:15px;font-weight:600}
+.drawer-h .x{margin-left:auto;width:30px;height:30px;border:1px solid var(--line);
+  background:var(--card);border-radius:8px;cursor:pointer;color:var(--sub);font-size:17px;line-height:1}
+.drawer-panel>section{margin-top:0}
+
+/* ── 表格：短字段不换行（旧版 2026-07-28 会竖着断两行，看着像数据错乱） ──
+   ⚠️ 这里**不做** sticky 表头：表格外层是 <div style="overflow-x:auto">，
+   按 CSS 规范一轴非 visible 时另一轴会算成 auto —— 那个 div 因此成了纵向滚动容器，
+   position:sticky 便以它为基准偏移，表头会钉在表格正中间压住第 5 行。
+   现有表格都 data-paginate 到 8 行/页，也不需要 sticky。 */
+.pane td.nowrap,.pane th.nowrap{white-space:nowrap}
+
+/* ── 移动端：左导航换成底部标签栏 ─────────────────────────────────── */
+.tabbar{display:none}
+@media (max-width:1023px){
+  .main{padding:0 14px calc(64px + env(safe-area-inset-bottom))}
+  .sidenav{display:none}
+  .tabstrip{top:56px}
+  .tabbar{position:fixed;left:0;right:0;bottom:0;z-index:70;display:flex;
+    background:color-mix(in srgb,var(--card) 94%,transparent);
+    -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+    border-top:1px solid var(--line);
+    padding-bottom:env(safe-area-inset-bottom)}
+  .tabbar button{flex:1 1 0;display:flex;flex-direction:column;align-items:center;gap:3px;
+    padding:8px 2px 7px;border:0;background:none;color:var(--sub);font-size:10.5px;
+    cursor:pointer;font-family:inherit;position:relative}
+  .tabbar button.active{color:var(--primary)}
+  .tabbar button svg{width:20px;height:20px}
+  .tabbar .tb-badge{position:absolute;top:4px;left:50%;margin-left:4px;min-width:15px;
+    height:15px;padding:0 4px;border-radius:8px;background:var(--red);color:#fff;
+    font-size:10px;line-height:15px;font-weight:600}
+  .topbar .meta{display:none}
+}
+@media (max-width:600px){
+  .topbar{padding:0 10px;gap:7px}
+  .topbar .brand b{display:none}
+  .chip{padding:0 8px}
+  .iconbtn{width:32px}
+  /* KPI 改成 2×2：横排 minmax(196px) 在 390px 上会退化成 1 列 4 行，白吃 168px 首屏 */
+  #kpiBar{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  #kpiBar .kpi{flex-direction:column;align-items:flex-start;gap:2px;padding:8px 10px}
+  #kpiBar .kpi .v{margin-left:0;font-size:17px}
+  #kpiBar .kpi .sub{max-width:100%}
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   v7 图表工具箱（2026-10-02）
+   起因：v6 把外壳修好了，但整站 **0 个图表** —— 数字堆在表格里，不是驾驶舱。
+   参照（公开规范与开源实现）：
+     · 制造业看板规范：核心 KPI 置顶；绿(达成≥90/良率≥98)/黄/红 三档语义色；
+       图表 ≤4 种/屏；每屏 6~8 个部件封顶；"3 秒扫读"原则；实际值 + 目标值缺一不可
+     · Tremor / shadcn dashboard-01：KPI 卡 = 标签 + 大数字 + 环比角标 + 目标进度条 + 迷你走势
+     · 开源 OEE 看板（Dashboard-OEE）：主指标配色阈值 + 三分量拆解 + Top 损失 Pareto + 迷你柱图
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* ── 图表卡容器 ─────────────────────────────────────────────────────── */
+.viz{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  box-shadow:var(--shadow);padding:15px 17px;min-width:0}
+.viz+.viz{margin-top:14px}
+.viz-hd{display:flex;align-items:baseline;gap:10px;margin-bottom:13px}
+.viz-hd h3{margin:0;font-size:13.5px;font-weight:600;color:var(--ink);letter-spacing:-.01em}
+.viz-hd .q{margin-left:auto;font-size:11px;color:var(--sub);text-align:right;line-height:1.4}
+.viz-grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));align-items:start}
+.viz-grid>.viz{margin-top:0}
+.viz-note{font-size:11px;color:var(--sub);line-height:1.65;margin-top:11px;
+  padding-top:10px;border-top:1px dashed var(--line)}
+.viz-empty{font-size:12px;color:var(--sub);padding:14px 0;text-align:center}
+/* 「更多指标」是横向滚动条（.hscroll），既有的弹性尺寸只写给 `> .card` 和 `> .kpi`。
+   v7 的统计卡类名是 `.stat`，不补这条就会在 flex 行里被压扁/拉长。 */
+.hscroll>.stat{flex:0 0 auto;min-width:210px;max-width:276px;scroll-snap-align:start}
+/* ⚠️ 既有缺陷修复（v7 暴露出来的）：`.g2/.g3` 用的 `1fr` 其实等价于 `minmax(auto,1fr)`，
+   于是列里一旦有**长不可断内容**（最典型是维修明细单元格里塞的 markdown 原文表格），
+   该列的最小内容宽度就会把整行撑开、把邻列压成窄条 —— 质量页的良率卡就是这么被挤扁的。
+   把 min 显式写成 0，列宽才真正均分、内容该溢出就溢出（表格本来就有 overflow-x:auto）。 */
+.grid.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.grid.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+
+/* ── 条形榜（Pareto）：标签 / 值 / 轨道 ─────────────────────────────── */
+.bl{display:flex;flex-direction:column;gap:9px}
+.bl-row{display:grid;grid-template-columns:1fr auto;gap:3px 10px;align-items:baseline}
+.bl-lbl{font-size:12.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bl-val{font-size:12px;color:var(--sub);font-variant-numeric:tabular-nums;white-space:nowrap}
+.bl-track{grid-column:1/-1;height:7px;background:var(--subbg3);border-radius:4px;overflow:hidden}
+.bl-fill{display:block;height:100%;border-radius:4px;background:var(--primary);min-width:2px}
+.bl-fill.s-ok{background:var(--green)} .bl-fill.s-warn{background:var(--amber)} .bl-fill.s-bad{background:var(--red)}
+
+/* ── 子弹图（实际 vs 目标）：轨道 + 填充 + 目标刻线 ──────────────────── */
+.bt+.bt{margin-top:11px}
+.bt-head{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;margin-bottom:5px}
+.bt-head .bt-l{color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bt-head .bt-v{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink);font-weight:500}
+.bt-head .bt-v em{font-style:normal;color:var(--sub);font-weight:400}
+.bt-track{position:relative;height:15px;background:var(--subbg3);border-radius:4px;overflow:hidden}
+.bt-fill{display:block;height:100%;border-radius:4px}
+.bt-mark{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--ink);opacity:.6}
+.bt-scale{display:flex;justify-content:space-between;font-size:10px;color:var(--sub);margin-top:3px}
+
+/* ── 构成条（成本结构 / 阶段分布）─────────────────────────────────── */
+.stk{display:flex;height:11px;border-radius:6px;overflow:hidden;background:var(--subbg3)}
+.stk i{display:block;height:100%;min-width:2px}
+.legend{display:flex;flex-wrap:wrap;gap:7px 15px;margin-top:12px}
+.legend span{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--sub)}
+.legend i{width:9px;height:9px;border-radius:2px;flex:0 0 9px}
+.legend b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+
+/* ── 环比角标 ──────────────────────────────────────────────────────── */
+.tp{display:inline-flex;align-items:center;gap:2px;font-size:11px;font-weight:600;
+  padding:1.5px 7px;border-radius:6px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tp.good{background:color-mix(in srgb,var(--green) 13%,transparent);color:var(--green)}
+.tp.bad{background:color-mix(in srgb,var(--red) 13%,transparent);color:var(--red)}
+.tp.flat{background:var(--subbg3);color:var(--sub)}
+
+/* ── 统计卡（重做 KPI）：标签 → 大数字 → 迷你走势 → 目标进度 → 备注 ─── */
+#kpiBar{display:grid;grid-template-columns:repeat(auto-fit,minmax(212px,1fr));
+  gap:12px;margin:12px 0 2px}
+/* ⚠️ v6 曾在 @media(max-width:600px) 里把 #kpiBar 改成 2×2；但 v7 的上面这条
+   网格规则写在**那个媒体查询之后**，同优先级下后者胜出，于是移动端又退回
+   「1 列 4 行」，4 张卡把「今天要处理」整块挤到折叠线以下。这里重新声明一次。
+   卡内元素同步收窄：不缩字号的话 181px 宽会把大数字和「目标」挤成两行。 */
+@media (max-width:600px){
+  #kpiBar{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .stat{padding:10px 11px;gap:6px}
+  .stat .sv b{font-size:20px}
+  .stat .sl{font-size:11px}
+  .stat .sf{font-size:10px}
+  .stat .spark{height:18px}
+}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  box-shadow:var(--shadow);padding:13px 15px;display:flex;flex-direction:column;
+  gap:8px;min-width:0}
+.stat .sl{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--sub);font-weight:500}
+.stat .sl i{width:7px;height:7px;border-radius:50%;flex:0 0 7px;display:block}
+.stat .sv{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
+.stat .sv b{font-size:25px;font-weight:600;letter-spacing:-.02em;color:var(--ink);
+  font-variant-numeric:tabular-nums;line-height:1.1}
+.stat .sv b.s-ok{color:var(--green)} .stat .sv b.s-warn{color:var(--amber)}
+.stat .sv b.s-bad{color:var(--red)} .stat .sv b.s-neg{color:var(--red)}
+.stat .sv em{font-style:normal;font-size:12px;color:var(--sub)}
+.stat .spark{display:block;width:100%;height:22px;margin:-1px 0}
+/* spark 的尺寸原本只定义在 .stat 命名空间里；图表卡里单独用会塌成 0 高。 */
+.viz .spark{display:block;width:100%;height:42px;margin:6px 0 2px}
+.stat .bar{height:5px;border-radius:3px;background:var(--subbg3);overflow:hidden}
+.stat .bar i{display:block;height:100%;border-radius:3px;background:var(--primary)}
+.stat .sf{display:flex;align-items:center;gap:8px;font-size:10.5px;color:var(--sub);
+  line-height:1.5;min-height:15px}
+.stat .sf .tgt{margin-left:auto;white-space:nowrap}
+
+/* ── 行动行（今天要处理：左侧严重度色轨 + 影响面元信息）────────────── */
+.acts{display:flex;flex-direction:column;gap:8px}
+.act-row{display:grid;grid-template-columns:4px 1fr auto;border:1px solid var(--line);
+  border-radius:10px;background:var(--card);overflow:hidden}
+.act-rail{background:var(--red)}
+.act-row.p-中 .act-rail{background:var(--amber)}
+.act-row.p-低 .act-rail{background:var(--blue)}
+.act-row.p-提示 .act-rail{background:var(--blue)}
+.act-body{padding:11px 0 11px 13px;min-width:0}
+.act-t{font-size:13px;color:var(--ink);line-height:1.55}
+.act-m{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap}
+.act-m span{font-size:10.5px;color:var(--sub);background:var(--subbg);
+  border:1px solid var(--line);border-radius:5px;padding:1.5px 7px;white-space:nowrap}
+.act-m span b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.act-go{align-self:center;margin-right:13px}
+/* ⚠️ 基础按钮样式（约 1508 行那组选择器）只覆盖 `.today-item .go`。
+   v7 把「今天要处理」的列表换成了 .act-row，若不在这里自己给全，
+   按钮会退化成浏览器默认样式（灰底凸起，跟整站完全不搭）。 */
+.act-go{flex:0 0 auto;border:1px solid var(--btn-line);background:var(--btn-bg);
+  color:var(--btn-ink);border-radius:8px;padding:7px 12px;font-size:12.5px;font-weight:500;
+  cursor:pointer;font-family:inherit;white-space:nowrap;transition:background .12s,border-color .12s,color .12s}
+.act-go:hover{background:var(--primary);border-color:var(--primary);color:#fff}
+.act-go:focus-visible{outline:none;box-shadow:var(--focus-ring)}
+@media (max-width:600px){
+  /* 窄屏按钮不再挤在右侧，改为掉到正文下面一行（否则正文被压成窄条） */
+  .act-row{grid-template-columns:4px 1fr}
+  .act-body{padding:11px 13px 8px}
+  .act-go{grid-column:2;margin:0 13px 12px;justify-self:start}
+}
+
+/* ── 良率环（质量页）───────────────────────────────────────────────── */
+.rings{display:grid;grid-template-columns:repeat(auto-fit,minmax(126px,1fr));gap:12px}
+.ringbox{display:flex;flex-direction:column;align-items:center;gap:7px;padding:12px 6px;
+  border:1px solid var(--line);border-radius:10px;background:var(--subbg)}
+.ringbox .rl{font-size:11.5px;color:var(--sub);text-align:center}
+.ringbox .rs{font-size:10.5px;color:var(--sub);text-align:center}
 </style>
 </head>
 <body>
@@ -2028,27 +2788,63 @@ table tr.hl td{background:var(--selbg)}
     <div class="pw-note" id="pwNote"></div>
   </div>
 </div>
-<div class="wrap">
-  <header class="top">
-    <span class="demo-flag" id="demoFlag"></span>
-    <h1>__TITLE_ICON__ 生产 · 项目管理驾驶舱</h1>
+<div class="shell">
+  <!-- ── 顶栏：56px 单行。运维动作全部收进「⋯」菜单 ────────────────── -->
+  <header class="topbar">
+    <span class="brand">__TITLE_ICON__<b>生产驾驶舱</b></span>
+    <span class="demo-flag" id="demoFlag" style="display:none"></span>
+    <button class="chip" id="dataChip" title="查看数据同步详情"><span class="sync-badge" id="syncBadge"></span></button>
+    <div class="spacer"></div>
     <div class="meta" id="metaLine"></div>
-    <div class="toolbar">
-      <button class="btn" id="btnTheme" title="切换主题：自动 / 暗色 / 亮色">__IC_THEME__ 主题：自动</button>
-      <button class="btn" id="btnExport">__IC_DOWNLOAD__ 导出分析JSON</button>
-      <button class="btn" id="btnImport">__IC_UPLOAD__ 导入数据快照</button>
-      <button class="btn btn-sync" id="btnAnalyze">__IC_ANALYZE__ 分析数据（复制发我）</button>
-      <button class="btn" id="btnRefresh">__IC_REFRESH__ 重新生成说明</button>
-      <button class="btn btn-sync" id="btnSync">__IC_SYNC__ 同步状况</button>
-      <input type="file" id="fileInput" accept="application/json" style="display:none">
-      <span class="sync-badge" id="syncBadge"></span>
+    <div class="dd">
+      <button class="chip" id="roleBtn">__IC_USER__<span id="roleName">—</span>__IC_CHEV__</button>
+      <div class="dd-menu" id="roleMenu"></div>
     </div>
-    <div class="banner" id="banner"></div>
+    <div class="dd">
+      <button class="iconbtn" id="btnMore" title="更多操作" aria-haspopup="true" aria-expanded="false">__IC_DOTS__</button>
+      <div class="dd-menu" id="moreMenu">
+        <button class="dd-item" id="btnNew">__IC_ADD__ 新建项目 / 生产计划</button>
+        <button class="dd-item" id="btnBF">__IC_EDIT__ 补录缺失数据</button>
+        <div class="dd-sep"></div>
+        <button class="dd-item" id="btnSync">__IC_SYNC__ 同步状况</button>
+        <button class="dd-item" id="btnRefresh">__IC_REFRESH__ 重新生成说明</button>
+        <button class="dd-item" id="btnExport">__IC_DOWNLOAD__ 导出分析 JSON</button>
+        <button class="dd-item" id="btnImport">__IC_UPLOAD__ 导入数据快照</button>
+        <button class="dd-item" id="btnAnalyze">__IC_ANALYZE__ 分析数据（复制发我）</button>
+        <div class="dd-sep"></div>
+        <button class="dd-item" id="btnTheme">__IC_THEME__ 主题：自动</button>
+        <button class="dd-item" id="btnShare">__IC_SHARE__ <span id="shareLabel">分享视图</span></button>
+        <button class="dd-item" id="pwManageBtn" style="display:none">__IC_KEY__ 口令管理</button>
+      </div>
+    </div>
+    <input type="file" id="fileInput" accept="application/json" style="display:none">
   </header>
 
-  <div id="app"></div>
+  <div class="bodyrow">
+    <nav class="sidenav" id="sideNav" aria-label="主导航"></nav>
+    <main class="main">
+      <div id="kpiBar"></div>
+      <div class="tabstrip" id="tabStrip" role="tablist"></div>
+      <div id="app"></div>
+    </main>
+  </div>
 
-  <footer>驾驶舱由 seatable-production 技能数据快照生成 · 单文件离线可用 · 重跑 cockpit.py 可刷新</footer>
+  <!-- ── 移动端底部标签栏 ──────────────────────────────────────────── -->
+  <nav class="tabbar" id="tabBar" aria-label="主导航（移动）"></nav>
+
+  <!-- ── 抽屉：新建 / 补录（复用原有区块，不另写一套） ──────────────── -->
+  <div class="drawer" id="drawer">
+    <div class="drawer-mask" id="drawerMask"></div>
+    <div class="drawer-panel">
+      <div class="drawer-h"><span id="drawerTitle">—</span><button class="x" id="drawerClose" aria-label="关闭">×</button></div>
+      <div id="drawerBody"></div>
+    </div>
+  </div>
+
+  <!-- 兼容保留：旧版横幅容器（内容改由顶栏 demoFlag + 数据详情弹窗承担） -->
+  <div class="banner" id="banner" style="display:none"></div>
+
+  <footer style="padding:0 22px 22px;text-align:center">驾驶舱由 seatable-production 技能数据快照生成 · 单文件离线可用 · 重跑 cockpit.py 可刷新</footer>
 </div>
 
 <script>
@@ -2097,7 +2893,16 @@ const $ = (s,r=document)=>r.querySelector(s);
 function fmt(n){ if(n===null||n===undefined||isNaN(n)) return "0";
   return Number(n).toLocaleString("zh-CN",{maximumFractionDigits:0}); }
 function yuan(n){ return "¥"+fmt(n); }
-function pct(n){ return (n==null?"—":n+"%"); }
+function pct(n){
+  /* ⚠️ 必须在这里取整到 1 位。旧写法是裸的 `n+"%"`，于是任何**没有预先 round**
+     的比值都会把十几位小数原样打上屏幕 —— 实测出现过
+     「物料齐套率 93.5064935064935%」这种明显没处理过的数字。
+     保留 1 位是为了还能看出 0.1% 的差异，再多就只是噪声。
+     这是全局兜底：调用方 round 过是双保险，漏了也不会漏到界面上。 */
+  if(n==null||n==="") return "—";
+  const v=Number(n);
+  return isNaN(v)?"—":(Math.round(v*10)/10)+"%";
+}
 function el(html){ const t=document.createElement("template"); t.innerHTML=html.trim(); return t.content.firstChild; }
 function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
 
@@ -2567,117 +3372,596 @@ function initGanttTools(g, todayStr, toolsEl, ganttEl, estDays){
 }
 /* ---------- 角色视图（单文件 + 角色切换 + #role 书签）---------- */
 const ROLES={
-  // 老板：只看数据，不含任何写入口（新建/补录均为项目经理职责，不出现在老板页）
-  // core = 首屏核心模块（≤4）；more = 折叠进「更多分析」的二级模块
-  boss:      {name:"老板",     sections:["K","A","PW","G","T","C","Q","P","Sup","Inv","Rs","WXC","WXM","FC","Mkt","Raw","PT","PL","MM"],
-              core:["K","A","PW"],                more:["WXC","WXM","FC","Mkt","Raw","Rs","G","T","C","Q","P","Sup","Inv","PT","PL","MM"], actions:null},
+  // v6：sections 改成「能看哪些区块」，按新 IA 重排。
+  // 旧版还带 core/more（首屏 vs 折叠区），那是「一条长滚动页」时代的产物，
+  // 现在导航由 MODULES 决定，core/more 已废弃（保留字段不影响，但没有代码再读它）。
+  // 老板：只看数据，不含任何写入口（新建/补录均为项目经理职责）
+  boss:      {name:"老板",     actions:null,
+              sections:["Today","A","WXC","WXM","PW","LC","PT","C","G","PL","P","T","Rs",
+                        "Sup","Inv","Mkt","Raw","Q","KM","FC","SH","MM"]},
   // 仓库/采购：非项目经理，不开放「新建」写入口（仅看数据 + 各自作业动作）
-  warehouse: {name:"仓库",     sections:["K","A","Inv","P"],
-              core:["K","A","Inv"],               more:["P"],                     actions:["warehouse"]},
-  // 原料行情对采购最有用：决定报价有效期与备货节奏，故给采购页也开
-  purchase:  {name:"采购",     sections:["K","A","Sup","FC","Mkt","Raw"],
-              core:["K","A","Sup","FC"],          more:["Mkt","Raw"],             actions:["purchase","market"]},
-  // 生产经理：项目经理职责 → 新建生产计划（写「生产计划」表）+ 资源排程 + 风险雷达
-  // 项目经理视角的完整台账（项目全表 / 生产计划全表 / 流程思维导图）默认进首屏
-  production:{name:"生产经理", sections:["K","A","WZ","Rs","FC","G","T","Q","P","Inv","WXC","WXM","PT","PL","MM"],
-              core:["K","A","PT","MM"],           more:["WZ","Rs","FC","G","T","Q","P","Inv","WXC","WXM","PL"],   actions:["production","warehouse","delivery","resource","wechat"]},
+  warehouse: {name:"仓库",     actions:["warehouse"],
+              sections:["Today","A","P","Inv","WXM"]},
+  // 原料行情对采购最有用：决定报价有效期与备货节奏。SH（来源健康）也开给采购：
+  // 「行情/库存数据是几天前的」直接决定报价与备货判断。
+  purchase:  {name:"采购",     actions:["purchase","market"],
+              sections:["Today","A","Sup","Inv","Mkt","Raw","FC","SH","WXM"]},
+  // 生产经理：新建生产计划（写「生产计划」表）+ 补录 + 资源排程 + 风险雷达 + 全套台账
+  production:{name:"生产经理", actions:["production","warehouse","delivery","resource","wechat"],
+              sections:["Today","A","WXC","WXM","WZ","BF","PW","LC","PT","C","G","PL","P","T","Rs",
+                        "Sup","Inv","Mkt","Raw","FC","Q","KM","SH","MM"]},
   // 销售：立项职责 → 新建项目（写「项目」表，对应销售立项表单）
-  sales:     {name:"销售",     sections:["K","A","PW","WZ","G","WXM","PT","MM"],
-              core:["K","A","PW","WZ"],           more:["G","WXM","PT","MM"],                     actions:["sales","delivery"]},
+  sales:     {name:"销售",     actions:["sales","delivery"],
+              sections:["Today","A","WXM","PW","LC","PT","G","WZ","BF","MM"]},
 };
 const ROLE_ORDER=["boss","production","purchase","warehouse","sales"];
-function currentRole(){
-  const m=/role=([a-z]+)/.exec(location.hash||"");
-  const r=m?m[1]:"";
-  return ROLES[r]?r:"production";
+/* hash 参数表：#role=xxx&route=mod/tab —— 两个参数互不干扰 */
+function hashParams(){
+  const o={};
+  (location.hash||"").replace(/^#/,"").split("&").forEach(kv=>{
+    if(!kv) return;
+    const i=kv.indexOf("=");
+    if(i>0) o[kv.slice(0,i)]=kv.slice(i+1);
+  });
+  return o;
 }
-function buildRoleBar(role, unlock){
+function currentRole(){
+  const p=hashParams();
+  return ROLES[p.role]?p.role:"production";
+}
+function setHashParam(k,v){
+  const p=hashParams(); p[k]=v;
+  location.hash=Object.keys(p).filter(x=>p[x]!==""&&p[x]!=null)
+    .map(x=>x+"="+p[x]).join("&");
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   v6 信息架构：22 个区块 → 6 个一级模块 + 标签页
+   · 分组依据是「问题」不是「表」：成本归项目（同一笔钱），工时归在产（产能），
+     供应链独立成模块（有自己的上游节奏）。
+   · 区块渲染器一个都没改 —— 只是「住哪儿」变了。
+   ════════════════════════════════════════════════════════════════════════════ */
+/* 注意：图标占位符必须用反引号 —— Python 替换进来的是带双引号的 <svg class="...">，
+   用 "..." 包会把 JS 字符串提前截断（v6 第一次生成就踩了这个坑）。 */
+const MODULES=[
+  {id:"today",name:"今天",icon:`__IC_NEXT__`,   tabs:[["Today","今天要处理"],["A","行动建议"],["WXC","微信情报台"],["WXM","消息核对台"]]},
+  {id:"proj", name:"项目",icon:`__IC_PROJ__`,   tabs:[["PW","总览 & 在制"],["LC","全链案件"],["PT","项目全表"],["C","成本与毛利"]]},
+  {id:"wip",  name:"在产",icon:`__IC_GANT__`,   tabs:[["G","甘特图"],["PL","生产计划表"],["P","产线流转"],["T","工时分析"],["Rs","资源负载"]]},
+  {id:"sup",  name:"供应",icon:`__IC_SUP__`,    tabs:[["Sup","供应链（采购）"],["Inv","库存预警"],["Mkt","物料行情"],["Raw","原料行情"]]},
+  {id:"qual", name:"质量",icon:`__IC_QUAL__`,   tabs:[["Q","质量分析"],["KM","更多指标"]]},
+  {id:"ins",  name:"分析",icon:`__IC_INSIGHT__`,tabs:[["FC","风险雷达"],["SH","来源健康"],["MM","思维导图"]]},
+];
+/* 全局动作：不占标签页，从「⋯ → 新建 / 补录」抽屉打开（复用原区块） */
+const DRAWER_TABS=[["WZ","新建项目 / 生产计划"],["BF","补录缺失数据"]];
+const DRAWER_ROLES={WZ:["production","sales"],BF:["production","sales"]};
+const ALL_TABS=[];
+MODULES.forEach(x=>x.tabs.forEach(t=>ALL_TABS.push(t[0])));
+DRAWER_TABS.forEach(t=>ALL_TABS.push(t[0]));
+const MOD_OF={};
+MODULES.forEach(x=>x.tabs.forEach(t=>MOD_OF[t[0]]=x.id));
+DRAWER_TABS.forEach(t=>MOD_OF[t[0]]="_drawer");
+/* 某个角色能不能看这个区块。Today 恒可见；KM 跟着 Q 走。 */
+function tabVisible(ok,key){
+  if(key==="Today") return true;
+  if(key==="KM") return ok.has("Q");
+  return ok.has(key);
+}
+
+/* 角标 = 「有几件事在等你」。只有真有事才亮，平日是干净的。 */
+function moduleBadge(mod,m,role){
+  try{
+    if(mod==="today"){
+      // 只算「今天要处理」的紧急项。微信 70 条是积压不是今日待办——
+      // 之前把它们加在一起显示 "78"，是个会误导人的假指标；积压归到各自的标签页角标上。
+      const acts=(m.next_actions||[]).filter(a=>role==="boss"||(ROLES[role].actions||[]).includes(a.cat));
+      return acts.filter(a=>a.pri==="高"||a.pri==="中").length;
+    }
+    if(mod==="sup"){
+      const s=m.supply||{}, pd=m.partdb||{};
+      return (s.overdue_list||[]).length+(s.inventory_warn||[]).length+(pd.inventory_warn||[]).length;
+    }
+    if(mod==="wip") return (m.wip||[]).filter(w=>w.overdue).length;
+    if(mod==="qual") return (m.quality||{}).repair_overdue||0;
+    if(mod==="ins")  return (((m.foresee||{}).backward||{}).act_now||[]).length;
+  }catch(e){}
+  return 0;
+}
+
+/* 当前路由：#…&route=模块/标签 */
+function currentRoute(){
+  const p=hashParams();
+  const seg=(p.route||"").split("/");
+  const role=currentRole();
+  const ok=new Set(ROLES[role].sections||[]);
+  const vis=MODULES.filter(x=>x.tabs.some(t=>tabVisible(ok,t[0])));
+  let mod=vis.some(x=>x.id===seg[0])?seg[0]:(vis[0]?vis[0].id:"today");
+  const M=vis.find(x=>x.id===mod);
+  let tab=(seg[1]&&MOD_OF[seg[1]]===mod&&tabVisible(ok,seg[1]))?seg[1]:null;
+  if(!tab){ const f=M.tabs.find(t=>tabVisible(ok,t[0])); tab=f?f[0]:null; }
+  return {mod:mod,tab:tab};
+}
+function setRoute(mod,tab){ setHashParam("route",mod+(tab?"/"+tab:"")); }
+
+/* 外壳：左导航 + 标签条 + 移动端底部栏 */
+function buildShell(role,m){
+  const ok=new Set(ROLES[role].sections||[]);
+  const mods=MODULES.filter(x=>x.tabs.some(t=>tabVisible(ok,t[0])));
+  const r=currentRoute();
+  const M=mods.find(x=>x.id===r.mod)||mods[0];
+  const tabs=M.tabs.filter(t=>tabVisible(ok,t[0]));
+
+  const nav=$("#sideNav");
+  if(nav){
+    nav.innerHTML=mods.map(x=>{
+      const b=moduleBadge(x.id,m,role);
+      return `<button class="navitem${x.id===M.id?" active":""}" data-mod="${x.id}">${x.icon}<span>${x.name}</span>${b?`<span class="badge">${b}</span>`:""}</button>`;
+    }).join("")
+    + `<div class="nav-sep"></div><div class="nav-note">快照 ${m.snapshot}`
+    + (m.isDemo?" · <b style='color:var(--amber)'>演示</b>":" · 只读") + `</div>`;
+    nav.querySelectorAll(".navitem").forEach(b=>b.onclick=()=>setRoute(b.dataset.mod,null));
+  }
+  const tb=$("#tabBar");
+  if(tb){
+    tb.innerHTML=mods.map(x=>{
+      const b=moduleBadge(x.id,m,role);
+      return `<button class="${x.id===M.id?"active":""}" data-mod="${x.id}">${x.icon}<span>${x.name}</span>${b?`<span class="tb-badge">${b}</span>`:""}</button>`;
+    }).join("");
+    tb.querySelectorAll("button").forEach(b=>b.onclick=()=>setRoute(b.dataset.mod,null));
+  }
+  const ts=$("#tabStrip");
+  if(ts){
+    ts.innerHTML=tabs.map(t=>{
+      // 只在有「今天/供应」这类待办语义的标签上加角标，避免到处都是红点
+      let badge=0;
+      if(t[0]==="Today") badge=moduleBadge("today",m,role);
+      else if(t[0]==="WXM") badge=(m.wxmatch||{}).pending_count||0;
+      else if(t[0]==="WXC") badge=(m.wechat||{}).pending_count||0;
+      else if(t[0]==="Inv") badge=((m.supply||{}).inventory_warn||[]).length;
+      else if(t[0]==="Sup") badge=((m.supply||{}).overdue_list||[]).length;
+      return `<button class="tab${t[0]===r.tab?" active":""}" role="tab" data-tab="${t[0]}">${t[1]}${badge?`<span class="tb-badge">${badge}</span>`:""}</button>`;
+    }).join("");
+    ts.querySelectorAll(".tab").forEach(b=>b.onclick=()=>setRoute(M.id,b.dataset.tab));
+  }
+  return {mod:M.id,tab:r.tab};
+}
+
+/* 抽屉：新建 / 补录（复用原区块，不另写一套表单） */
+function openDrawer(key){
+  const t=DRAWER_TABS.find(x=>x[0]===key);
+  if(!t) return;
+  const body=$("#drawerBody");
+  if(!body) return;
+  if(!body.children.length){
+    toast("当前角色没有该写入口（仅生产经理 / 销售可用）");
+    return;
+  }
+  $("#drawerTitle").textContent=t[1];
+  $("#drawer").classList.add("open");
+}
+function closeDrawer(){ const d=$("#drawer"); if(d) d.classList.remove("open"); }
+/* ── 角色视图：旧版是整行 role-bar（占一整行），v6 收进顶栏下拉 ────── */
+function applyRoleChrome(role, unlock){
   const isAdmin = unlock && unlock.level==="admin";
   const keys = isAdmin ? ROLE_ORDER : [role];
-  const tabs=keys.map(key=>`<button class="role-tab ${key===role?"active":""}" data-role="${key}">${ROLES[key].name}</button>`).join("");
-  const shareBtn=(role==="boss"||role==="sales")
-    ? `<button class="role-share" id="roleShareBtn">__IC_SHARE__ 分享给${ROLES[role].name}</button>` : "";
-  const keyBtn = isAdmin
-    ? `<button class="role-key" id="pwManageBtn">__IC_KEY__ 口令管理</button>` : "";
-  const hint = isAdmin
-    ? `每人开一个标签页钉住自己的 #role 即独立窗口；视图按角色裁剪，敏感财务仅老板可见`
-    : `本视图已按口令锁定（${ROLES[role].name}），如需切换其他视图请用管理员口令重新打开`;
-  const bar=el(`<div class="role-bar"><span class="role-lbl">角色视图</span>${tabs}${shareBtn}${keyBtn}
-    <span class="role-hint">${hint}</span></div>`);
-  bar.querySelectorAll(".role-tab").forEach(b=>b.onclick=()=>{ if(isAdmin) location.hash="role="+b.dataset.role; });
-  const sb=bar.querySelector("#roleShareBtn");
-  if(sb) sb.onclick=()=>shareRole(role);
-  const kb=bar.querySelector("#pwManageBtn");
-  if(kb) kb.onclick=openPwModal;
-  return bar;
+  const menu=$("#roleMenu");
+  if(menu){
+    menu.innerHTML = keys.map(key=>
+        `<button class="dd-item${key===role?" active":""}" data-role="${key}">__IC_USER__${ROLES[key].name}</button>`
+      ).join("")
+      + `<div class="dd-sep"></div><div class="nav-note">`
+      + (isAdmin
+          ? `管理员：可切换任意视图。每人开一个标签页钉住自己的视图即独立窗口；敏感财务仅老板可见。`
+          : `本视图已用口令锁定在「${ROLES[role].name}」，如需切换其他视图，请用管理员口令重新打开。`)
+      + `</div>`;
+    menu.querySelectorAll(".dd-item[data-role]").forEach(b=>b.onclick=()=>{
+      closeMenus();
+      if(isAdmin && b.dataset.role!==role) location.hash="role="+b.dataset.role;
+      else if(!isAdmin) toast("本视图已按口令锁定在「"+ROLES[role].name+"」");
+    });
+  }
+  const rn=$("#roleName"); if(rn) rn.textContent=ROLES[role].name;
+  const sh=$("#btnShare");
+  if(sh) sh.onclick=()=>{ closeMenus(); shareRole(role); };
+  const sl=$("#shareLabel");
+  if(sl) sl.textContent=(role==="boss"||role==="sales")?("分享给"+ROLES[role].name):"分享本视图";
+  const kb=$("#pwManageBtn");
+  if(kb){ kb.style.display=isAdmin?"":"none"; kb.onclick=()=>{ closeMenus(); openPwModal(); }; }
+  const rb=$("#roleBtn");
+  if(rb) rb.onclick=e=>{ e.stopPropagation(); toggleMenu("#roleMenu"); };
+}
+/* 顶栏下拉开关 */
+function toggleMenu(sel){
+  const m=$(sel); if(!m) return;
+  const willOpen=!m.classList.contains("open");
+  closeMenus();
+  if(willOpen){
+    m.classList.add("open");
+    const b=$("#btnMore"); if(sel==="#moreMenu"&&b) b.setAttribute("aria-expanded","true");
+  }
+}
+function closeMenus(){
+  document.querySelectorAll(".dd-menu.open").forEach(m=>m.classList.remove("open"));
+  const b=$("#btnMore"); if(b) b.setAttribute("aria-expanded","false");
 }
 function supplierAvg(s){
   const rs=(s.supplier||[]).map(x=>x.rate).filter(x=>x!=null);
   return rs.length? rs.reduce((a,b)=>a+b,0)/rs.length : 0;
 }
+/* ════════════════════════════════════════════════════════════════════════════
+   v7 图表工具箱
+   为什么不用图表库：本驾驶舱是**单文件离线** HTML（可发微信、断网可开），
+   引 CDN 会立刻破坏这个前提。所以用 CSS 布局 + 内联 SVG 自己画，
+   够用的就那 4 种图（横条 / 构成条 / 迷你走势 / 环），正好卡在行业规范建议的
+   「同一屏图表类型 ≤4 种」以内。
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* 语义阈值。**行业惯例 + 本项目历史基线**，不是拍脑袋：
+   · 达成率 ≥90 绿 / 80~90 黄 / <80 红  —— MES 看板规范
+   · 良率   ≥98 绿 / 95~98 黄 / <95 红  —— 同上
+   · 维修率、逾期数、缺料数 → 越小越好（lowerBetter）
+   业主想改口径，只动这一张表。 */
+const THRESH={
+  ontime_rate:[90,80], exec_rate:[80,50], smt_yield:[98,95], asm_yield:[98,95],
+  margin:[25,10], kit_rate:[98,90],
+  repair_rate:[2,5], purchase_overdue:[0,2], shortage:[0,2], res_over:[0,1], zero_stock:[0,3],
+  sup_delay:[3,7], res_load:[85,100],
+};
+function sev(v,key,lowerBetter){
+  if(v==null||isNaN(v)) return "";
+  const t=THRESH[key]||[90,80];
+  if(lowerBetter) return v<=t[0]?"ok":(v<=t[1]?"warn":"bad");
+  return v>=t[0]?"ok":(v>=t[1]?"warn":"bad");
+}
+const SEV_HEX={ok:"var(--green)",warn:"var(--amber)",bad:"var(--red)"};
+function sevColor(s){ return SEV_HEX[s]||"var(--primary)"; }
+
+/* 构成条配色：固定顺序，同一含义**永远同一个颜色**（跨页一致才好记） */
+const PALETTE=["#4f46e5","#0284c7","#0d9488","#059669","#d97706","#7c3aed","#dc2626","#64748b"];
+
+/* 迷你走势（内联 SVG）。preserveAspectRatio=none 拉宽，靠 non-scaling-stroke 保住线宽。
+   ⚠️ 末点标记用**竖线 path** 而不是 <circle>：preserveAspectRatio=none 会把圆
+   沿 x 轴拉成椭圆，而 vector-effect 只管描边宽度、救不了圆的形变。 */
+function spark(vals,opt){
+  opt=opt||{};
+  const a=(vals||[]).map(Number).filter(v=>isFinite(v));
+  if(a.length<2) return "";
+  const w=100,h=22,p=2;
+  const mn=Math.min.apply(null,a), mx=Math.max.apply(null,a), rng=(mx-mn)||1;
+  const pts=a.map((v,i)=>[p+i*(w-p*2)/(a.length-1), h-p-(v-mn)/rng*(h-p*2)]);
+  const d=pts.map((q,i)=>(i?"L":"M")+q[0].toFixed(2)+" "+q[1].toFixed(2)).join(" ");
+  const area=d+" L "+pts[a.length-1][0].toFixed(2)+" "+h+" L "+pts[0][0].toFixed(2)+" "+h+" Z";
+  const c=opt.color||"var(--primary)";
+  const last=pts[a.length-1];
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+    <path d="${area}" fill="${c}" opacity=".13"/>
+    <path d="${d}" fill="none" stroke="${c}" stroke-width="1.6" vector-effect="non-scaling-stroke"
+      stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M ${last[0].toFixed(2)} ${(last[1]-3.5).toFixed(2)} L ${last[0].toFixed(2)} ${(last[1]+3.5).toFixed(2)}"
+      fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+  </svg>`;
+}
+
+/* 环比角标：good 方向可反转（维修率下降是好事） */
+function trendPill(delta,lowerBetter,unit){
+  if(delta==null||isNaN(delta)) return "";
+  if(Math.abs(delta)<0.05) return `<span class="tp flat">持平</span>`;
+  const up=delta>0, good=lowerBetter?!up:up;
+  return `<span class="tp ${good?"good":"bad"}">${up?"↑":"↓"}${Math.abs(delta).toFixed(1)}${unit||"%"} 环比</span>`;
+}
+
+/* 条形榜（Pareto）：一眼看出"最大的那块是什么" */
+function barList(items,opt){
+  opt=opt||{};
+  if(!items||!items.length) return `<div class="viz-empty">暂无数据</div>`;
+  const max=Math.max.apply(null,items.map(x=>Math.abs(x.v)||0))||1;
+  return `<div class="bl">`+items.map(x=>{
+    const w=Math.max(2,Math.round(Math.abs(x.v)/max*100));
+    const s=(x.sev!==undefined&&x.sev!==null)?x.sev:((opt.sev&&opt.sev(x.v))||"");
+    return `<div class="bl-row">
+      <span class="bl-lbl" title="${esc(x.l)}">${esc(x.l)}</span>
+      <span class="bl-val">${x.txt!==undefined?x.txt:fmt(x.v)}</span>
+      <span class="bl-track"><i class="bl-fill${s?" s-"+s:""}" style="width:${w}%"></i></span>
+    </div>`;
+  }).join("")+`</div>`;
+}
+
+/* 子弹图：实际值 vs 目标值。行业规范原话 ——
+   "a count of 47 parts means nothing without knowing the target was 60"
+   ⚠️ target==null 的行**不画轨道**：没有目标就没有「达成多少」可言，
+   硬画一条满格灰带会被误读成一个进度。只留一行「标签 — 数值」。 */
+function bullet(rows,opt){
+  opt=opt||{};
+  if(!rows||!rows.length) return `<div class="viz-empty">暂无数据</div>`;
+  return `<div>`+rows.map(r=>{
+    const txt=`${r.txt!==undefined?r.txt:fmt(r.v)}${r.unit||""}`;
+    const c=sevColor(r.sev||"");
+    if(r.target==null){
+      return `<div class="bt bt-plain">
+        <div class="bt-head"><span class="bt-l" title="${esc(r.l)}">${esc(r.l)}</span>
+        <span class="bt-v" style="color:${r.sev?c:"var(--ink)"}">${txt}</span></div>
+      </div>`;
+    }
+    const max=r.max||Math.max(r.v||0,r.target||0)*1.12||1;
+    const pw=Math.max(0,Math.min(100,(r.v||0)/max*100));
+    const mw=Math.max(0,Math.min(100,r.target/max*100));
+    return `<div class="bt">
+      <div class="bt-head">
+        <span class="bt-l" title="${esc(r.l)}">${esc(r.l)}</span>
+        <span class="bt-v" style="color:${c}">${txt}<em> / 目标 ${fmt(r.target)}${r.unit||""}</em></span>
+      </div>
+      <div class="bt-track">
+        <i class="bt-fill" style="width:${pw}%;background:${c}"></i>
+        <i class="bt-mark" style="left:${mw}%" title="目标 ${fmt(r.target)}"></i>
+      </div>
+      ${opt.scale?`<div class="bt-scale"><span>0</span><span>${fmt(max)}${opt.unit||""}</span></div>`:""}
+    </div>`;
+  }).join("")+`</div>`;
+}
+
+/* 构成条：成本结构 / 阶段分布 —— 用 donut 会浪费空间，横条更好读 */
+function stackBar(items,opt){
+  opt=opt||{};
+  const it=(items||[]).filter(x=>(x.v||0)>0);
+  if(!it.length) return `<div class="viz-empty">暂无数据</div>`;
+  const tot=it.reduce((a,b)=>a+b.v,0)||1;
+  const segs=it.map((x,i)=>({l:x.l,v:x.v,c:opt.palette?opt.palette[i%opt.palette.length]:PALETTE[i%PALETTE.length],p:x.v/tot*100}));
+  return `<div class="stk">`+segs.map(s=>
+      `<i style="width:${s.p}%;background:${s.c}" title="${esc(s.l)} ${fmt(s.v)}（${s.p.toFixed(1)}%）"></i>`
+    ).join("")+`</div>
+    <div class="legend">`+segs.map(s=>
+      `<span><i style="background:${s.c}"></i>${esc(s.l)}<b>${opt.money?yuan(s.v):fmt(s.v)}</b>
+        <span style="color:var(--sub)">${s.p.toFixed(0)}%</span></span>`
+    ).join("")+`</div>`;
+}
+
+/* 良率环：单一百分比指标的最省空间画法 */
+function ring(pct,opt){
+  opt=opt||{};
+  const v=Math.max(0,Math.min(100,Number(pct)||0));
+  const r=26,c=2*Math.PI*r,on=v/100*c;
+  const col=opt.color||sevColor(opt.sev||"");
+  const size=opt.size||74;
+  return `<svg viewBox="0 0 64 64" style="width:${size}px;height:${size}px" role="img"
+      aria-label="${opt.label||""} ${v.toFixed(1)}%">
+    <circle cx="32" cy="32" r="${r}" fill="none" stroke="var(--subbg3)" stroke-width="7"/>
+    <circle cx="32" cy="32" r="${r}" fill="none" stroke="${col}" stroke-width="7" stroke-linecap="round"
+      stroke-dasharray="${on.toFixed(2)} ${(c-on).toFixed(2)}" transform="rotate(-90 32 32)"/>
+    <text x="32" y="33" text-anchor="middle" dominant-baseline="central" font-size="15" font-weight="600"
+      fill="var(--ink)">${v.toFixed(0)}%</text>
+  </svg>`;
+}
+
+/* 统计卡（Tremor / shadcn 的 KPI 卡解剖）：标签 → 大数字 → 走势 → 目标进度 → 备注
+   · sev  = 这张卡"要不要看"（左侧圆点色 + 默认的进度条色）
+   · nsev = 这个数字"本身好不好"（大数字的颜色）
+   两者分开是必要的：有些卡是**复合**的 —— 例如「在制单数 9」，
+   9 本身无所谓好坏，红点是「其中 5 单已逾期」。若共用一个 sev，
+   就会把一个中性的 9 染成红色，等于谎报。 */
+function statCard(o){
+  const s=o.sev||"";
+  const ns=(o.nsev!==undefined?o.nsev:s);
+  /* ⚠️ 传进来的 cls 是老命名的裸类名（"neg"/"pos"），而本卡的 CSS 定义在
+     `.stat .sv b.s-neg` 下。不补 s- 前缀的话 class 会落成 `neg`，
+     规则匹配不上 —— 表现就是「在产缺料 5」该红不红，一直黑着。 */
+  const rawCls=o.cls||"";
+  const vcls=rawCls?(/^s-/.test(rawCls)?rawCls:"s-"+rawCls):(ns?"s-"+ns:"");
+  return `<div class="stat">
+    <div class="sl"><i style="background:${sevColor(s)}"></i>${esc(o.l)}</div>
+    <div class="sv"><b class="${vcls}">${o.v}</b>${o.u?`<em>${o.u}</em>`:""}${o.tp||""}</div>
+    ${o.spark||""}
+    ${o.pct!=null?`<div class="bar"><i style="width:${Math.max(0,Math.min(100,o.pct))}%;background:${sevColor(s)}"></i></div>`:""}
+    <div class="sf"><span>${o.sub||""}</span>${o.tgt?`<span class="tgt">${o.tgt}</span>`:""}</div>
+  </div>`;
+}
+
+/* 图表卡外壳。
+   ⚠️ 外层用 <section> 而不是 <div>：全站既有的区块间距规则写在
+   `.pane>section{margin-top:0}` 和 `.pane>section+section{margin-top:22px}` 上，
+   换成 div 会丢掉间距，图表卡会紧贴上一块。放进 .viz-grid 时靠
+   `.viz-grid>.viz{margin-top:0}` 把间距归零（该规则在同优先级里排后，胜出）。 */
+function vizCard(title,body,opt){
+  opt=opt||{};
+  return `<section class="viz">
+    <div class="viz-hd"><h3>${title}</h3>${opt.q?`<span class="q">${opt.q}</span>`:""}</div>
+    ${body}
+    ${opt.note?`<div class="viz-note">${opt.note}</div>`:""}
+  </section>`;
+}
+
+/* 按月聚合「日期列 + 数值列」（项目全表的 签订日期/合同总价 等）。
+   ⚠️ 只输出**真有数据的月**；不足 2 个月时 spark() 自己返回空串 —— 宁可没有走势，
+   也不画一条两点直线假装是趋势。 */
+function monthlyAgg(rows,dateKey,valKey){
+  const by={};
+  (rows||[]).forEach(r=>{
+    const k=String(r[dateKey]||"").slice(0,7);
+    if(!/^\d{4}-\d{2}$/.test(k)) return;
+    const v=parseFloat(String(r[valKey]==null?"":r[valKey]).replace(/[^0-9.\-]/g,""));
+    if(isFinite(v)) by[k]=(by[k]||0)+v;
+  });
+  return Object.keys(by).sort().map(k=>by[k]);
+}
+
 function buildKPIs(m, role){
   const k=m.kpi, t=m.time, q=m.quality, s=m.supply, pd=m.partdb, res=m.resource;
-  const wx=m.wechat, mk=m.market;
+  const wx=m.wechat, mk=m.market, cm=m.commodities, fs=m.foresee;
   const b=pd?pd.bom:null;
+  const pf=m.projects_full||[];
+  /* ── 三条**真实**序列，全部来自库里已有字段，没有一条是编的 ──────────────
+     · gm   : 甘特 35 条按「结束月」聚合（2026-04~2026-10，7 个点）
+     · sign : 项目全表按「签订日期」聚合的月度合同额（2025-07~2026-09，8 个点）
+     · age  : 应收账龄 4 桶（逾期/30/60/90）—— 是分布不是时间序列，
+              所以只喂给 barList，**不**当走势画（把桶当时间轴是骗人的） */
+  const gm=ganttMonthly(m.gantt);
+  const sign=monthlyAgg(pf,"签订日期","合同总价");
+  const age=(m.cost&&m.cost.cashflow)||[];
+  const shortageN=b?b.shortage.length:0;
+  const kitRate=(b&&b.bom_count)?((b.bom_count-shortageN)/b.bom_count*100):null;
+  const supAvg=supplierAvg(s);
+  const rawAlerts=cm?cm.alerts.length:0;
+  /* 供应商到货延迟（加权）：来自 foresee.supplier 的 106 个历史样本。
+     原「供应商准时率」依赖 supply.supplier，而真实库里那张表是**空的** →
+     旧写法会显示 0%，把「没有样本」误报成「准时率为零」。改成有样本才出数。 */
+  let delayNum=0,delayDen=0;
+  if(fs&&fs.supplier&&fs.supplier.cat_profile){
+    Object.keys(fs.supplier.cat_profile).forEach(c=>{
+      const p=fs.supplier.cat_profile[c];
+      if(p&&p.n){ delayNum+=p.n*(p.mean||0); delayDen+=p.n; }
+    });
+  }
+  const supDelay=delayDen?(delayNum/delayDen):null;
   const M={
-    projects:{l:"项目总数",v:fmt(k.projects),s:`进行中 ${k.active} · 计划 ${k.planned} · 完成 ${k.done}`,c:"",ac:"blue"},
-    contract:{l:"总合同额",v:yuan(k.contract),s:"已收 "+yuan(k.received),c:"",ac:"blue"},
-    received:{l:"已收金额",v:yuan(k.received),s:"合同执行率 "+pct(k.exec_rate),c:"",ac:"green"},
-    receivable:{l:"应收款",v:yuan(k.receivable),s:"待回收 · 表内待收 "+yuan((m.recv_check||{}).stored),c:"neg",ac:"red"},
-    cost:{l:"生产总花销",v:yuan(k.cost),s:"毛利率 "+pct(k.margin),c:"",ac:"amber"},
-    margin:{l:"毛利率",v:pct(k.margin),s:"目标 30%",c:"",ac:"green"},
-    unit_cost:{l:"单片成本",v:yuan(k.unit_cost),s:"台账均单价",c:"",ac:"amber"},
-    exec_rate:{l:"合同执行率",v:pct(k.exec_rate),s:"已收 / 合同",c:"",ac:"blue"},
-    ontime_rate:{l:"交期达成率",v:pct(k.ontime_rate),s:"在制 "+k.wip+" 单",c:"",ac:"blue"},
-    purchase_overdue:{l:"采购逾期",v:fmt(k.purchase_overdue),s:"需跟进",c:k.purchase_overdue>0?"neg":"",ac:"red"},
-    wip:{l:"在制单数",v:fmt(k.wip),s:"进行中生产",c:"",ac:"blue"},
-    shortage:{l:"在产缺料",v:fmt(b?b.shortage.length:0),s:`零确认 ${pd?pd.zero_confirmed:0} 种`,c:(b&&b.shortage.length)?"neg":"",ac:"red"},
-    kit_rate:{l:"物料齐套率",v:pct(b?((b.bom_count-b.shortage.length)/b.bom_count*100):100),s:`BOM ${b?b.bom_count:0} 行`,c:"",ac:"green"},
-    part_count:{l:"在库料号",v:fmt(pd?pd.part_count:0),s:"零件总数",c:"",ac:"blue"},
-    zero_stock:{l:"零确认库存",v:fmt(pd?pd.zero_confirmed:0),s:"需盘点",c:(pd&&pd.zero_confirmed>0)?"neg":"",ac:"red"},
-    supplier_ontime:{l:"供应商准时率",v:pct(supplierAvg(s)),s:`${s.supplier.length} 家`,c:supplierAvg(s)<70?"neg":"",ac:"amber"},
-    smt_yield:{l:"贴片良品率",v:pct(q.smt_yield),s:"良品 / 投入",c:"",ac:"green"},
-    repair_rate:{l:"维修率",v:pct(q.repair_rate),s:`${q.repair_total}/${q.shipped}`,c:"",ac:"red"},
-    cycle:{l:"平均生产周期",v:t.avg_cycle+"天",s:"实际花费天数",c:"",ac:"blue"},
-    res_load:{l:"资源平均负载",v:res?pct(res.avg_load):"—",s:res?`在岗 ${res.on_duty} 人/台`:"未启用资源管理",
-      c:(res&&res.avg_load>100)?"neg":"",ac:"purple"},
-    res_over:{l:"超载资源",v:fmt(res?res.over.length:0),s:res?`共 ${res.total} 项资源`:"未启用",
-      c:(res&&res.over.length)?"neg":"",ac:"red"},
-    res_conflict:{l:"排程冲突",v:fmt(res?res.conflicts.length:0),s:"同人同期多任务",
-      c:(res&&res.conflicts.length)?"neg":"",ac:"red"},
-    labor_cost:{l:"人工成本",v:res?yuan(res.labor_cost):"—",s:"投入量 × 日费率",c:"",ac:"amber"},
-    market_alert:{l:"物料行情预警",v:fmt(mk?mk.alerts.length:0),
-      s:mk?`停产物料 ${mk.alerts.filter(a=>a.type==="停产").length} · 阈值±${mk.threshold}%`:"未启用行情监控",
-      c:(mk&&mk.alerts.length)?"neg":"",ac:"red"},
-    wechat_pending:{l:"微信待确认",v:fmt(wx?wx.pending_count:0),
-      s:wx?`今日新事件 ${wx.today_count}`:"未接入微信情报",
-      c:(wx&&wx.pending_count)?"neg":"",ac:"amber"},
+    /* ── 经营 ─────────────────────────────────────────────────────── */
+    projects:{l:"项目总数",v:fmt(k.projects),u:"个",
+      sub:`进行中 ${k.active} · 计划 ${k.planned} · 完成 ${k.done}`,
+      pct:k.projects?k.done/k.projects*100:null,tgt:`完成 ${k.done}/${k.projects}`},
+    contract:{l:"总合同额",v:yuan(k.contract),
+      sub:`已收 ${yuan(k.received)} · 执行率 ${pct(k.exec_rate)}`,
+      sev:sev(k.exec_rate,"exec_rate"),pct:k.exec_rate,tgt:"目标执行率 80%",
+      spark:spark(sign,{color:"var(--primary)"})},
+    received:{l:"已收金额",v:yuan(k.received),
+      sub:`${m.projects.filter(p=>p.received>0).length} 个项目有回款`,
+      sev:sev(k.exec_rate,"exec_rate"),pct:k.exec_rate,tgt:`占合同 ${pct(k.exec_rate)}`},
+    receivable:{l:"应收款",v:yuan(k.receivable),cls:"neg",
+      sub:`表内待收 ${yuan((m.recv_check||{}).stored)}`,
+      tgt:`逾期 ${yuan(age.length?age[0].in:0)}`,
+      pct:k.contract?k.receivable/k.contract*100:null,
+      spark:""},
+    cost:{l:"生产总花销",v:yuan(k.cost),
+      sub:`台账口径 ${yuan(k.ledger_cost)}`,
+      sev:sev(k.margin,"margin"),pct:k.contract?k.cost/k.contract*100:null,
+      tgt:`占合同 ${pct(k.contract?k.cost/k.contract*100:0)}`},
+    margin:{l:"毛利率",v:pct(k.margin),
+      sub:`利润 ${yuan(k.profit)}`,
+      sev:sev(k.margin,"margin"),pct:k.margin,tgt:"目标 30%"},
+    unit_cost:{l:"单片成本",v:yuan(k.unit_cost),sub:"台账均单价"},
+    exec_rate:{l:"合同执行率",v:pct(k.exec_rate),sub:"已收 / 合同",
+      sev:sev(k.exec_rate,"exec_rate"),pct:k.exec_rate,tgt:"目标 80%"},
+    /* ── 交付 ─────────────────────────────────────────────────────── */
+    ontime_rate:{l:"交期达成率",v:pct(k.ontime_rate),
+      sub:t.dated?`实际耗时 ≤ 允许周期 ${t.ontime}/${t.dated}`:"无可判定样本",
+      sev:sev(k.ontime_rate,"ontime_rate"),pct:k.ontime_rate||0,tgt:"目标 90%",
+      spark:spark(gm.ontime,{color:"var(--green)"})},
+    wip:{l:"在制单数",v:fmt(k.wip),u:"单",
+      sub:`逾期 ${(m.gantt||[]).filter(x=>x.overdue).length} 单`,
+      /** 圆点报警（有逾期→红），但 9 这个数字本身中性，不染色 */
+      sev:sev((m.gantt||[]).filter(x=>x.overdue).length,"res_over",true),nsev:"",
+      tgt:`共 ${t.total} 条计划`},
+    cycle:{l:"平均生产周期",v:(t.avg_cycle||0)+"天",
+      sub:`样本 ${(t.cycle_list||[]).length} 条 · 中位 ${(m.gantt_hist||{}).median||"—"} 天`,
+      pct:150/(t.avg_cycle||1)*100, tgt:`历史中位 ${(m.gantt_hist||{}).median||"—"} 天`,
+      spark:spark(gm.cycle,{color:"var(--blue,var(--primary))"})},
+    /* ── 供应 ─────────────────────────────────────────────────────── */
+    purchase_overdue:{l:"采购逾期",v:fmt(k.purchase_overdue),u:"单",
+      sub:k.purchase_overdue?"需跟进":"全部在期内",
+      sev:sev(k.purchase_overdue,"purchase_overdue",true),tgt:"目标 0 单"},
+    shortage:{l:"在产缺料",v:fmt(shortageN),u:"种",
+      sub:`零确认 ${pd?pd.zero_confirmed:0} 种 · 共 ${(b&&b.shortage.length)?b.shortage.reduce((a,x)=>a+(x.gap||0),0):0} 件`,
+      sev:sev(shortageN,"shortage",true),cls:shortageN?"neg":"",
+      tgt:b?`BOM ${b.bom_count} 行`:"PartDB 未配置"},
+    kit_rate:{l:"物料齐套率",v:kitRate==null?"—":pct(kitRate),
+      sub:b?`缺 ${shortageN} / 共 ${b.bom_count} 行`:"PartDB 未配置",
+      sev:kitRate==null?"":sev(kitRate,"kit_rate"),pct:kitRate,tgt:"目标 98%"},
+    part_count:{l:"在库料号",v:fmt(pd?pd.part_count:0),u:"种",sub:"零件总数"},
+    zero_stock:{l:"零确认库存",v:fmt(pd?pd.zero_confirmed:0),u:"种",sub:"需盘点",
+      sev:sev(pd?pd.zero_confirmed:0,"zero_stock",true),cls:(pd&&pd.zero_confirmed>0)?"neg":""},
+    supplier_ontime:{l:"供应商准时率",v:s.supplier.length?pct(supAvg):"—",
+      sub:s.supplier.length?`${s.supplier.length} 家供应商`:"采购记录暂无交期回填，无法计算",
+      sev:supAvg?sev(supAvg,"ontime_rate"):"",pct:s.supplier.length?supAvg:null,
+      tgt:s.supplier.length?"目标 90%":"待补录到货日期"},
+    sup_delay:{l:"供应商到货延迟",v:supDelay==null?"—":(supDelay.toFixed(1)+"天"),
+      sub:delayDen?`${delayDen} 个历史样本加权平均`:"无样本",
+      sev:supDelay==null?"":sev(supDelay,"sup_delay",true),tgt:"目标 ≤3 天"},
+    /* ── 质量 ─────────────────────────────────────────────────────── */
+    smt_yield:{l:"贴片良品率",v:pct(q.smt_yield),
+      sub:`${q.smt_batches||0}/${q.smt_rows||0} 批已录${q.smt_missing_n?` · ${q.smt_missing_n} 批待补录`:""}`,
+      sev:sev(q.smt_yield,"smt_yield"),pct:q.smt_yield,tgt:"目标 98%"},
+    asm_yield:{l:"组装良品率",v:q.asm_yield==null?"—":pct(q.asm_yield),
+      sub:q.asm_yield==null?"组装记录未填良品率":"组装记录均值",
+      sev:q.asm_yield==null?"":sev(q.asm_yield,"asm_yield"),
+      pct:q.asm_yield,tgt:"目标 98%"},
+    repair_rate:{l:"维修率",v:pct(q.repair_rate),
+      sub:`维修 ${q.repair_total} / 发货 ${q.shipped} · 平均 ${q.repair_avg} 天`,
+      sev:sev(q.repair_rate,"repair_rate",true),pct:q.repair_rate,
+      cls:q.repair_rate>5?"neg":"",tgt:"目标 ≤2%"},
+    repair_overdue:{l:"超期未完修",v:fmt(q.repair_overdue),u:"单",
+      sub:"需跟进",sev:sev(q.repair_overdue,"res_over",true),cls:q.repair_overdue?"neg":""},
+    /* ── 资源（未启用时整组隐藏） ─────────────────────────────────── */
+    res_load:{l:"资源平均负载",v:res?pct(res.avg_load):"—",
+      sub:res?`在岗 ${res.on_duty} 人/台`:"未启用资源管理",
+      /* 负载不是单调指标：<70 闲置、70~100 健康、>100 超载。
+         所以不走 sev() 的两档阈值，直接按三档写死。 */
+      sev:res?(res.avg_load>100?"bad":(res.avg_load>85?"warn":"ok")):"",
+      pct:res?res.avg_load:null,tgt:res?"健康 70~100%":""},
+    res_over:{l:"超载资源",v:fmt(res?res.over.length:0),u:"项",
+      sub:res?`共 ${res.total} 项资源`:"未启用",
+      sev:res?sev(res.over.length,"res_over",true):"",cls:(res&&res.over.length)?"neg":""},
+    res_conflict:{l:"排程冲突",v:fmt(res?res.conflicts.length:0),u:"处",
+      sub:"同人同期多任务",sev:res?sev(res.conflicts.length,"res_over",true):"",
+      cls:(res&&res.conflicts.length)?"neg":""},
+    labor_cost:{l:"人工成本",v:res?yuan(res.labor_cost):"—",sub:"投入量 × 日费率"},
+    /* ── 情报 ─────────────────────────────────────────────────────── */
+    market_alert:{l:"物料行情预警",v:fmt(mk?mk.alerts.length:0),u:"条",
+      sub:mk?`监控 ${mk.watch_count} 个料号 · 阈值 ±${mk.threshold}%`:"未启用行情监控",
+      sev:mk?sev(mk.alerts.length,"purchase_overdue",true):"",
+      cls:(mk&&mk.alerts.length)?"neg":""},
+    raw_alert:{l:"原料波动告警",v:fmt(rawAlerts),u:"条",
+      sub:cm?`监控 ${cm.rows.length} 个品种 · 阈值 ±${cm.threshold}%`:"未启用原料监控",
+      sev:sev(rawAlerts,"shortage",true),
+      cls:rawAlerts?"neg":"",
+      spark:cm&&cm.rows.length?spark((cm.rows[0].hist||[]).map(Number),{color:"var(--amber)"}):""},
+    wechat_pending:{l:"微信待确认",v:fmt(wx?wx.pending_count:0),u:"条",
+      sub:wx?`今日新事件 ${wx.today_count} · 近 7 天 ${Object.values(wx.by_cat||{}).reduce((a,b)=>a+b,0)} 条`:"未接入微信情报",
+      cls:(wx&&wx.pending_count)?"neg":"",tgt:"核对后写入业务表"},
+    wxmatch_pending:{l:"消息核对待办",v:fmt(m.wxmatch?m.wxmatch.pending_count:0),u:"条",
+      sub:m.wxmatch?`收款 ${m.wxmatch.by_type.收款||0} · 下单 ${m.wxmatch.by_type.下单||0}`:"未启用核对台",
+      cls:(m.wxmatch&&m.wxmatch.pending_count)?"neg":""},
   };
   // 首屏只留最多 4 张「一眼定生死」的指标，其余下沉到「更多分析 → 更多指标」
   const sets={
-    boss:      ["contract","receivable","margin","purchase_overdue"],
+    boss:      ["contract","receivable","margin","ontime_rate"],
     warehouse: ["shortage","kit_rate","zero_stock","part_count"],
-    purchase:  ["purchase_overdue","supplier_ontime","shortage","ontime_rate"],
-    production:["wip","ontime_rate","shortage",res?"res_over":"cycle"],
+    purchase:  ["purchase_overdue","sup_delay","shortage","ontime_rate"],
+    production:["wip","ontime_rate","shortage",res?"res_over":"smt_yield"],
     sales:     ["contract","received","receivable","ontime_rate"],
   };
   const setsMore={
-    boss:      ["projects","cost","ontime_rate","unit_cost","exec_rate","wip"]
+    boss:      ["projects","cost","ontime_rate","unit_cost","exec_rate","wip","smt_yield","repair_rate"]
                  .concat(res?["res_load","labor_cost"]:[])
-                 .concat(mk?["market_alert"]:[]).concat(wx?["wechat_pending"]:[]),
-    warehouse: [],
-    purchase:  [].concat(mk?["market_alert"]:[]),
-    production:["smt_yield","repair_rate","cycle"]
-                 .concat(res?["res_load","res_conflict","labor_cost"]:[])
+                 .concat(mk?["market_alert"]:[]).concat(cm?["raw_alert"]:[])
                  .concat(wx?["wechat_pending"]:[]),
-    sales:     ["projects","wip","exec_rate"],
+    warehouse: ["projects"],
+    purchase:  ["projects","supplier_ontime"].concat(mk?["market_alert"]:[]).concat(cm?["raw_alert"]:[]),
+    production:["smt_yield","asm_yield","repair_rate","cycle","kit_rate","sup_delay"]
+                 .concat(res?["res_load","res_conflict","labor_cost"]:[])
+                 .concat(wx?["wechat_pending"]:[]).concat(m.wxmatch?["wxmatch_pending"]:[]),
+    sales:     ["projects","wip","exec_rate","wxmatch_pending"],
   };
   const pick=(arr)=>(arr||[]).map(key=>M[key]).filter(Boolean);
   return {core:pick(sets[role]||sets.boss), more:pick(setsMore[role])};
 }
 function kpiCard(x){
-  return el(`<div class="card kpi ac-${x.ac}"><div class="top"><span class="ac-dot"></span><span class="lbl">${x.l}</span></div>
-     <div class="v ${x.c}">${x.v}</div><div class="sub">${x.s}</div></div>`);
+  return el(statCard(x));
+}
+/* 从甘特数据里按月聚合出三条**真实**序列（不编造环比）。
+   旧版 KPI 只有裸数字，"9 单" 是什么水平完全看不出来。 */
+function ganttMonthly(g){
+  const by={};
+  (g||[]).forEach(x=>{
+    const d=String(x.end||x.start||"").slice(0,7);
+    if(!/^\d{4}-\d{2}$/.test(d)) return;
+    const b=by[d]||(by[d]={n:0,days:0,cnt:0,ontime:0});
+    b.n++;
+    if(x.days){ b.days+=x.days; b.cnt++; }
+    if(x.done&&!x.overdue) b.ontime++;
+  });
+  const k=Object.keys(by).sort();
+  return {
+    months:k,
+    count:k.map(m=>by[m].n),
+    cycle:k.map(m=>by[m].cnt?+(by[m].days/by[m].cnt).toFixed(1):null),
+    ontime:k.map(m=>by[m].n?+(by[m].ontime/by[m].n*100).toFixed(1):null),
+  };
 }
 
 function render(m){
@@ -2690,36 +3974,53 @@ function render(m){
     location.hash="role="+UNLOCK.role;
     return;
   }
+  const ok=new Set(ROLES[role].sections||[]);
   const app=$("#app"); app.innerHTML="";
-  /* 分流器：core → 首屏直接挂载；more → 收进「更多分析」折叠区；都不在 → 不渲染 */
-  const CORE=ROLES[role].core||ROLES[role].sections, MORE=ROLES[role].more||[];
-  const moreBody=el(`<div class="more-body" id="moreBody"></div>`);
+  const drawerBody=$("#drawerBody"); if(drawerBody) drawerBody.innerHTML="";
+
+  /* ── 挂载器 v6 ────────────────────────────────────────────────────────
+     旧版：core → 首屏平铺；more → 塞进「更多分析」折叠区（于是变成一条 16 屏长纸）。
+     新版：区块 → 它所属的那个「标签面板」。区块渲染代码一行没改。 */
+  const PANES={};
   const put=(key,node)=>{
-    if(CORE.includes(key)) app.appendChild(node);
-    else if(MORE.includes(key)) moreBody.appendChild(node);
+    const mod=MOD_OF[key];
+    if(!mod) return;                                     // 未纳管的区块直接丢弃
+    if(mod==="_drawer"){                                  // 新建 / 补录：进抽屉
+      if(drawerBody && (DRAWER_ROLES[key]||[]).includes(role)) drawerBody.appendChild(node);
+      return;
+    }
+    if(!tabVisible(ok,key)) return;                       // 该角色无权看
+    let pane=PANES[key];
+    if(!pane){
+      pane=el(`<div class="pane" id="pane-${key}" role="tabpanel"></div>`);
+      PANES[key]=pane; app.appendChild(pane);
+    }
+    pane.appendChild(node);
   };
-  $("#metaLine").textContent="数据快照："+m.snapshot
-    + (m.partdb?" · 物料/缺料接入 PartDB 实时（"+m.partdb.generated_at+"）":"")
-    + (m.synced_at?" · 业务表接入 SeaTable 云「"+(m.base_name||"生产")+"」（同步 "+m.synced_at+"）":"")
-    + " · 四维分析（工时/成本/质量/供应链）";
+
+  $("#metaLine").textContent=m.snapshot
+    + (m.synced_at?" · 业务表同步 "+m.synced_at:"")
+    + (m.partdb?" · PartDB 物料 "+m.partdb.generated_at:"");
   const flag=$("#demoFlag");
   if(m.isDemo){
     flag.textContent="演示数据"; flag.className="demo-flag"; flag.style.display="inline-block";
-    $("#banner").innerHTML="当前为<b>演示数据</b>（虚构示例）。清空本地 data/ 后录入真实数据，重跑 cockpit.py 即可生成你的真实驾驶舱。";
   }else{
-    flag.textContent="真实数据 · SeaTable云"; flag.className="real-flag"; flag.style.display="inline-block";
-    $("#banner").innerHTML="业务表已接入 SeaTable 云端「"+(m.base_name||"生产")+"」真实数据（同步于 "+m.synced_at+"）。物料/缺料来自 PartDB 实时。"
-      + (m.partdb?"":"<span style='color:var(--red)'> ⚠ PartDB 未连接。</span>");
+    flag.style.display="none";
   }
-  app.appendChild(buildRoleBar(role, UNLOCK));
+  if(m.isDemo){
+    const bn=$("#banner");
+    if(bn){ bn.style.display="block"; bn.innerHTML="当前为<b>演示数据</b>（虚构示例）。清空本地 data/ 后录入真实数据，重跑 cockpit.py 即可生成你的真实驾驶舱。"; }
+  }
+  applyRoleChrome(role, UNLOCK);
 
-  /* KPI 概览（按角色裁剪，首屏最多 4 张） */
+  /* ── KPI 常驻条：所有标签页顶部都在，不再随页面滚走 ─────────────────── */
   const k=m.kpi;
   const kpiG=buildKPIs(m, role);
-  const secK=el(`<section id="sec-K" class="sec"><div class="sec-title">__IC_GRID__ 核心指标概览 · ${ROLES[role].name}</div>
-    <div class="hscroll" id="kpig"></div></section>`);
-  kpiG.core.forEach(x=>secK.querySelector("#kpig").appendChild(kpiCard(x)));
-  put("K", secK);
+  const kpiBar=$("#kpiBar");
+  if(kpiBar){ kpiBar.innerHTML=""; kpiG.core.forEach(x=>kpiBar.appendChild(kpiCard(x))); }
+
+  /* 外壳（左导航 + 标签条 + 底部栏）；必须在区块之前建好，才能算出当前标签 */
+  const shell=buildShell(role, m, kpiG.core.length===0);
 
   /* 今天要处理：首屏置顶，只留高/中优先级，一键跳到对应模块 */
   const actsAll=m.next_actions||[];
@@ -2728,28 +4029,82 @@ function render(m){
   const CAT_SEC={purchase:["Sup","Inv","P"],warehouse:["Inv","P","Sup"],
     delivery:["PW","P","G"],production:["P","G","T","PW"],sales:["PW","G"],boss:["PW","G"],
     resource:["Rs","G","T"],wechat:["WXC"],market:["Mkt"],risk:["FC"]};
-  const visible=(kk)=>CORE.includes(kk)||MORE.includes(kk);
+  const visible=(kk)=>tabVisible(ok,kk);
   const urgent=acts.filter(a=>a.pri==="高"||a.pri==="中").slice(0,6);
+  /* ── 影响面元信息（v7）────────────────────────────────────────────────
+     行业规范里 "an open-actions table needs owner + impact" —— 光一行字
+     「推进逾期未交付」没法判断轻重。这里给每条待办挂上**结构化**的影响面。
+     ⚠️ 绝不能从 a.text 里正则抠数字（"剩-39天" 抠出来放进别的语境就会串味），
+     一律回到 model 里的结构化字段取。字段缺失就少挂一个 chip，不硬凑。 */
+  const fz=m.foresee||{}, sg=(fz.shortage||{}).plans||[], bwd=(fz.backward||{}).act_now||[];
+  const impactOf=(a)=>{
+    const o=[];
+    const add=(lab,val)=>{ if(val!=null&&val!=="") o.push(`<span>${lab} <b>${val}</b></span>`); };
+    if(a.cat==="risk"){
+      const hit=bwd.find(x=>x.plan&&a.text.indexOf(x.plan)>=0);
+      if(hit){
+        add("计划",hit.plan);
+        add(hit.days_left<0?"已逾期":"剩余",Math.abs(hit.days_left)+" 天");
+        if(hit.do_now&&hit.do_now.length) add("未启动环节",hit.do_now.length+" 个");
+      }
+      if(sg.length&&/缺料|立刻下单/.test(a.text)){
+        add("缺口",sg[0].gap_items+" 种 / "+sg[0].total_gap+" 件");
+        add("零库存",sg[0].zero_stock_items+" 种");
+      }
+    }
+    if(a.cat==="warehouse"){
+      const bom=(m.partdb||{}).bom;
+      if(bom) add("BOM 缺口",bom.shortage.length+" 种 / "+bom.bom_count+" 行");
+    }
+    if(a.cat==="wechat"&&m.wechat){
+      add("待确认",m.wechat.pending_count+" 条");
+      add("今日新增",m.wechat.today_count+" 条");
+    }
+    if(a.cat==="market"&&m.commodities){
+      add("告警品种",m.commodities.alerts.length+" 个");
+      add("阈值","±"+m.commodities.threshold+"%");
+    }
+    if(a.cat==="delivery"){
+      const od=(m.wip||[]).filter(w=>w.overdue);
+      if(od.length){
+        add("逾期单",od.length+" 单");
+        add("最长逾期",Math.abs(Math.min.apply(null,od.map(w=>w.remain)))+" 天");
+      }
+    }
+    if(a.cat==="sales"){
+      add("应收合计",yuan(k.receivable));
+      const top=(m.cost&&m.cost.receivable_list||[])[0];
+      if(top) add("最大一笔",yuan(top.receivable));
+    }
+    if(a.cat==="production"&&m.time){
+      const fd=m.time.flow_dist||{}, ks=Object.keys(fd).sort((x,y)=>fd[y]-fd[x]);
+      if(ks.length) add("最大积压",ks[0]+" "+fd[ks[0]]+" 单");
+      if(m.time.ontime_rate!=null) add("交期达成",m.time.ontime_rate+"%");
+    }
+    if(a.cat==="purchase"&&m.supply) add("采购逾期",(m.supply.overdue_list||[]).length+" 单");
+    return o.length?`<div class="act-m">${o.join("")}</div>`:"";
+  };
   const todayBody=urgent.length
     ? urgent.map(a=>{
         const tgt=(CAT_SEC[a.cat]||[]).find(visible);
-        const jump=tgt?`<button class="go" data-jump="sec-${tgt}">去处理 →</button>`:"";
-        return `<div class="today-item p-${a.pri}"><span class="tx">${a.text}</span>${jump}</div>`;
+        const jump=tgt?`<button class="go act-go" data-jump="sec-${tgt}">去处理 →</button>`:"";
+        return `<div class="act-row p-${a.pri}">
+          <i class="act-rail"></i>
+          <div class="act-body"><div class="act-t">${a.text}</div>${impactOf(a)}</div>
+          ${jump}</div>`;
       }).join("")
-    : `<div class="today-item p-提示"><span class="tx">今天没有逾期或临期事项，保持当前节奏即可 ✔</span></div>`;
+    : `<div class="act-row p-低"><i class="act-rail"></i>
+         <div class="act-body"><div class="act-t">今天没有逾期或临期事项，保持当前节奏即可 ✔</div></div></div>`;
   const secToday=el(`<div class="today" id="sec-Today">
     <div class="today-hd"><span class="t">今天要处理</span>
       ${urgent.length?`<span class="cnt">${urgent.length} 项</span>`:`<span class="ok">全部正常</span>`}
-      <span class="note" style="margin:0">数据快照 ${m.snapshot} · 仅显示高/中优先级</span></div>
-    <div class="today-list">${todayBody}</div></div>`);
+      <span class="note" style="margin:0">数据快照 ${m.snapshot} · 仅显示高/中优先级 · 右侧「去处理」直达对应标签页</span></div>
+    <div class="today-list acts">${todayBody}</div></div>`);
   secToday.querySelectorAll("[data-jump]").forEach(b=>b.onclick=()=>{
     const key=b.dataset.jump.replace("sec-","");
-    if(MORE.includes(key)) openMore();          // 目标在折叠区 → 先展开
-    const t=document.getElementById(b.dataset.jump);
-    if(t) t.scrollIntoView({behavior:"smooth",block:"start"});
+    setRoute(MOD_OF[key]||shell.mod, key);       // v6：直接切到目标标签页，不再滚动
   });
-  app.appendChild(secToday);
-  if(CORE.includes("K")) app.insertBefore(secToday, secK);
+  put("Today", secToday);
 
   /* 下一步行动建议（完整列表，按角色过滤） */
   const actHTML=acts.length?acts.map(a=>`<div class="act"><span class="pri pri-${a.pri}">${a.pri}</span>
@@ -2823,8 +4178,24 @@ function render(m){
       <td class="num">${w.due||"—"}</td><td><span class="pill ${cls}">${rm}</span></td></tr>`;
   }).join("") : `<tr><td colspan="6" class="empty">无在制品</td></tr>`;
 
+  /* 项目状态 / 在制阶段构成条：两个「一眼看结构」的图，占位很矮。
+     ⚠️ 用 stackBar 而不是饼：饼图靠角度估占比，构成条靠长度，后者可读性高一个量级。 */
+  const stCount={};
+  (m.projects||[]).forEach(p=>{ const s2=p.status||"未定义"; stCount[s2]=(stCount[s2]||0)+1; });
+  const wipStage={};
+  (m.wip||[]).forEach(w=>{ const s2=w.stage||"未定义"; wipStage[s2]=(wipStage[s2]||0)+1; });
+  const pwViz=`<div class="viz-grid">${
+    vizCard("项目状态构成",
+      stackBar(Object.keys(stCount).sort((a,b2)=>stCount[b2]-stCount[a]).map(k2=>({l:k2,v:stCount[k2]}))),
+      {q:`共 ${m.projects.length} 个项目`,
+       note:"<b>存量视角</b>：已交付是历史沉淀；真正还要投入的是「计划中 / 已超期」那两块。"})}${
+    vizCard("在制计划阶段分布",
+      stackBar(Object.keys(wipStage).map(k2=>({l:k2,v:wipStage[k2]}))),
+      {q:`共 ${(m.wip||[]).length} 个在制计划`,
+       note:"在制 = 生产计划表里状态 ≠ 已交付。这一条直接回答「货卡在哪个工序」。"})}</div>`;
   const secPW=el(`<section id="sec-PW" class="sec"><div class="sec-title">__IC_PROJ__ 项目总览 & 在制品看板</div>
-    <div class="grid g2">
+    ${pwViz}
+    <div class="grid g2" style="margin-top:22px">
       <div class="card"><h3>项目清单（${m.projects.length}）</h3>
         <div style="overflow-x:auto"><table data-paginate="8" data-filter="1" data-select="1"><thead><tr><th>项目</th><th>状态</th><th>合同额</th><th>已收</th><th>应收</th><th>交期</th></tr></thead>
         <tbody>${projRows}</tbody></table></div></div>
@@ -2837,8 +4208,30 @@ function render(m){
 
   /* 甘特图 */
   const g=m.gantt||[];
+  const gDone=g.filter(x=>x.done).length;
+  const gOver=g.filter(x=>x.overdue).length;
+  const gRate=gDone?((gDone-gOver)/gDone*100):null;
+  const gmd2=ganttMonthly(g);
+  const gViz=`<div class="viz-grid">${
+    vizCard("甘特计划健康度",
+      bullet([
+        {l:"按期完成率（已交付中）",v:gRate==null?0:gRate,target:90,unit:"%",
+          sev:sev(gRate,"ontime_rate")},
+        {l:"逾期未交付",v:gOver,target:0,unit:" 单",sev:gOver?"bad":"ok"},
+        {l:"未填合同交期",v:m.gantt_pending||0,target:null,txt:(m.gantt_pending||0)+" 单"},
+      ],{}),
+      {q:`共 ${g.length} 条计划 · 已交付 ${gDone} 条`,
+       note:"按期 = 已交付且未逾期。<b>深色竖线是 90% 目标</b>。「未填交期」多为合同写「收款后 X 日内交货」、尚未收款故按规则留空，条长按历史工期推算。"})}${
+    vizCard("月度计划量走势",
+      gmd2.months.length>1?`${spark(gmd2.count,{color:"var(--primary)"})}
+        <div class="bt-scale"><span>${gmd2.months[0]} · ${gmd2.count[0]} 条</span>
+          <span>${gmd2.months[gmd2.months.length-1]} · ${gmd2.count[gmd2.count.length-1]} 条</span></div>`
+        :`<div class="viz-empty">月份样本不足，暂不画走势</div>`,
+      {q:`覆盖 ${gmd2.months.length} 个月`,
+       note:"按计划的结束月归集。<b>只画真的有计划的月份</b> —— 给空月补零会平白造出一段「归零」的假趋势。"})}</div>`;
   const secG=el(`<section id="sec-G" class="sec"><div class="sec-title">__IC_GANT__ 生产计划甘特图（三种状态：实际进度 · 合同交期 · 历史推算交期）</div>
-    <div class="card"><div class="gantt-tools" id="ganttTools"></div>
+    ${gViz}
+    <div class="card" style="margin-top:22px"><div class="gantt-tools" id="ganttTools"></div>
     <div class="gantt-wrap"><div class="gantt" id="gantt"></div></div>
     <div class="note"><b>图中三种状态</b>：
       <span class="lg"><i class="lg-bar run"></i>① 实际进度</span>＝条内浅色填充（读生产计划表「阶段」的<b>实测值</b>，每晚 19:00 同步后的快照，不按日期推算；紫=进行中／绿=已交付／红=逾期）；
@@ -2944,24 +4337,38 @@ function render(m){
 
   /* 工时 */
   const t=m.time;
-  const stageItems=Object.entries(t.stage_dist).map(([k,v],i)=>({name:k,value:v,
-    color:["#3b5bdb","#1c7ed6","#0ca678","#f08c00","#7048e8","#e8590c"][i%6]}));
-  const cycleTxt=t.cycle_list.length?t.cycle_list.map(c=>c.product+":"+c.days+"天").join(" · "):"暂无工序耗时记录";
+  const stageItems=Object.entries(t.stage_dist).map(([k,v])=>({l:k,v:v}));
+  /* 生产周期 Top：谁拖得最久一眼可见。必须带标签 —— 光有条形，看完还得回头
+     去表格里对号才知道哪根条是哪个产品。 */
+  const cycItems=(t.cycle_list||[]).slice().sort((a,b)=>b.days-a.days).slice(0,12)
+    .map(x=>({l:x.product,v:x.days,txt:x.days+" 天",
+      sev:x.days>45?"bad":(x.days>30?"warn":"")}));
+  const gmd=ganttMonthly(m.gantt);
   const secT=el(`<section id="sec-T" class="sec"><div class="sec-title">__IC_TIME__ 工时分析（交付能力）</div>
-    <div class="grid g3">
-      <div class="card"><h3>交期达成率（内部周期）</h3><div class="donut-wrap">
-        <div>${donut(t.ontime_rate,"#3b5bdb")}</div>
-        <div class="legend"><div class="row"><span class="dot" style="background:#3b5bdb"></span>
-          <span class="nm">周期达成</span><span class="vl">${t.ontime}/${t.dated||0}</span></div>
-          <div class="row"><span class="nm" style="color:var(--sub)">平均实际周期</span>
-          <span class="vl">${t.avg_cycle}天</span></div></div></div>
-        <div class="note">${cycleTxt}</div></div>
-      <div class="card"><h3>在制阶段分布</h3>${bars(stageItems)}</div>
-      <div class="card"><h3>说明</h3>
-        <div class="note">交期达成率 = 内部周期达成：实际花费天数 ≤ 允许的(合同交期−立项)天数 的计划占比。<br>
-        平均实际周期 = 各计划「花费天数」均值（真实工序耗时）。<br>
-        阶段分布反映当前产能瓶颈所在工序。</div></div>
-    </div></section>`);
+    <div class="viz-grid">
+      ${vizCard("交期达成率 vs 目标（90%）",
+        bullet([{l:"内部周期达成",v:t.ontime_rate==null?0:t.ontime_rate,target:90,unit:"%",
+                 sev:sev(t.ontime_rate,"ontime_rate")}],{scale:true,unit:"%"}),
+        {q:`可判定 ${t.ontime}/${t.dated||0} 条`,
+         note:"达成 = 实际花费天数 ≤ 允许周期（合同交期 − 立项日期）。<b>深色竖线是 90% 目标</b>。"})}
+      ${vizCard("在产阶段分布", stackBar(stageItems),
+        {q:`共 ${Object.values(t.stage_dist).reduce((a,b)=>a+b,0)} 条计划`,
+         note:"推进中的环节看「备料中/贴片生产/组装/测试」，那才是瓶颈所在；「已交付」是历史沉淀。"})}
+      ${vizCard("生产周期 Top（实际花费天数）", barList(cycItems),
+        {q:"天数降序 · Top 12",
+         note:"红＝超过 45 天，橙＝超过 30 天。数据源＝生产计划表「花费天数」（业务实填的工序耗时）。"})}
+      ${vizCard("月度平均工期走势",
+        gmd.months.length>1?`${spark(gmd.cycle,{color:"var(--blue)"})}
+          <div class="bt-scale"><span>${gmd.months[0]}</span><span>${gmd.months[gmd.months.length-1]}</span></div>`
+          :`<div class="viz-empty">月份样本不足，暂不画走势</div>`,
+        {q:`覆盖 ${gmd.months.length} 个月`,
+         note:"把每月计划的「花费天数」求平均。<b>只画真的有计划的月份</b>，不给空月补零 —— 补零会造出一条假的下探。"})}
+    </div>
+    <div class="card" style="margin-top:22px"><h3>口径说明</h3>
+      <div class="note">交期达成率 = 内部周期达成：实际花费天数 ≤ 允许的(合同交期−立项)天数 的计划占比。<br>
+      平均实际周期 = 各计划「花费天数」均值，当前 <b>${t.avg_cycle} 天</b>，历史中位 <b>${(m.gantt_hist||{}).median||"—"} 天</b>（p75 ${(m.gantt_hist||{}).p75||"—"} / p90 ${(m.gantt_hist||{}).p90||"—"}）。<br>
+      阶段分布反映当前产能瓶颈所在工序。</div></div>
+  </section>`);
   put("T", secT);
 
   /* 成本 */
@@ -2987,17 +4394,28 @@ function render(m){
     }
     ageMap[k]=(ageMap[k]||0)+p.receivable;
   });
-  const ageItems=[["已逾期","var(--red)"],["30","var(--amber)"],["60","var(--blue)"],["90","var(--primary)"]]
-    .map(([k,col])=>({name:k,value:Math.round(ageMap[k]||0),color:col}));
-  const recvBarsHTML=c.receivable_list.length?`<div style="margin-top:14px">
-    <h3 style="font-size:13px;color:var(--sub);font-weight:600;margin-bottom:2px">应收账龄分布（元）</h3>
-    ${bars(ageItems,{fmt:v=>yuan(v)})}</div>`:"";
+  /* 应收账龄分布：账龄越长越难收 —— 逾期标红、60/90 天标红、30 天内标绿。 */
+  const AGE_SEV={"已逾期":"bad","30":"ok","60":"bad","90":"bad"};
+  const ageItems=[["已逾期"],["30"],["60"],["90"]]
+    .map(([k2])=>{ const v=Math.round(ageMap[k2]||0);
+      return {l:k2==="已逾期"?"已逾期":(k2+" 天内"),v:v,txt:yuan(v),sev:AGE_SEV[k2]||""}; })
+    .filter(x=>x.v>0);
+  const recvBarsHTML=c.receivable_list.length?`<div style="margin-top:16px">
+    <h3 style="font-size:13px;color:var(--sub);font-weight:600;margin-bottom:8px">应收账龄分布（元）</h3>
+    ${barList(ageItems)}
+    <div class="viz-note">按合同交期距今分桶。<b>逾期的必须优先催收</b> —— 账龄越长，实际回收概率越低。</div></div>`:"";
+  /* 应收 Top Pareto：催收要压在最大的几笔上，而不是平均用力。 */
+  const recvTop=(c.receivable_list||[]).slice().sort((a,b)=>b.receivable-a.receivable).slice(0,12)
+    .map(p=>({l:p.name,v:p.receivable,txt:yuan(p.receivable),
+      sev:(p.due&&p.due<m.snapshot)?"bad":"warn"}));
+  const recvTopHTML=recvTop.length?vizCard("应收款 Top（按金额）",barList(recvTop),
+    {q:`共 ${c.receivable_list.length} 笔 · 合计 ${yuan(c.receivable_list.reduce((a,p)=>a+p.receivable,0))}`,
+     note:"红＝已过合同交期。数据源＝项目表的 合同总价 − 实收（看板现算）。"}):"";
   const secC=el(`<section id="sec-C" class="sec"><div class="sec-title">__IC_COST__ 成本分析（盈利能力）</div>
     <div class="grid g2">
       <div class="card"><h3>成本结构（总花销 ${yuan(c.cost)}）</h3>
-        <div class="donut-wrap"><div>${pie(catItems,150)}</div>
-        <div class="legend">${catItems.map((x,i)=>`<div class="row"><span class="dot" style="background:${x.color}"></span>
-          <span class="nm">${x.name}</span><span class="vl num">${yuan(x.value)}</span></div>`).join("")}</div></div></div>
+        ${stackBar(catItems.map(x=>({l:x.name,v:x.value})),{money:true})}
+        <div class="viz-note">按采购明细汇总，共 ${catItems.length} 个科目。<b>用构成条代替饼图</b>：同一科目永远同一颜色，跨页可对照，且不用靠角度估算占比。</div></div>
       <div class="card"><h3>利润与预算</h3>
         <div class="kpi ac-green"><div class="top"><span class="ac-dot"></span><span class="lbl">总利润</span></div>
           <div class="v">${yuan(c.profit)}</div><div class="sub">合同 ${yuan(c.contract)} − 花销 ${yuan(c.cost)}</div></div>
@@ -3016,30 +4434,49 @@ function render(m){
         ${recvBarsHTML}</div>
       <div class="card"><h3>现金流预测（30/60/90天）</h3><div class="cf">${cf}</div>
         <div class="note">收入按合同交期、支出按采购预计到货归集；净额为收减付。</div></div>
-    </div></section>`);
+    </div>
+    ${recvTopHTML}</section>`);
   put("C", secC);
 
   /* 质量 */
   const q=m.quality;
+  /* 良率/维修率改用「环 + 目标」：环最省横向空间，且必须配目标才有意义 ——
+     一个孤零零的 "94.4%" 无法判断好坏，配上 "目标 98%" 才成立。 */
+  const ringBox=(val,label,sub,sevKey,lowerBetter,bad)=>{
+    const s=(bad||val==null)?"":sev(val,sevKey,lowerBetter);
+    return `<div class="ringbox">
+      ${val==null?`<div class="viz-empty" style="padding:24px 0">未录入</div>`:ring(val,{sev:s,label:label})}
+      <div class="rl">${label}</div>
+      <div class="rs">${sub}</div></div>`;
+  };
+  const smtMiss=(q.smt_missing_n||0);
   const secQ=el(`<section id="sec-Q" class="sec"><div class="sec-title">__IC_QUAL__ 质量分析（交付质量）</div>
     <div class="grid g3">
-      <div class="card"><h3>贴片良品率</h3><div class="donut-wrap">
-        <div>${donut(q.smt_yield,"#0ca678")}</div>
-        <div class="legend"><div class="row"><span class="dot" style="background:#0ca678"></span>
-          <span class="nm">良品 / 投入</span><span class="vl">${pct(q.smt_yield)}</span></div>
-          <div class="row"><span class="nm" style="color:var(--sub)">组装良品率</span><span class="vl">${q.asm_yield==null?'未录入':pct(q.asm_yield)}</span></div></div></div>
-        <div class="note">组装良品率：2 条组装记录均未填良品率，暂无法计算（并非 0%）。</div></div>
-      <div class="card"><h3>维修率</h3><div class="donut-wrap">
-        <div>${donut(q.repair_rate,"#e8590c")}</div>
-        <div class="legend"><div class="row"><span class="dot" style="background:#e8590c"></span>
-          <span class="nm">维修 ${q.repair_total} / 发货 ${q.shipped}</span><span class="vl">${pct(q.repair_rate)}</span></div>
-          <div class="row"><span class="nm" style="color:var(--sub)">超期未完修</span><span class="vl ${q.repair_overdue>0?'neg':''}">${q.repair_overdue}</span></div></div></div>
-        <div class="note">平均返修周期 ${q.repair_avg} 天</div></div>
+      <div class="card"><h3>良品率</h3>
+        <div class="rings">
+          ${ringBox(q.smt_yield,"贴片良品率","目标 98%","smt_yield",false)}
+          ${ringBox(q.asm_yield,"组装良品率",q.asm_yield==null?"未录入":"目标 98%","asm_yield",false,q.asm_yield==null)}
+        </div>
+        <div class="viz-note"><b>样本完整度</b>：贴片 ${q.smt_batches||0}/${q.smt_rows||0} 批已录「良品数量」${smtMiss?`，<b style="color:var(--amber)">${smtMiss} 批待补录</b>（合计投入 ${fmt(q.smt_missing_qty)} 片，已从分母剔除）`:""}。
+          ${smtMiss?`<br>⚠ 若把待补录批次的数量也算进分母，良率会被系统性稀释成一个偏低的假值 —— 那个数不能用来考核。`:""}
+          ${q.asm_yield==null?`<br>组装良品率：${(m.backfill&&m.backfill["组装记录"]||[]).length} 条组装记录均未填良品率，暂无法计算（<b>并非 0%</b>）。可在「补录缺失数据」里填。`:""}</div></div>
+      <div class="card"><h3>维修率</h3>
+        <div class="rings">
+          ${ringBox(q.repair_rate,"维修率","目标 ≤2%","repair_rate",true)}
+        </div>
+        <div style="margin-top:12px">
+          ${bullet([
+            {l:"维修件数 / 发货",v:q.repair_total,target:null,txt:q.repair_total+" / "+q.shipped,unit:" 件"},
+            {l:"超期未完修",v:q.repair_overdue,target:0,unit:" 单",sev:q.repair_overdue>0?"bad":"ok"},
+            {l:"平均返修周期",v:q.repair_avg,target:null,txt:q.repair_avg,unit:" 天"},
+          ],{})}
+        </div></div>
       <div class="card"><h3>维修明细</h3>
-        ${q.repair_list.length?`<table data-paginate="8" data-filter="1" data-select="1"><thead><tr><th>项目</th><th>问题</th><th>返修</th><th>状态</th></tr></thead><tbody>`
+        ${q.repair_list.length?`<div style="overflow-x:auto"><table data-paginate="8" data-filter="1" data-select="1"><thead><tr><th>项目</th><th>问题</th><th>返修</th><th>状态</th></tr></thead><tbody>`
           +q.repair_list.map(r=>`<tr><td>${r.proj}</td><td>${r.item||"—"}</td><td class="num">${r.back}</td>
           <td><span class="pill ${r.done?'tag-green':(r.overdue?'tag-red':'tag-amber')}">${r.done?'已完成':(r.overdue?'超期':'处理中')}</span></td></tr>`).join("")
-          +`</tbody></table>`:`<div class="empty">无维修记录</div>`}</div>
+          +`</tbody></table></div>`:`<div class="empty">无维修记录</div>`}
+        <div class="note">「问题」列原样取自 SeaTable 单元格，<b>部分行里塞的是 markdown 原文表格</b>（业务在单元格里直接粘了表格）—— 看板不做清洗，以免串改原始记录。</div></div>
     </div></section>`);
   put("Q", secQ);
 
@@ -3082,6 +4519,31 @@ function render(m){
     .map(x=>({name:x.name,value:x.rate,
       color:x.rate>=90?"var(--green)":(x.rate>=70?"var(--amber)":"var(--red)")}));
   const supBarsHTML=supBarsItems.length?bars(supBarsItems,{fmt:v=>v+"%"}):"";
+  /* ── 供应商到货延迟（v7 新增）──────────────────────────────────────────
+     下面那张「供应商交期准确率」依赖 supply.supplier，而**真实库里那张是空的**，
+     于是准时率一直显示 0% —— 这等于把「没有样本」谎报成「准时率为零」。
+     这里改用 foresee.supplier 的真实历史样本（当前 106 个）算到货延迟，
+     有样本才出数，没样本就整块不渲染。 */
+  const fsup=(m.foresee||{}).supplier||{};
+  const catProf=fsup.cat_profile||{};
+  const catDelay=Object.keys(catProf)
+    .map(c=>({l:c,v:catProf[c].mean||0,
+      txt:(catProf[c].mean||0).toFixed(1)+" 天 · "+catProf[c].n+" 单",
+      sev:sev(catProf[c].mean,"sup_delay",true)}))
+    .sort((a,b2)=>b2.v-a.v);
+  const worstCat=catDelay.length?catDelay[0].l:null;
+  const supDetailRows=(fsup.sup_detail||{})[worstCat]||[];
+  const supDelayBars=supDetailRows.slice().sort((a,b2)=>b2.mean-a.mean).slice(0,10)
+    .map(x=>({l:x.supplier,v:x.mean,
+      txt:x.mean.toFixed(1)+" 天 · "+x.n+" 单"+(x.max?" · 最差 "+x.max+" 天":""),
+      sev:sev(x.mean,"sup_delay",true)}));
+  const supViz=catDelay.length?`<div class="viz-grid">${
+    vizCard("各品类到货延迟（天）",barList(catDelay),
+      {q:`${fsup.samples||0} 个历史样本 · 越低越好`,
+       note:"延迟 = 实际到货 − 合同到货日，<b>负值＝提前到货</b>。样本只取采购记录里已回填到货日期的行。"})}${
+    worstCat?vizCard(`延迟最重品类「${worstCat}」· 供应商排行`,barList(supDelayBars),
+      {q:"按平均延迟降序 · Top 10",
+       note:"同样天数下样本数 n 越多越可信；<b>n=1 的条只能当线索，不能当结论</b>。末位数字是最差单次延迟，用于看波动。"}):""}</div>`:"";
   const invRows=s.inventory_warn.length?s.inventory_warn.map(v=>`<tr>
     <td>${v.plan}</td><td>${v.result}</td><td class="num">${v.time||"—"}</td>
     <td><span class="pill tag-amber">待处理</span></td></tr>`).join("")
@@ -3105,12 +4567,16 @@ function render(m){
         <td class="num">${w.confirmed}</td><td class="num">${w.minamount}</td>
         <td class="num">${w.gap}</td><td><span class="pill ${cls}">${w.status}</span></td></tr>`;
     }).join(''):`<tr><td colspan="5" class="empty">✅ 暂无低于安全库存的零件（当前 ${pd.part_count} 个零件均未设置安全库存线 minamount）</td></tr>`;
-    /* 缺料缺口 Top 条形图（红=零确认库存，橙=部分缺口）*/
-    const gapItems=(b&&b.shortage||[]).slice().sort((a,b2)=>b2.gap-a.gap).slice(0,8)
-      .map(x=>({name:x.name,value:x.gap,color:x.confirmed===0?"var(--red)":"var(--amber)"}));
-    const gapHTML=gapItems.length?`<div style="margin-top:14px">
-      <h3 style="font-size:13px;color:var(--sub);font-weight:600;margin-bottom:2px">缺口 Top（按缺口件数）</h3>
-      ${bars(gapItems)}</div>`:"";
+    /* 缺料缺口 Top：改用 barList —— 每条自带料号与件数，不用再回头看表格对号。
+       红＝零确认库存（必须新采购），橙＝部分缺口。 */
+    const gapItems=(b&&b.shortage||[]).slice().sort((a,b2)=>b2.gap-a.gap).slice(0,10)
+      .map(x=>({l:x.name,v:x.gap,
+        txt:x.gap+" 件"+((x.ipn)?" · "+x.ipn:""),
+        sev:x.confirmed===0?"bad":"warn"}));
+    const gapHTML=gapItems.length?`<div style="margin-top:16px">
+      <h3 style="font-size:13px;color:var(--sub);font-weight:600;margin-bottom:8px">缺口 Top（按缺口件数）</h3>
+      ${barList(gapItems)}
+      <div class="viz-note">缺口 = 需求 − 已确认库存，按 ${b.qty} 套 BOM 计算。红＝零确认库存（必须新采购），橙＝部分缺口。</div></div>`:"";
     pdHTML=`<div class="card" style="margin-top:14px"><div class="pd-head">
         <h3>在产缺料检查 · ${b?b.project_name:''}（${b?b.qty:''} 套）</h3>
         <span class="badge-real">PartDB 实时 · ${pd.generated_at}</span></div>
@@ -3136,7 +4602,8 @@ function render(m){
       <div class="note">⚠ PartDB 未配置，BOM 级缺料检查已跳过；以上仅基于「库存核对记录」的最终完成状态判定。</div></div>`;
   }
   const secSup=el(`<section id="sec-Sup" class="sec"><div class="sec-title">__IC_SUP__ 供应链（采购）</div>
-    <div class="grid g2">
+    ${supViz}
+    <div class="grid g2" style="margin-top:22px">
       <div class="card"><h3>采购逾期（${s.overdue_list.length}）</h3>
         <div style="overflow-x:auto"><table data-paginate="8" data-filter="1" data-select="1"><thead><tr><th>供应商</th><th>物料</th><th>关联计划</th><th>预计到货</th><th>状态</th></tr></thead>
         <tbody>${odRows}</tbody></table></div></div>
@@ -3283,8 +4750,19 @@ function render(m){
         `<div class="act"><span class="pri ${a.type==='涨'?'pri-高':'pri-中'}">${a.type}</span>
          <span class="tx"><b>${a.name}</b>：${a.text}</span></div>`).join("")}</div>
       <div class="note">原料波动影响的是<b>整体报价基调</b>，不是单个料号——涨了复核供应商报价有效期与备货节奏，跌了可择机锁价。</div></div>`:"";
+    /* 原料波动榜：按涨跌**绝对值**排序，一眼看出这 30 天哪几个品种在动。 */
+    const rawBars=(raw.rows||[]).slice()
+      .filter(r=>r.pct!=null&&isFinite(Number(r.pct)))
+      .sort((a,b2)=>Math.abs(b2.pct)-Math.abs(a.pct)).slice(0,10)
+      .map(r=>({l:r.name,v:Math.abs(Number(r.pct)),
+        txt:(r.pct>=0?"+":"")+Number(r.pct).toFixed(1)+"% · "+(r.price||"—"),
+        sev:Math.abs(r.pct)>=raw.threshold*1.5?"bad":(Math.abs(r.pct)>=raw.threshold?"warn":"ok")}));
+    const rawViz=rawBars.length?vizCard(`原料波动榜（近 ${raw.days} 天）`,barList(rawBars),
+      {q:`阈值 ±${raw.threshold}% · 共 ${raw.rows.length} 个品种`,
+       note:"红＝波动 ≥ 阈值的 1.5 倍，橙＝已超阈值。<b>口径纪律</b>：期货「连续」与「具体合约」是两个口径，<b>不跨口径比价</b> —— 混比会算出假涨跌。"}):"";
     const secRaw=el(`<section id="sec-Raw" class="sec"><div class="sec-title">__IC_MKT__ 原料行情（上游成本 · 金属 / 塑料）</div>
-      <div class="card"><div style="overflow-x:auto"><table data-paginate="12" data-filter="1"><thead><tr>
+      ${rawViz}
+      <div class="card" style="margin-top:22px"><div style="overflow-x:auto"><table data-paginate="12" data-filter="1"><thead><tr>
         <th>原料</th><th>口径</th><th>最新价</th><th>区间涨跌</th><th>趋势</th><th>日期</th><th>来源</th>
       </tr></thead><tbody>${rawRows}</tbody></table></div>
       <div class="note">红=涨、绿=跌（成本视角）。近 ${raw.days} 天波动 ≥ ±${raw.threshold}% 触发告警（原料波动比单个料号频繁，阈值单独设，默认 5%）。
@@ -3442,6 +4920,134 @@ function render(m){
     put("FC", secFC);
   }
 
+  /* ── 全链案件（L2-0 接线）───────────────────────────────────────────────
+     这条链一直存在（domain/order_to_cash.py，落 data/business_loop/*.csv），
+     但驾驶舱只读 SeaTable，所以「微信来单 → CRM → 商机 → 需求/方案/报价版本 →
+     合同 → 立项 → 采购 → 排产 → 生产 → 出货 → 验收回款 → 售后」一直看不见。
+     这一块第一次把它显出来：16 态漏斗 + 案件卡 + 状态停留时长。
+
+     ⚠️ 两条诚实标注**不能省**（少了界面就会谎报经营现状）：
+        · 数据停更 —— 不写，就会把 19 天前的链路状态当成今天的；
+        · 预演空壳 —— 对象构成完全对称、无一越过「立项回款」= 不是真实业务流。 */
+  const _loop=m.loop;
+  if(_loop && tabVisible(ok,"LC")){
+    const lp=_loop;
+    const ZH={}; lp.funnel.forEach(f=>ZH[f.state]=f.zh);
+    const TYPE_ZH={customer:"客户",lead:"线索",opportunity:"商机",requirement:"需求",
+      solution:"方案",quote:"报价",contract:"合同",project:"项目",
+      production_order:"生产订单",purchase_order:"采购订单",shipment:"发货",after_sales:"售后"};
+
+    /* 数据来源诚实标注 */
+    const warns=[];
+    if(lp.stale){
+      warns.push(`<b>控制平面已停更 ${lp.stale_days} 天</b>（最后写入 ${lp.updated_at}）——
+        下面显示的不是今天的链路状态。已查明两部分原因：① <code>partdb_sync</code> 返回 502 时
+        <code>failure_policy="abort"</code> 把后续 9 步整链带走（23 次运行里 <code>loop_sync</code> 只跑通 6 次）；
+        ② 唯一的增量入口 <code>workflows/loop_trigger.py</code>（微信来单 → 建案件）<b>从未接入 DAG</b>，
+        所以即使跑通也只是把同一批数据反复镜像。`);
+    }
+    if(lp.scenario){
+      warns.push(`<b>当前为预演数据，不是真实业务流</b>：${lp.case_count} 个案件中
+        <b>${lp.seeded_cases} 个</b>恰好只含「客户 + 线索 + 商机」这同一套三件套
+        （${(lp.seeded_cases/Math.max(1,lp.case_count)*100).toFixed(0)}%，人工逐单建立不会这么齐），
+        且全库<b>无一对象越过「立项回款」</b>（合同 / 项目 / 生产订单 / 采购订单 / 发货 / 售后对象数均为 0）。
+        请勿据此判断经营现状。`);
+    }
+    const warnHtml=warns.length?`<div class="card" style="border-left:3px solid var(--amber);margin-bottom:14px">
+      <h3 style="color:var(--amber)">⚠️ 数据可信度提示</h3>
+      <div class="note" style="margin-top:6px">${warns.map(w=>"· "+w).join("<br>")}</div></div>`:"";
+
+    /* 四个常驻指标 */
+    const advanced=lp.advanced_n||0;
+    const stuckAll=lp.stuck.length+lp.overdue.length;
+    const dw=Object.keys(lp.dwell_avg||{}).map(k=>lp.dwell_avg[k]);
+    const dwMax=dw.length?Math.max.apply(null,dw):0;
+    const kpis=[
+      statCard({l:"在跑案件", v:lp.case_count, u:"单", sev:stuckAll?"warn":"ok",
+        sub:`${lp.object_count} 个业务对象 · ${lp.transition_count} 条状态轨迹`}),
+      statCard({l:"已越过立项回款", v:advanced, u:"个对象", sev:advanced?"ok":"bad",
+        nsev:advanced?"ok":"bad",
+        sub:advanced?"链路已进入交付段":"全部卡在立项之前"}),
+      statCard({l:"停滞/逾期案件", v:stuckAll, u:"单", sev:stuckAll?"bad":"ok",
+        nsev:(stuckAll&&!lp.stale)?"bad":"",
+        sub:`停留 &gt; ${lp.stuck_days} 天算停滞 · 逾期 ${lp.overdue.length} 单${lp.stale?"（含停更期，非真实停滞）":""}`}),
+      statCard({l:"最长状态停留", v:dwMax, u:"天", sev:dwMax>lp.stuck_days?"bad":"ok",
+        nsev:dwMax>lp.stuck_days?"bad":"ok",
+        sub:"由末次状态迁移时间推算"}),
+    ].join("");
+
+    /* 16 态漏斗：形状本身就是结论 —— 全挤在最前面几态 */
+    let _mi=0;
+    const funRows=lp.funnel.map(f=>{
+      if(f.main) _mi++;
+      const w=f.n?Math.max(3,Math.round(f.n/Math.max(1,lp.max_funnel)*100)):0;
+      const col=f.n===0?"transparent":(f.main?"var(--primary)":"var(--amber)");
+      // 主链编号 01~14；旁路两态不占主链序号，直接标「旁路 · 取消/售后」
+      const label=f.main?`${String(_mi).padStart(2,"0")} ${esc(f.zh)}`:`旁路 · ${esc(f.zh)}`;
+      return `<div class="bl-row">
+        <span class="bl-lbl" title="${esc(f.state)}">${label}</span>
+        <span class="bl-val">${f.n?`<b>${f.n}</b> 单`:'<span style="color:var(--sub)">0</span>'}</span>
+        <span class="bl-track"><i class="bl-fill" style="width:${w}%;background:${col}"></i></span>
+      </div>`;
+    }).join("");
+
+    const dwellItems=Object.keys(lp.dwell_avg||{}).map(k=>({
+      l:ZH[k]||k, v:lp.dwell_avg[k], txt:lp.dwell_avg[k]+" 天",
+      sev:lp.dwell_avg[k]>lp.stuck_days?"bad":(lp.dwell_avg[k]>3?"warn":"ok")}))
+      .sort((a,b)=>b.v-a.v);
+
+    const typeItems=Object.keys(lp.types).map(k=>({l:TYPE_ZH[k]||k, v:lp.types[k]}))
+      .sort((a,b)=>b.v-a.v);
+
+    const caseRows=lp.cases.map(c=>{
+      const left=(c.days_left==null)
+        ? '<span class="rs-sub">未设交期</span>'
+        : (c.days_left<0?`<b class="neg">逾期 ${-c.days_left} 天</b>`:`剩 ${c.days_left} 天`);
+      return `<tr>
+        <td><b>${esc(c.customer)}</b><div class="rs-sub">${esc(c.root_id)}</div></td>
+        <td style="max-width:200px">${esc(c.product)}</td>
+        <td><span class="pill ${c.stuck?"tag-amber":(c.terminal?"tag-green":"")}">${esc(c.state_zh)}</span></td>
+        <td>${esc(c.owner)}</td>
+        <td class="${c.stuck?"neg":""}">${c.dwell!=null?c.dwell+" 天":"—"}</td>
+        <td>${left}</td>
+        <td>${c.objects_n} / ${c.evidence_n} / ${c.approvals_n}</td>
+        <td style="max-width:330px">${esc(c.next_action)}<div class="rs-sub">更新 ${esc(c.updated_at||"—")}</div></td>
+      </tr>`;
+    }).join("")||`<tr><td colspan="8" class="empty">控制平面无案件。运行 <code>python workflows/loop_trigger.py --yes</code> 从来单线索建案。</td></tr>`;
+
+    const secLC=el(`<section id="sec-LC" class="sec">
+      <div class="sec-title">__IC_PROJ__ 全链案件 — 微信来单 → 立项 → 采购 → 生产 → 出货 → 验收回款 → 售后（16 态状态机）</div>
+      ${warnHtml}
+      <div class="hscroll" style="padding-bottom:14px">${kpis}</div>
+      <div class="viz-grid">
+        ${vizCard("16 态漏斗 — 每态有多少单",
+          `<div class="bl">${funRows}</div>`,
+          {q:`按<b>案件根对象</b>计（不是按全部 ${lp.object_count} 个对象）`,
+           note:`主链 14 态（01→14）取 <code>application/contracts.py</code> 的 <code>PROJECT_STATES</code>，
+                  与业主口径逐字对应；旁路两态（取消/售后）不计入主链。条越长 = 该态积压越多。`})}
+        ${vizCard("各态平均停留",
+          dwellItems.length?barList(dwellItems):`<div class="viz-empty">无状态迁移记录</div>`,
+          {q:`> ${lp.stuck_days} 天判为停滞`,
+           note:"停留时长 = 今天 − 末次状态迁移时间（无迁移则回退到建档时间）。这一列是找瓶颈最直接的入口。"
+                +(lp.stale?`<b style="color:var(--amber)"> ⚠️ 本页数据已停更 ${lp.stale_days} 天，下面的「停留」实际等于停更天数，不是真实作业停滞。</b>`:"")})}
+        ${vizCard("控制平面资产构成",
+          stackBar(typeItems),
+          {q:`${lp.object_count} 对象 / ${lp.evidence_count} 证据 / ${lp.approval_count} 审批`,
+           note:`对象类型取自 <code>domain/order_to_cash.py</code> 的 <code>OBJECT_SPECS</code>（12 类，
+                  每类有独立 ID 前缀）。证据链与审批记录是「每步有证据」的兑现载体。`})}
+      </div>
+      <div class="card" style="margin-top:16px"><h3>案件明细（按「逾期 &gt; 停滞 &gt; 停留时长」排序）</h3>
+        <div style="overflow-x:auto"><table data-paginate="12" data-filter="1"><thead><tr>
+          <th>客户 / 案件号</th><th>产品意向</th><th>当前状态</th><th>责任人</th><th>停留</th>
+          <th>交期</th><th>对象/证据/审批</th><th>下一步（系统建议）</th>
+        </tr></thead><tbody>${caseRows}</tbody></table></div>
+        <div class="note">数据源 <code>data/business_loop/objects.csv</code>（本地控制平面，<b>不在 SeaTable</b>）·
+          最后写入 <b>${lp.updated_at}</b>。状态推进命令：<code>python workflows/business_loop.py advance --root-id … --to … --reason … --yes</code>；
+          本案展示与推进均为只读/需人工确认，驾驶舱不直接写控制平面。</div></div>
+    </section>`);
+    put("LC", secLC);
+  }
+
   /* 新建向导：销售→「项目」表（销售立项表单）；其余角色→「生产计划」表（生产经理建计划）。
      老板/仓库/采购页不显示（已在 ROLES 裁剪：WZ 不在其 sections 中） */
   const _isSales = (role==="sales");
@@ -3470,49 +5076,123 @@ function render(m){
     </div></section>`);
   put("WZ", secWZ);
 
-  /* 更多分析（二级折叠区）：把非核心模块 + 次要指标收进来，首屏只保留 3-4 块 */
-  if(kpiG.more.length){
+  /* 次要指标 → 挂进「质量 › 更多指标」标签页（旧版塞在「更多分析」折叠区最底部） */
+  if(kpiG.more.length && tabVisible(ok,"KM")){
     const secKM=el(`<section id="sec-KM" class="sec"><div class="sec-title">__IC_GRID__ 更多指标</div>
       <div class="hscroll" id="kpigm"></div></section>`);
     kpiG.more.forEach(x=>secKM.querySelector("#kpigm").appendChild(kpiCard(x)));
-    moreBody.insertBefore(secKM, moreBody.firstChild);
-  }
-  const moreCnt=moreBody.children.length;
-  if(moreCnt){
-    const tg=el(`<button class="more-tg" id="moreTg" aria-expanded="false">
-      <span>更多分析（${moreCnt} 项）</span><span class="arrow">▼</span></button>`);
-    const wrap=el(`<div class="more-wrap"></div>`);
-    wrap.appendChild(tg); wrap.appendChild(moreBody);
-    tg.onclick=()=>{ moreBody.classList.contains("open")?closeMore():openMore(); };
-    app.appendChild(wrap);
+    put("KM", secKM);
   }
 
-  /* 快速导航条：首屏模块直接跳；折叠区模块点击时自动展开再跳 */
-  const SEC_NAV={K:['核心指标','__IC_GRID__'],KM:['更多指标','__IC_GRID__'],A:['行动建议','__IC_NEXT__'],
-    WZ:['新建项目','__IC_ADD__'],BF:['补录数据','__IC_EDIT__'],Rs:['资源负载','__IC_USER__'],
-    WXC:['微信情报','__IC_CHAT__'],Mkt:['物料行情','__IC_MKT__'],Raw:['原料行情','__IC_MKT__'],
-    WXM:['消息核对','__IC_CHECK__'],FC:['风险雷达','__IC_RADAR__'],
-    PW:['项目&在制','__IC_PROJ__'],G:['甘特图','__IC_GANT__'],T:['工时','__IC_TIME__'],
-    C:['成本','__IC_COST__'],Q:['质量','__IC_QUAL__'],P:['产线流转','__IC_PROJ__'],
-    Sup:['供应链','__IC_SUP__'],Inv:['库存预警','__IC_BOX__'],
-    PT:['项目全表','__IC_PROJ__'],PL:['生产计划','__IC_TIME__'],MM:['思维导图','__IC_MIND__']};
-  const navKeys=[["Today",null]].concat(
-    CORE.filter(k=>SEC_NAV[k]).map(k=>[k,false]),
-    MORE.filter(k=>SEC_NAV[k]).map(k=>[k,true]));
-  const navHTML=navKeys.map(([k,inMore])=>{
-    if(k==="Today") return `<button class="sec-nav-item" data-target="sec-Today">__IC_NEXT__今天要处理</button>`;
-    return `<button class="sec-nav-item${inMore?' in-more':''}" data-target="sec-${k}" data-more="${inMore?1:0}">${SEC_NAV[k][1]}${SEC_NAV[k][0]}</button>`;
-  }).join("");
-  const navBar=el(`<nav class="sec-nav" id="secNav">${navHTML}</nav>`);
-  navBar.querySelectorAll(".sec-nav-item").forEach(b=>b.onclick=()=>{
-    if(b.dataset.more==="1") openMore();
-    const t=document.getElementById(b.dataset.target);
-    if(t) t.scrollIntoView({behavior:"smooth",block:"start"});
-  });
-  app.insertBefore(navBar, secToday);
+  /* ── 数据来源健康（全链降级 / Plan B 专项，2026-10-02）─────────────
+     统一陈旧判据（Python 侧 SOURCE_SPEC）+ 最近一次运行的降级状态，
+     一张表说清「每个数据源有多旧 / 本次是否降级 / 挂了会造成什么后果」。
+     刻意如实标注是哪一个 run —— 驾驶舱运行时本次 final.json 还没落盘。 */
+  const sh=m.source_health;
+  if(sh && tabVisible(ok,"SH")){
+    const LV_ZH={ok:"正常",warn:"偏旧",bad:"过旧"};
+    const LV_COL={ok:"var(--green)",warn:"var(--amber)",bad:"var(--red)"};
+    const srcs=sh.sources||[];
+    const bad=srcs.filter(x=>x.level==="bad");
+    const warn=srcs.filter(x=>x.level==="warn");
+    const deg=srcs.filter(x=>x.degraded);
+    const warns=[];
+    if(bad.length){
+      warns.push("<b>"+bad.length+" 个数据源已过旧</b>："+
+        bad.map(x=>esc(x.name)).join("、")+" —— 看板上依赖它们的小结可能基于旧数据。");
+    }
+    if(deg.length){
+      warns.push("<b>"+deg.length+" 个数据源本次为降级（沿用旧数据）</b>："+
+        deg.map(x=>esc(x.name)+"（"+esc(x.step_id||"")+" 失败但未阻断）").join("、")+"。");
+    }
+    const warnHtml=warns.length?`<div class="card" style="border-left:3px solid var(--amber);margin-bottom:14px">
+      <h3 style="color:var(--amber)">⚠️ 数据可信度提示</h3>
+      <div class="note" style="margin-top:6px">${warns.map(w=>"· "+w).join("<br>")}</div></div>`:"";
+    const kpis=[
+      statCard({l:"数据源", v:srcs.length, u:"个", sev:"ok",
+        sub:"统一口径 · 见 SOURCE_SPEC"}),
+      statCard({l:"偏旧", v:warn.length, u:"个", sev:warn.length?"warn":"ok",
+        nsev:warn.length?"warn":"",
+        sub:"超过 ok 阈值但未超 bad"}),
+      statCard({l:"过旧", v:bad.length, u:"个", sev:bad.length?"bad":"ok",
+        nsev:bad.length?"bad":"",
+        sub:"超过 bad 阈值或产物缺失"}),
+      statCard({l:"本次降级", v:deg.length, u:"个", sev:deg.length?"warn":"ok",
+        nsev:deg.length?"warn":"",
+        sub:"步骤失败但声明为非阻断"}),
+    ].join("");
+    const rows=srcs.map(x=>{
+      const col=LV_COL[x.level]||"var(--sub)";
+      const age=(x.age_h==null)?"—":fmtAge(x.age_h);
+      const st=!x.step_id?"—":(x.degraded?"降级":(x.level==="bad"?"异常":"正常"));
+      const stCol=!x.step_id?"var(--sub)":(x.degraded?"var(--amber)":(x.level==="bad"?"var(--red)":"var(--green)"));
+      return `<tr>
+        <td><b>${esc(x.name)}</b></td>
+        <td><code style="font-size:11px">${esc(x.artifact)}</code></td>
+        <td>${esc(x.at||"—")}</td>
+        <td>${esc(age)}</td>
+        <td><span class="dot" style="background:${col};display:inline-block;margin-right:5px"></span>${LV_ZH[x.level]||esc(x.level)}</td>
+        <td><span class="dot" style="background:${stCol};display:inline-block;margin-right:5px"></span>${esc(st)}</td>
+        <td class="note" style="margin:0">${esc(x.note||"")}</td>
+        <td class="note" style="margin:0">${esc(x.consequence||"")}</td>
+      </tr>`;
+    }).join("");
+    const runLine = sh.run
+      ? `最近一次已完成运行 <code>${esc(sh.run.run_id)}</code>（${esc(sh.run.workflow)} · 整次状态 ${esc(sh.run.status)} · ${esc(sh.run.finished_at||"—")}）`
+      : "（未找到任何运行账本）";
+    const secSH=el(`<section id="sec-SH" class="sec">
+      <div class="sec-title">__IC_INSIGHT__ 数据来源健康 — 每个数据源有多旧、本次是否降级、挂了会怎样</div>
+      ${warnHtml}
+      <div class="hscroll" style="padding-bottom:14px">${kpis}</div>
+      <div class="card" style="margin-top:16px"><h3>来源明细（按各自 ok / bad 阈值判级）</h3>
+        <div style="overflow-x:auto"><table data-paginate="12" data-filter="1"><thead><tr>
+          <th>数据源</th><th>产物文件</th><th>数据时间</th><th>距今</th>
+          <th>新鲜度</th><th>最近一次运行</th><th>说明</th><th>不可用后果</th>
+        </tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="note"><b>本面板反映的是：</b>${runLine}。<br>
+          驾驶舱在 <code>cockpit</code> 步骤内生成，此时本次运行的账本尚未落盘，故这里显示的是
+          <b>最近一次已完成运行</b>的步骤状态，<b>不是本次</b>。<br>
+          <b>判据来源</b>：<code>cockpit.py</code> 的 <code>SOURCE_SPEC</code>（2026-10-02 起统一，
+          替代原先 4 套各自为政的陈旧口径）；有内嵌时间戳的产物读其字段，无时间戳的 CSV 退回文件 mtime。<br>
+          <b>阈值</b>：${srcs.map(x=>esc(x.name)+" "+x.ok_h+"h / "+x.bad_h+"h").join(" · ")}</div></div>
+    </section>`);
+    put("SH", secSH);
+  }
+
+  /* 激活当前标签页 —— 必须等所有区块挂载完，否则面板还是空的 */
+  activatePane(shell.tab);
+  if(kpiBar && !kpiG.core.length) kpiBar.style.display="none";
+  polishTables();
   initTableTools();
   initPagination();
-  observeNav(navBar);
+}
+/* 表格微整形：表头一律不折行；纯日期/短标识单元格不折行。 */
+function polishTables(){
+  document.querySelectorAll("#app .pane table").forEach(t=>{
+    t.querySelectorAll("th").forEach(th=>th.classList.add("nowrap"));
+    t.querySelectorAll("tbody td").forEach(td=>{
+      if(td.children.length) return;                     // 含按钮/药丸/输入的单元格跳过
+      const s=(td.textContent||"").trim();
+      if(!s) return;
+      if(/^\d{4}-\d{2}-\d{2}$/.test(s) || (s.length<=12 && !/[，。；：、]/.test(s))){
+        td.classList.add("nowrap");
+      }
+    });
+  });
+}
+/* 切换可见面板 + 同步导航/标签的选中态 */
+function activatePane(tab){
+  document.querySelectorAll("#app .pane").forEach(p=>p.classList.remove("active"));
+  const p=tab?document.getElementById("pane-"+tab):null;
+  if(p) p.classList.add("active");
+  const mod=tab?(MOD_OF[tab]||null):null;
+  document.querySelectorAll("#sideNav .navitem,#tabBar button").forEach(b=>{
+    b.classList.toggle("active", !!mod && b.dataset.mod===mod);
+  });
+  document.querySelectorAll("#tabStrip .tab").forEach(b=>{
+    b.classList.toggle("active", !!tab && b.dataset.tab===tab);
+  });
+  if(_navIO){ _navIO.disconnect(); _navIO=null; }
 }
 /* 「更多分析」折叠区开关（render 内多处调用） */
 function openMore(){
@@ -3963,24 +5643,38 @@ function fmtAge(h){
   if(h<48) return Math.round(h)+" 小时前";
   return Math.round(h/24)+" 天前";
 }
+/* SeaTable 的 ok / bad 阈值改从 MODEL.source_health 取 —— Python 侧的 SOURCE_SPEC
+   是唯一源。2026-10-02 之前这里硬编码 6h/24h，而 daily 9:00 与 evening 19:00 的
+   间隔最长 14h，导致驾驶舱每天大部分时间常亮 amber「较新」、稀释了告警价值
+   （业主决定放宽到 16h/24h）。 */
+function satFreshThresholds(){
+  const s=((MODEL.source_health||{}).sources||[]).filter(x=>x.key==="seatable")[0];
+  return {ok:(s&&s.ok_h)||16, bad:(s&&s.bad_h)||24};
+}
 function syncFreshness(){
   const sat=MODEL.synced_at||"";
   if(!sat) return {h:null,lvl:"na",txt:"未知"};
   const d=new Date(sat.replace(/-/g,"/"));
   if(isNaN(d.getTime())) return {h:null,lvl:"na",txt:sat};
   const h=(Date.now()-d.getTime())/3600000;
+  const th=satFreshThresholds();
   let lvl="green",txt="数据新鲜";
-  if(h>=24){lvl="red";txt="数据可能已过时";}
-  else if(h>=6){lvl="amber";txt="较新";}
+  if(h>=th.bad){lvl="red";txt="数据可能已过时";}
+  else if(h>=th.ok){lvl="amber";txt="较新";}
   return {h:h,lvl:lvl,txt:txt};
 }
 function refreshSyncBadge(){
   const el=$("#syncBadge"); if(!el) return;
   const f=syncFreshness();
   const color=f.lvl==="green"?"var(--green)":f.lvl==="amber"?"var(--amber)":f.lvl==="red"?"var(--red)":"var(--sub)";
-  const age=f.h==null?"":(" · 同步于 "+MODEL.synced_at+" · "+fmtAge(f.h));
   const liveTag = LIVE ? '<b style="color:var(--primary)">⚡ 在线直连</b> · ' : "";
-  el.innerHTML='<span class="dot" style="background:'+color+'"></span>'+liveTag+(MODEL.isDemo?"演示数据":("真实数据 · "+f.txt))+age;
+  // 窄屏只留「数据源 + 新鲜度」，时间戳进详情弹窗（点 chip 就能看，不必挤在顶栏）
+  const narrow = window.innerWidth < 760;
+  const head = MODEL.isDemo ? "演示数据" : ("真实数据 · "+f.txt);
+  const tail = narrow ? "" : (f.h==null?"":(" · 同步于 "+MODEL.synced_at+" · "+fmtAge(f.h)));
+  el.innerHTML='<span class="dot" style="background:'+color+'"></span>'+liveTag+head+tail;
+  el.title = "数据快照 "+MODEL.snapshot+(MODEL.synced_at?(" · 同步于 "+MODEL.synced_at):"")
+    + (f.h==null?"":"（"+fmtAge(f.h)+"）") + " · 点这里看详情";
 }
 function openSync(){
   const f=syncFreshness();
@@ -3991,12 +5685,18 @@ function openSync(){
     ["距今", f.h==null?"未知":fmtAge(f.h)],
     ["PartDB 物料快照", MODEL.partdb_at||"未知"],
     ["数据新鲜度", '<span class="dot" style="background:'+color+'"></span>'+f.txt],
+    ["来源健康", (function(){
+        const s=MODEL.source_health||{};
+        const c=(s.worst==="bad")?"var(--red)":(s.worst==="warn")?"var(--amber)":"var(--green)";
+        return '<span class="dot" style="background:'+c+'"></span>过旧 '+(s.n_bad||0)
+          +' · 偏旧 '+(s.n_warn||0)+'（详见「分析 › 来源健康」）';
+      })()],
     ["当前状态", MODEL.isDemo?"演示模式（非真实库）":"已接入真实库 · 只读快照"],
   ];
   let html='<div class="modal-mask" id="syncMask"><div class="modal"><div class="modal-h">__IC_SYNC__ 同步状况</div><table class="sync-t"><tbody>';
   for(const r of rows) html+='<tr><td class="sk">'+r[0]+'</td><td class="sv">'+r[1]+'</td></tr>';
   html+='</tbody></table>';
-  if(f.lvl==="red") html+='<div class="note" style="color:var(--red)">⚠ 距上次同步已超过 24 小时，建议重新同步获取最新数据。</div>';
+  if(f.lvl==="red") html+='<div class="note" style="color:var(--red)">⚠ 距上次同步已超过 '+satFreshThresholds().bad+' 小时，建议重新同步获取最新数据。</div>';
   html+='<div class="note">本驾驶舱是生成时的冻结快照，页面不会自联动物联网拉取。点下方按钮复制「重新同步」指令，粘贴到 WorkBuddy 发送，我就会重跑同步并重新生成 HTML。</div>';
   html+='<div class="modal-ft"><button class="btn" id="btnCopySync">一键复制重新同步指令</button><button class="btn btn-ghost" id="btnCloseSync">关闭</button></div></div></div>';
   const tmp=document.createElement("div"); tmp.innerHTML=html; document.body.appendChild(tmp.firstChild);
@@ -4048,6 +5748,22 @@ function setupLock(){
 window.addEventListener("DOMContentLoaded",()=>{
   setupLock();
   render(MODEL);
+  /* ── v6 外壳交互：下拉菜单 / 抽屉 / 路由 ─────────────────────────── */
+  const more=$("#btnMore");
+  if(more) more.onclick=e=>{ e.stopPropagation(); toggleMenu("#moreMenu"); };
+  document.addEventListener("click",e=>{
+    if(!e.target.closest(".dd")) closeMenus();
+  });
+  document.addEventListener("keydown",e=>{ if(e.key==="Escape"){ closeMenus(); closeDrawer(); } });
+  const bNew=$("#btnNew"); if(bNew) bNew.onclick=()=>{ closeMenus(); openDrawer("WZ"); };
+  const bBF=$("#btnBF");   if(bBF)  bBF.onclick=()=>{ closeMenus(); openDrawer("BF"); };
+  const dClose=$("#drawerClose"); if(dClose) dClose.onclick=closeDrawer;
+  const dMask=$("#drawerMask");   if(dMask)  dMask.onclick=closeDrawer;
+  const dChip=$("#dataChip");     if(dChip)  dChip.onclick=openSync;
+  /* 旧的「导出/同步」等按钮仍在 ⋯ 菜单里，点完自动收起菜单 */
+  ["btnSync","btnRefresh","btnExport","btnImport","btnAnalyze"].forEach(id=>{
+    const b=document.getElementById(id); if(b) b.addEventListener("click",()=>closeMenus());
+  });
   $("#btnExport").onclick=exportJSON;
   $("#btnSync").onclick=openSync;
   refreshSyncBadge();
@@ -4073,8 +5789,11 @@ window.addEventListener("DOMContentLoaded",()=>{
   $("#pwRotate").onclick=rotateAll;
   $("#pwCopyAll").onclick=copyAllPw;
   // 补录面板：事件委托（render 会重建 DOM，用委托保证每次都生效）
-  $("#app").addEventListener("change", e=>{ if(e.target.matches("#bfBody [data-rid]")) onBfChange(); });
-  // 角色切换：URL hash 变化即重渲染对应视图
+  // v6：补录区块搬进了抽屉，所以抽屉容器也要挂同一套委托
+  const bfHandler=e=>{ if(e.target.matches("#bfBody [data-rid]")) onBfChange(); };
+  $("#app").addEventListener("change", bfHandler);
+  const dBody=$("#drawerBody"); if(dBody) dBody.addEventListener("change", bfHandler);
+  // 角色切换 / 标签切换：URL hash 变化即重渲染对应视图
   window.addEventListener("hashchange", ()=>render(MODEL));
 });
 </script>

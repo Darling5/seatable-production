@@ -150,5 +150,103 @@ class TestResultShapes(unittest.TestCase):
         self.assertRegex(rid, r"^daily-20260912-0900-[0-9a-f]{4}$")
 
 
+class TestRunStatus(unittest.TestCase):
+    """运行级终态的唯一口径 `C.run_status()`。
+
+    这是全仓库**唯一**一份「整次运行是成功/降级/失败」的判定。它收敛之前存在
+    三份各自实现（runner 收尾 / gates 白名单 / workflow.py cmd_note），实测后果是
+    cmd_note 会把 runner 刚判好的 `degraded` 覆盖回 `failed`，导致 evening 自动化
+    里每调一次 `note` 就拆掉一次降级。因此这个真值表必须具备约束力。
+    """
+
+    @staticmethod
+    def _s(sid, status, blocking=True):
+        return {"step_id": sid, "status": status, "blocking": blocking}
+
+    def test_全成功(self):
+        self.assertEqual(C.run_status([self._s("a", C.STATUS_SUCCESS)]),
+                         C.STATUS_SUCCESS)
+
+    def test_成功加跳过仍是成功(self):
+        """skipped 是正常终态（数据源不可用/开关关闭），不降低整次状态。"""
+        self.assertEqual(C.run_status([self._s("a", C.STATUS_SUCCESS),
+                                       self._s("b", C.STATUS_SKIPPED)]),
+                         C.STATUS_SUCCESS)
+
+    def test_非阻断失败判降级(self):
+        """核心语义：有降级但仍可发布 —— 修 G1 之前系统里没有这个合法值。"""
+        self.assertEqual(C.run_status([self._s("a", C.STATUS_SUCCESS),
+                                       self._s("b", C.STATUS_FAILED, False)]),
+                         C.STATUS_DEGRADED)
+
+    def test_阻断失败判失败(self):
+        self.assertEqual(C.run_status([self._s("a", C.STATUS_SUCCESS),
+                                       self._s("b", C.STATUS_FAILED, True)]),
+                         C.STATUS_FAILED)
+
+    def test_blocking_缺省视为阻断_fail_closed(self):
+        """老账本可能没有 blocking 字段 —— 缺省必须按阻断处理，不能默默降级。"""
+        self.assertEqual(C.run_status([{"step_id": "a", "status": "failed"}]),
+                         C.STATUS_FAILED)
+
+    def test_blocked_非阻断也算降级(self):
+        self.assertEqual(C.run_status([self._s("a", C.STATUS_BLOCKED, False)]),
+                         C.STATUS_DEGRADED)
+
+    def test_阻断优先于降级(self):
+        self.assertEqual(C.run_status([self._s("a", C.STATUS_FAILED, False),
+                                       self._s("b", C.STATUS_FAILED, True)]),
+                         C.STATUS_FAILED)
+
+    def test_空步骤判失败_fail_closed(self):
+        """DAG 为空属配置错误，绝不能当成「什么都没发生 = 成功」。"""
+        self.assertEqual(C.run_status([]), C.STATUS_FAILED)
+        self.assertEqual(C.run_status(None), C.STATUS_FAILED)
+
+    def test_refresh_status_与函数同源(self):
+        rr = C.RunResult(run_id="r", workflow="daily", steps=[
+            self._s("a", C.STATUS_SUCCESS), self._s("b", C.STATUS_FAILED, False)])
+        rr.refresh_status()
+        self.assertEqual(rr.status, C.STATUS_DEGRADED)
+        self.assertEqual(rr.to_dict()["status"], C.STATUS_DEGRADED)
+
+    def test_降级仍然要能发布(self):
+        """与门禁白名单联动：degraded 必须在可发布集合内，否则「降级放行」是空话。"""
+        from application import gates as G
+        self.assertIn(C.STATUS_DEGRADED, G._RELEASABLE_RUN_STATUSES)
+
+    def test_三条路径同源(self):
+        """runner 收尾 / gates 白名单 / cmd_note 必须共用 run_status —— 不许再有第二份实现。
+
+        做法：源码级断言（出现新的 `all(... status in (...))` 式判定即失败）。
+        先自证正则有效（拿历史上的那份实现试一遍），否则正则写错会永远「通过」。
+        """
+        import re
+        pat = re.compile(r"all\(\s*s\.get\(\"status\"\)\s+in\s+\(")
+        # 自证：这段就是 workflow.py::cmd_note 修复前的原文，必须被匹配到
+        historical = (
+            '    data["status"] = (C.STATUS_SUCCESS if steps and all(\n'
+            '        s.get("status") in (C.STATUS_SUCCESS, C.STATUS_SKIPPED) for s in steps)\n'
+            '        else C.STATUS_FAILED)\n')
+        self.assertIsNotNone(pat.search(historical),
+                             "守卫正则已失效 —— 它抓不到历史上的第二份实现，等于没守卫")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        offenders = []
+        for sub in ("application", "workflows"):
+            for dirpath, _dirs, files in os.walk(os.path.join(root, sub)):
+                if "__pycache__" in dirpath:
+                    continue
+                for fn in files:
+                    if not fn.endswith(".py"):
+                        continue
+                    p = os.path.join(dirpath, fn)
+                    with open(p, encoding="utf-8") as f:
+                        src = f.read()
+                    if pat.search(src):
+                        offenders.append(os.path.relpath(p, root))
+        self.assertEqual(offenders, [],
+                         "运行级状态又出现第二份实现（G6 回归）：%s" % offenders)
+
+
 if __name__ == "__main__":
     unittest.main()

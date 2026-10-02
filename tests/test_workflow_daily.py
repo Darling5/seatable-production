@@ -25,7 +25,7 @@ class TestDailyDag(unittest.TestCase):
         self.assertEqual(ids, {
             "seatable_sync", "partdb_sync", "wechat_pull", "wechat_summary",
             "wxmatch_scan", "alerts", "foresee", "foresee_review",
-            "loop_sync", "daily_brief", "cockpit"})
+            "loop_trigger", "loop_sync", "daily_brief", "cockpit"})
 
     def test_no_online_write_or_destructive(self):
         """每日刷新只允许本地写入 + loop_sync 的 CRM 镜像——
@@ -47,9 +47,48 @@ class TestDailyDag(unittest.TestCase):
         self.assertIn("seatable_sync", ls.depends_on)
 
     def test_sync_steps_are_abort(self):
+        """SeaTable 是主数据源 —— 它没了整条链就没有可信输入，必须 abort。
+
+        （2026-10-02 拆分）原先本测试同时断言 partdb_sync 也是 abort，
+        但 PartDB 已改为**降级**路径：见下面 test_partdb_sync_degrades_not_aborts。
+        """
         by = {s.id: s for s in self.steps}
         self.assertEqual(by["seatable_sync"].failure_policy, "abort")
-        self.assertEqual(by["partdb_sync"].failure_policy, "abort")
+        self.assertTrue(by["seatable_sync"].blocking)
+
+    def test_partdb_sync_degrades_not_aborts(self):
+        """PartDB 挂掉不能把整条链带走（业主 2026-10-02 的 plan B 判据）。
+
+        正确行为：本地快照沿用上一份 + 结构告警 + 驾驶舱仍出，整次判 degraded
+        （可见但不拦发布），**不是** abort、**不是** blocking。
+        """
+        by = {s.id: s for s in self.steps}
+        pd = by["partdb_sync"]
+        self.assertEqual(pd.failure_policy, "continue")
+        self.assertFalse(pd.blocking)
+        self.assertEqual(pd.retry, 1)
+
+    def test_loop_trigger_runs_before_loop_sync(self):
+        """loop_trigger（来单线索 → 控制平面案件）必须排在 loop_sync（镜像 CRM）之前，
+        否则镜像里永远看不到本日新建的案件。"""
+        order = [s.id for s in self.steps]
+        self.assertLess(order.index("loop_trigger"), order.index("loop_sync"))
+        by = {s.id: s for s in self.steps}
+        self.assertIn("loop_trigger", by["loop_sync"].depends_on)
+
+    def test_loop_trigger_shape(self):
+        """loop_trigger 是**降级候选**：它在业务表之后跑，失败只影响控制平面。
+
+        blocking=False + failure_policy=continue 是刻意的 —— 它一旦被判 blocking，
+        就违反了「一个库挂掉不能把整条链路带走」。退出码 3（skipped）由脚本自身
+        在「CRM 不可用、本次没扫成」时给出，避免被误记 success（假指标）。
+        """
+        by = {s.id: s for s in self.steps}
+        lt = by["loop_trigger"]
+        self.assertEqual(lt.side_effect, C.SIDE_LOCAL_APPEND)
+        self.assertFalse(lt.blocking)
+        self.assertEqual(lt.failure_policy, "continue")
+        self.assertIn("seatable_sync", lt.depends_on)
 
     def test_dependencies_sane(self):
         by = {s.id: s for s in self.steps}

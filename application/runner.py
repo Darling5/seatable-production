@@ -248,10 +248,15 @@ class WorkflowRunner:
             if res.status == C.STATUS_FAILED and s.failure_policy == "abort":
                 aborted = True
         rr.finished_at = _dt.datetime.now().isoformat(timespec="seconds")
-        statuses = [s["status"] for s in rr.steps]
-        rr.status = (C.STATUS_SUCCESS if statuses and all(
-            st in (C.STATUS_SUCCESS, C.STATUS_SKIPPED) for st in statuses)
-            else C.STATUS_FAILED)
+        # 整次状态三档（2026-10-02 修 G1/G6）。
+        # 旧实现：`all(st in (success, skipped))` —— **完全不看 blocking**，
+        # 于是 evening 里声明 blocking=False 的 partdb_snap 一失败，整次就判 failed；
+        # 而发布门禁（gates.py）要求整次 ∈ {success, skipped}，一拦到底 ——
+        # 「非阻断失败只告警」那条善意逻辑**永远到不了**，只能靠人工改 final.json 绕过。
+        # 现在判定收敛到 `contracts.run_status()`（全仓库唯一一份）：
+        # 只有**阻断型**失败判 failed；纯非阻断失败判 degraded（降级可见、发布放行）。
+        # 不在此处再写一遍条件 —— 见 contracts.run_status 的 docstring（G6）。
+        rr.status = C.run_status(rr.steps)
         try:
             with open(os.path.join(self._run_dir, "final.json"), "w", encoding="utf-8") as f:
                 json.dump(rr.to_dict(), f, ensure_ascii=False, indent=2)

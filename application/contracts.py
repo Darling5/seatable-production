@@ -44,6 +44,44 @@ STATUS_SKIPPED = "skipped"
 STATUS_FAILED = "failed"
 STATUS_BLOCKED = "blocked"   # 前置失败或等待人工确认
 
+# 运行级终态（只用于 RunResult.status，**不是**步骤状态）
+# 语义：链路完整跑完，但存在**非阻断**步骤失败 —— 数据降级、发布放行但必须可见。
+# 2026-10-02 新增：此前「有降级但仍可发布」没有任何合法表达，
+# 只能靠人工改 final.json 绕过门禁（见 data/runs/patch_final_*.py），
+# 直接把 failed 改写成 skipped/纯 success，导致驾驶舱看不到真实故障。
+STATUS_DEGRADED = "degraded"
+
+
+def run_status(steps: Sequence[Mapping[str, Any]]) -> str:
+    """由步骤记录推导**运行级**终态。这是全仓库唯一一份实现。
+
+    | 情形                                   | 结果                |
+    |----------------------------------------|---------------------|
+    | 无步骤（DAG 为空 = 配置错误，fail-closed） | ``failed``        |
+    | 存在**阻断型**失败（blocking 缺省为真）    | ``failed``        |
+    | 只有非阻断失败（降级）                    | ``degraded``      |
+    | 其余                                   | ``success``       |
+
+    为什么必须是唯一一份（2026-10-02 修 G6）：
+    原先这段判定在 **三处**各自实现过 —— ``runner.py`` 收尾、``gates.py`` 白名单、
+    ``workflows/workflow.py::cmd_note``。三处口径不一致，于是：
+      · runner 判出的 degraded 会被后跑的 ``cmd_note``（旧口径：任一非 success/skipped
+        即 failed）**覆盖回 failed** —— evening 自动化 Prompt 连调三次 ``note``，
+        等于每次都在拆掉刚修好的降级；
+      · 而 gates 只认 success/skipped，degraded 一出现就被拦。
+    收敛到一个函数后，改语义只需改这一处，不会再出现三方打架。
+    """
+    steps = list(steps or ())
+    if not steps:
+        return STATUS_FAILED
+    bad = [s for s in steps
+           if s.get("status") not in (STATUS_SUCCESS, STATUS_SKIPPED)]
+    if not bad:
+        return STATUS_SUCCESS
+    if any(s.get("blocking", True) for s in bad):
+        return STATUS_FAILED
+    return STATUS_DEGRADED
+
 
 # ────────────────────────────────────────────────────────────────────
 # 核心数据结构
@@ -189,6 +227,15 @@ class RunResult:
                 "skipped": sum(1 for s in self.steps if s.get("status") == STATUS_SKIPPED),
                 "blocked": sum(1 for s in self.steps if s.get("status") == STATUS_BLOCKED)}
 
+    def refresh_status(self) -> "RunResult":
+        """按 ``run_status()`` 重算整次状态（全仓库唯一口径），返回自身。
+
+        任何**改写 steps 之后**的代码（runner 收尾、``workflow.py note`` 补记 AI 步骤）
+        都必须调它来同步 status，禁止再各写一份 ``all(...)`` 判定。
+        """
+        self.status = run_status(self.steps)
+        return self
+
     def to_dict(self) -> dict:
         return {"run_id": self.run_id, "workflow": self.workflow,
                 "status": self.status, "steps": self.steps,
@@ -325,6 +372,8 @@ __all__ = [
     "SIDE_DESTRUCTIVE", "SIDE_PUBLISH",
     "WRITE_APPROVAL_REQUIRED", "WRITE_AUTO_WITH_LEDGER", "ROUTE_POLICIES",
     "STATUS_SUCCESS", "STATUS_SKIPPED", "STATUS_FAILED", "STATUS_BLOCKED",
+    "STATUS_DEGRADED",
+    "run_status",
     "new_run_id", "RunContext", "StepResult", "StepSpec", "ApprovalRequest", "RunResult",
     "new_object_id", "validate_object_id", "EvidenceLink", "StateTransition",
     "PROJECT_STATES", "can_transition", "transition_severity",
