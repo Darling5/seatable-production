@@ -43,20 +43,34 @@ _BINARY_EXT = (".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".xlsx", ".xls",
                ".zip", ".bundle", ".woff", ".woff2", ".ttf")
 
 
+# ★ 2026-10-03 修复「假绿」缺口：`git ls-files` 默认 core.quotepath=true，
+#   会把非 ASCII 路径转义成 `"a/\345\205\250.md"`（带引号 + C 八进制）。
+#   旧实现直接 os.path.join(_HERE, p) → isfile 恒 False → **所有中文名文件被
+#   静默踢出扫描面**。实测：加入 8 份中文名方案文档后扫描面仍恒为 206、
+#   守卫一路全绿 —— 等于新增文件根本没被去敏检查过。
+#   改法：`-z`（NUL 分隔，绝不转义）+ 显式 `core.quotepath=false` 双保险；
+#   并在 [09b] 加一条「非 ASCII 路径必须全在扫描面内」的定点自检。
+_LAST_TRACKED_PATHS = []   # 入库面原始路径（供 [09b] 做漏扫自检）
+
+
 def _tracked_text_files():
     """返回「会被提交的文本文件」绝对路径列表。
 
-    优先 `git ls-files`（精确等于入库面，天然排除 config.yaml / data/ 等
+    优先 `git ls-files -z`（精确等于入库面，天然排除 config.yaml / data/ 等
     gitignore 项）；无 git 时退化为目录遍历 + 跳过本地文件。
     """
+    global _LAST_TRACKED_PATHS
     try:
-        out = subprocess.run(["git", "-C", _HERE, "ls-files"],
-                             capture_output=True, timeout=60)
-        if out.returncode == 0 and out.stdout.strip():
+        out = subprocess.run(
+            ["git", "-C", _HERE, "-c", "core.quotepath=false", "ls-files", "-z"],
+            capture_output=True, timeout=60)
+        if out.returncode == 0 and out.stdout.strip(b"\x00"):
+            paths = [p for p in
+                     out.stdout.decode("utf-8", "replace").split("\x00") if p]
+            _LAST_TRACKED_PATHS = paths
             res = []
-            for p in out.stdout.decode("utf-8", "replace").splitlines():
-                p = p.strip()
-                if not p or p.endswith(_BINARY_EXT):
+            for p in paths:
+                if p.endswith(_BINARY_EXT):
                     continue
                 fp = os.path.join(_HERE, p)
                 if os.path.isfile(fp):
@@ -65,6 +79,7 @@ def _tracked_text_files():
                 return res
     except Exception:
         pass
+    _LAST_TRACKED_PATHS = []
     _skip = {".git", "data", "__pycache__", ".venv", "node_modules", ".workbuddy"}
     res = []
     for root, dirs, files in os.walk(_HERE):
@@ -246,6 +261,21 @@ def main():
             print("[09b] 去敏守卫（全仓库）")
             _files = _tracked_text_files()
             check(len(_files) > 50, "守卫只扫到 %d 个文件，明显偏少（目录解析错？）" % len(_files))
+            # ★ 定点自检（2026-10-03 补）：入库面路径不得被 git 引号转义。
+            #   症状：`core.quotepath=true` 时中文路径变成 "a/\345\205\250.md"，
+            #   os.path.isfile 恒 False → 该文件**静默漏扫**。实测 8 份中文名
+            #   文档入库后扫描面纹丝不动（206）、守卫照样全绿 = 假绿。
+            #   ⚠️ 别用「路径里有非 ASCII 字符」当判据 —— 转义后全是 ASCII，
+            #   那条件恒不成立（第一版自检就是这么失效的，自测时抓到）。
+            _quoted = [p for p in _LAST_TRACKED_PATHS if p.startswith('"')]
+            check(not _quoted,
+                  "入库面路径被引号转义（core.quotepath 未关）→ 会使 %d 个文件静默漏扫：%s"
+                  % (len(_quoted), "；".join(_quoted[:3])))
+            # ★ 定点自检（兜底）：扫描面不得明显小于入库面的非二进制规模。
+            _nonbin = [p for p in _LAST_TRACKED_PATHS if not p.endswith(_BINARY_EXT)]
+            check(len(_files) >= len(_nonbin) - 2,
+                  "扫描面 %d 远小于入库面非二进制 %d —— 有路径未解析（中文名被漏扫？）"
+                  % (len(_files), len(_nonbin)))
             _corpus = {}
             for _f in _files:
                 try:
