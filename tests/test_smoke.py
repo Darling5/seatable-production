@@ -93,6 +93,113 @@ def _tracked_text_files():
     return res
 
 
+def _covered_spans(text, wraps):
+    """返回 text 中被 wraps 任一字符串覆盖的字符区间（已合并去重叠）。
+
+    `wraps` = 该 needle 的「包裹片段」列表，来自 config.yaml::entities.fp_context。
+    用途：中文没有词边界（空格）可依，2 字 needle 会撞上更长词组的**内部**。
+    登记包裹片段 = 显式声明「这个更长词组是通用词，其中的 needle 出现属于偶然重叠」。
+    （机制说明一律用中性词举例，**不写真名** —— 注释也在扫描面内。）
+    """
+    spans = []
+    for _w in (wraps or []):
+        _w = str(_w)
+        if not _w:
+            continue
+        _i = text.find(_w)
+        while _i >= 0:
+            spans.append((_i, _i + len(_w)))
+            _i = text.find(_w, _i + 1)
+    if not spans:
+        return []
+    spans.sort()
+    merged = [list(spans[0])]
+    for _a, _b in spans[1:]:
+        if _a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], _b)
+        else:
+            merged.append([_a, _b])
+    return [(a, b) for a, b in merged]
+
+
+def _needle_hits(text, needle, wraps=None):
+    """返回 needle 在 text 中**未被登记片段包裹**的出现位置列表。
+
+    逐次出现判定，不是「此 needle 整体放行」。以中性词举例（needle=「联动」，
+    包裹片段=「联动控制」，两者结构同形于真实场景）：
+      「联动控制」里 → 被包裹 → 豁免；
+      「联动那边确认了交期」里 → 未被包裹 → **仍然报红**。
+    这个区别是防止 fp_context 变成「整条 needle 白名单」的关键。
+    """
+    spans = _covered_spans(text, wraps)
+    out, _i, _n = [], text.find(needle), len(needle)
+    while _i >= 0:
+        if not any(_a <= _i and _i + _n <= _b for _a, _b in spans):
+            out.append(_i)
+        _i = text.find(needle, _i + 1)
+    return out
+
+
+def _extract_needles(entities):
+    """从 config.yaml::entities 抽出真值表 needle 与 fp_context。返回 (needles, fpctx)。
+
+    规则（与历史实现一致，勿改阈值）：
+      · 递归走 **dict 的 keys 与 values**、list 的元素；
+      · 跳过顶层 `generic_ok`（通用描述词白名单）与 `fp_context`；
+      · 长度 >= 2 才收录；
+      · 白名单项、以 ①②③ 开头的「排除理由」文案不收录。
+
+    ★ 阈值是 `>= 2`，**实测不可提到 >= 3**（见第 #141 号任务，值在 config.yaml）：
+      86 条 needle 中 26 条是 2 字，其中 18 条是更长真名的**实际简称**、
+      8 条是独立简称（无更长形式兜底）。
+      提到 >= 3 会让「⟨2字简称⟩那边确认了交期」这类**真实业务简称句 8/8 漏扫**。
+      假阳性的根因是中文无词边界，不是长度 → 用 fp_context 逐次豁免解决。
+    """
+    _ok = set((entities or {}).get("generic_ok") or [])
+    _fpctx = (entities or {}).get("fp_context") or {}
+    needles = set()
+    stack = [v for k, v in (entities or {}).items()
+             if k not in ("generic_ok", "fp_context")]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, dict):
+            stack.extend(x.keys())
+            stack.extend(x.values())
+        elif isinstance(x, list):
+            stack.extend(x)
+        else:
+            s = str(x).strip()
+            if len(s) >= 2 and s not in _ok and s[0] not in "①②③":
+                needles.add(s)
+    return needles, _fpctx
+
+
+def _validate_fp_context(fpctx, needles):
+    """校验 fp_context 配置本身是否合法。返回问题列表（空 = 合法）。
+
+    这是 fp_context 机制**唯一的后门面**，必须逐条挡住「用配置改写判据」：
+      ① 包裹片段必须**严格更长** —— 否则 `联动: [联动]` 等于整条放行；
+      ② 包裹片段必须**含该 needle** —— 否则是永不生效的死配置（伪装成已处置）；
+      ③ 包裹片段不得为空列表 —— 同上，等于整条放行；
+      ④ needle 必须真在真值表里 —— 否则是在豁免一个不存在的东西。
+    """
+    bad = []
+    for _n, _ws in sorted((fpctx or {}).items()):
+        if _n not in needles:
+            bad.append("%s（不在真值表里）" % _n)
+            continue
+        if not _ws:
+            bad.append("%s（包裹片段为空 = 整条放行）" % _n)
+            continue
+        for _w in _ws:
+            _w = str(_w)
+            if len(_w) <= len(_n):
+                bad.append("%s ← %s（未严格更长 → 等于全放行）" % (_n, _w))
+            elif _n not in _w:
+                bad.append("%s ← %s（不含该 needle → 死配置）" % (_n, _w))
+    return bad
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="cockpit_test_")
     data = os.path.join(tmp, "data")
@@ -320,29 +427,53 @@ def main():
                             or {}).get("entities") or {}
                 except Exception as _e:
                     print("       config.yaml 解析失败，跳过：%s" % _e)
-                _ok = set(_ent.get("generic_ok") or [])
-                _needles = set()
-                _stack = [_v for _k, _v in _ent.items() if _k != "generic_ok"]
-                while _stack:
-                    _x = _stack.pop()
-                    if isinstance(_x, dict):
-                        _stack.extend(_x.keys())
-                        _stack.extend(_x.values())
-                    elif isinstance(_x, list):
-                        _stack.extend(_x)
-                    else:
-                        _s = str(_x).strip()
-                        # generic_ok 是「通用描述词」白名单：允许出现在文档里
-                        if len(_s) >= 2 and _s not in _ok and _s[0] not in "①②③":
-                            _needles.add(_s)
+                # ── fp_context（2026-10-03 硬化，计划 §14.6 第 6 项 / 任务 #141）──
+                # 原方案「CJK needle 长度 ≥3」已实测推翻：86 条 needle 里 26 条是 2 字，
+                # 其中 18 条是更长真名的**实际简称**、8 条是无更长形式兜底的独立简称。
+                # 实测 length≥3 会使「⟨2字简称⟩那边确认了交期」等
+                # **真实业务简称句 8/8 全部漏扫** → 真名可直接推上 PUBLIC。
+                # 而假阳性的根因不是长度，是**中文无词边界**：
+                # 实测 12 句正常技术中文里 8 句误报（2 字 needle 撞上更长通用词组的内部）。
+                # 故改为：**一条 needle 都不删**，只对「被登记片段包裹」的出现放行。
+                # 提取逻辑见 `_extract_needles`（已抽成函数以便单测）。
+                _needles, _FPCTX = _extract_needles(_ent)
                 if _ent:
                     check(len(_needles) >= 20,
                           "真值表只解析出 %d 条 needle，entities 结构可能已变" % len(_needles))
-                    _hit = sorted(_rel for _rel, _t in _corpus.items()
-                                  if any(_n in _t for _n in _needles))
-                    check(not _hit, "被跟踪文件里出现真实主体名：%s" % "；".join(_hit[:5]))
-                    print("       真值表 %d 条 × %d 文件 → %d 命中"
-                          % (len(_needles), len(_corpus), len(_hit)))
+
+                    # ★ 定点自检：fp_context 不得被用来改写判据本身。
+                    #   逐条规则见 `_validate_fp_context` 的 docstring；
+                    #   单独成函数是为了能被 tests/test_desense_guard.py 直接测。
+                    _badfp = _validate_fp_context(_FPCTX, _needles)
+                    check(not _badfp, "fp_context 可被用来绕过守卫：%s" % "；".join(_badfp[:4]))
+
+                    _hits, _exc, _exc_n = [], 0, set()
+                    for _rel in sorted(_corpus):
+                        _t = _corpus[_rel]
+                        for _n in sorted(_needles):
+                            if _n not in _t:
+                                continue
+                            _w = _FPCTX.get(_n)
+                            _pos = _needle_hits(_t, _n, _w)
+                            if _w:
+                                _tot = _t.count(_n)
+                                if len(_pos) < _tot:
+                                    _exc += _tot - len(_pos)
+                                    _exc_n.add(_n)
+                            # ★ FAIL 消息带「文件:行」+ 上下文窗口：是真名还是
+                            #   「偶然撞词」，一眼可判，不必再人工反查是哪个词撞的。
+                            for _p in _pos[:2]:
+                                _ln = _t.count("\n", 0, _p) + 1
+                                _a, _b = max(0, _p - 12), min(len(_t), _p + len(_n) + 12)
+                                _hits.append("%s:%d 「%s」← …%s…"
+                                             % (_rel, _ln, _n,
+                                                _t[_a:_b].replace("\n", "⏎")))
+                    check(not _hits,
+                          "被跟踪文件里出现真实主体名：%s" % "；".join(_hits[:4]))
+                    print("       真值表 %d 条 × %d 文件 → %d 命中%s"
+                          % (len(_needles), len(_corpus), len(_hits),
+                             ("（fp_context 豁免 %d 处 / %d 条 needle）"
+                              % (_exc, len(_exc_n))) if _exc else ""))
 
             print("[10] 开局体检 doctor")
             f_empty = _doc.check_inventory({})
