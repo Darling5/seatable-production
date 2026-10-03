@@ -27,7 +27,7 @@ agent_created: true
 | 分类/库位列表 | `GET /categories?page=N`、`GET /storage_locations?page=N` |
 
 ## 本项目约定
-- **ipn** = `P` + 4 位零填充 part id（如 id=408 → `P0408`）。建料返回 id 后立即 PATCH 写入（用 merge-patch）。
+- **ipn** = `P` + 4 位零填充 part id（3 位 id 补零后形如 `P0xxx`，4 位 id 形如 `Pxxxx`）。建料返回 id 后立即 PATCH 写入（用 merge-patch）。
 - **PartLot.description = 盘点日期**，格式 `MDD`（9月2日 → `902`）或 `MMDD`（11月1日 → `1101`）。
   **有数字 = 已盘点可用；空 = 未确认，不可用于生产计划。**
 - 常用分类 id：成品=33，**半成品=38**（会变，运行时用 `/categories` 按名解析，勿硬编码）。
@@ -71,12 +71,12 @@ PY="C:/Users/11430/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
 2. `PATCH /part_lots/{lot_id} {amount: N}`，**必须 merge-patch+json**。
 3. 回读 `GET /parts/{id}` 校验 `total_instock`。
 - 数量跳变超过 3 倍时，执行前用一句话提示用户复核，别默默改。
-- 名称相近的物料（如 P0374 4G小卡PCB主板裸板 vs P0408 4G小卡BL-PCBA 半成品）必须先回读 lot 明细确认对象，改错代价高。
+- 名称相近的物料（如 `P0xxx` 4G小卡PCB主板裸板 vs `P0yyy` 4G小卡BL-PCBA 半成品）必须先回读 lot 明细确认对象，改错代价高。
 - 不要动其它 lot（如 0 @ 贴片厂的占位批次）。
 
 ## 新建项目 + 批量导入 BOM（用户丢 BOM Excel 说"建项目"）
 1. 读 Excel，按「ID」列（内部料号）、「数量」列（单套用量）、「位号」列（写 mountnames）解析；核对所有 IPN 在 PartDB 存在。
-2. 双 ID 行（如 `P0143/P0166`）必须列候选（ipn/名称/规格/库存）让用户选，默认可建议高库存者。
+2. 双 ID 行（如 `P0xxx/P0yyy`）必须列候选（ipn/名称/规格/库存）让用户选，默认可建议高库存者。
 3. 搜重项目（`GET /projects` 按 full_path），确认无同名后建：`POST /projects {name, parent, description, status}`。
 4. **BOM 写入端点是 `POST /project_bom_entries`**（不是 `/projects/{id}/bom`，那个是 GET 专用，POST 返 405）；
    body：`{"project":"/api/projects/{pid}", "part":"/api/parts/{id}", "quantity": N, "mountnames": "C4,C5"}`。
@@ -84,7 +84,7 @@ PY="C:/Users/11430/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
 - 常用父项目 id：小卡=2、小卡→4G=4、大卡→4G=17（运行时解析）。
 
 ## 易错点
-- 半成品/成品**不要**填 footprint、manufacturer、supplier——P0404 蓝牙信标PCBA主板（半成品样板）这些字段全空。
+- 半成品/成品**不要**填 footprint、manufacturer、supplier——`P0xxx` 蓝牙信标PCBA主板（半成品样板）这些字段全空。
 - 同一物料若已有 PartLot，新增批次直接 POST /part_lots 即可，不要去 PATCH 覆盖旧批次。
 - **orderdetail / pricedetail 里的 part、supplier、orderdetail 引用必须是完整 IRI 如 `/api/parts/409`，不能写 `/parts/409`（会报 Invalid IRI）。**
 - 电子元件新建才需要追问封装/厂商；半成品/成品不需要。

@@ -60,8 +60,8 @@ GET {PARTDB_URL}/parts?limit=100&page=N
 本项目 PartDB 新建料号的 `ipn` 字段统一规则：
 
 - **格式：`P` + PartDB `id` 零填充到 4 位。**
-- 例：PartDB `id=400` → `ipn=P0400`；`id=4` → `P0004`；`id=239` → `P0239`。
-- 与库内现有 `P0004` / `P0058` / `P0239` 等写法保持一致。
+- 例：3 位 id 补零后形如 `P0xxx`，4 位 id 形如 `Pxxxx`（如 `id=1000` → `P1000`）。
+- 与库内现有写法（`P0xxx` / `Pxxxx`）保持一致。
 - ⚠️ 不要写成裸数字（如 `400`）或 `P0`+短 id，必须用 `P` + 4 位零填充。
 - PATCH 设置 `ipn` 同样用 `application/merge-patch+json`。
 

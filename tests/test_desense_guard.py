@@ -295,23 +295,48 @@ class TestFormRules(unittest.TestCase):
     def test_泛化占位型号必须放行(self):
         self.assertEqual(self._scan("产品 ⟨型号A⟩ 与 ⟨型号B⟩"), [])
 
-    # ── 基线机制（既有公开数据）──────────────────────────────
+    # ── 基线机制 ─────────────────────────────────────────────
+    # ★ 用**合成规则**测基线机制，不依赖真值表里有没有真实值。
+    #   历史原因：这三条原先写死了真实部件号 —— 任务 #151 清空基线后，
+    #   它们自己就会被守卫报红（教训：测试文件同样在扫描面内）。
+    _PART_RX = re.compile(r"(?<![A-Za-z0-9])P0\d{3}(?![0-9])")
+    _PART_A = "P" + "0059"       # 运行时拼接：形态合规，但字面量不出现在源码里
+    _PART_B = "P" + "0408"
+
+    def _synth(self, baseline):
+        return [("部件号", self._PART_RX, baseline, "合成规则（仅供单测）")]
+
     def test_已登记基线放行(self):
-        self.assertEqual(self._scan("部件号 P0059 无行情"), [])
+        rules = self._synth((self._PART_A,))
+        self.assertEqual(
+            _form_violations({"t.md": "部件号 %s 无行情" % self._PART_A}, rules), [])
 
     def test_未登记的同类必须报红(self):
         """★ 本机制的核心：放行**逐项**登记，不是按形态整类放行。"""
-        fake = "P" + "0999"
-        hits = self._scan("部件号 %s 无行情" % fake)
+        rules = self._synth((self._PART_A,))      # 只登记了 A
+        hits = _form_violations({"t.md": "部件号 %s 无行情" % self._PART_B}, rules)
         self.assertEqual(len(hits), 1, "基线退化为整类放行了：%r" % hits)
         self.assertIn("部件号", hits[0])
 
     def test_基线失效项被识别(self):
         """登记了但语料里已不存在的项 → 应被报为「失效」（告警，不报红）。"""
-        used, stale = _baseline_report({"t.md": "只有 P0059 在这里"})
-        self.assertIn("部件号:P0059", used)
-        self.assertIn("部件号:P0408", stale)
-        self.assertIn("项目码:ZX01_ZD_V3.0", stale)
+        rules = self._synth((self._PART_A, self._PART_B))
+        used, stale = _baseline_report({"t.md": "只有 %s 在这里" % self._PART_A}, rules)
+        self.assertIn("部件号:%s" % self._PART_A, used)
+        self.assertIn("部件号:%s" % self._PART_B, stale)
+
+    def test_基线当前必须为空(self):
+        """★ 基线非空 = 仓库里已知存在**未清理**的真实数据。
+
+        现状（2026-10-03 任务 #151 清完之后）应为空。若确实需要重新登记，
+        请**连同本条说明一起改** —— 让「重新开一个白名单」必须是有意识的动作，
+        而不是顺手加一项。
+        """
+        for name, _rx, baseline, _hint in _FORM_RULES:
+            self.assertEqual(
+                tuple(baseline), (),
+                "形态型规则「%s」登记了基线 %r —— 意味着仓库里有未清理的真实数据"
+                % (name, baseline))
 
     # ── 规则清单本身 ──────────────────────────────────────────
     def test_四类规则一条都不能少(self):

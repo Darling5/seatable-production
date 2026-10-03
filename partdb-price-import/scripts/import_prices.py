@@ -553,7 +553,7 @@ def analyze(pdf_paths, db, supplier_name="之安传感"):
                        "NEW_ORDER": "新建之安传感采购记录"}[act]
         items.append(rec)
 
-    # 去重：同一 (part_id, action, price) 的多条记录合并为一条（如 ETA5055 在不同合同写法不同但都指向 P0058）
+    # 去重：同一 (part_id, action, price) 的多条记录合并为一条（同一料号在不同合同里型号写法不同，但都指向同一 part）
     dedup = {}
     for it in items:
         if it["action"] in ("NEW_PART", "CONFLICT") or it["part_id"] is None:

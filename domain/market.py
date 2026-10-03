@@ -236,7 +236,7 @@ def _extract_from_purchase_tables():
 
 def _default_enabled(model, price):
     """有采购价 + 型号干净 → 默认启用；其余进清单但停用（可手动 enable）。
-    纯内部 IPN（P0059 这类）网上查不到行情，默认停用。"""
+    纯内部 IPN（形如 `P0xxx`）网上查不到行情，默认停用。"""
     if re.fullmatch(r"P\d{3,6}", model.strip()):
         return "0"
     return "1" if (price and _is_model_like(model)) else "0"
