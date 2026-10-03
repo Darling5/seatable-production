@@ -140,12 +140,34 @@ def _needle_hits(text, needle, wraps=None):
     return out
 
 
+# `entities` 里**不参与 needle 采集**的顶层键。
+#   · generic_ok      —— 通用描述词（品类词等），本来就不是主体名
+#   · fp_context      —— 逐次豁免配置（见 `_validate_fp_context`）
+#   · generalized_ok  —— ★ 2026-10-03 新增：**已确认的泛化短形**
+#                        某些真名当初被泛化成了「短形」，形态仍像主体名，
+#                        于是每次审计都会被重新质疑一遍。单开一键显式登记，
+#                        并由守卫输出**逐项打印**（本仓库规矩：放宽必须可见）。
+#                        ⚠️ 别把它当第二个 generic_ok 随手加东西 ——
+#                        加进去等于声明「这个字符串以后永不作为 needle」。
+_NEEDLE_SKIP_KEYS = ("generic_ok", "fp_context", "generalized_ok")
+
+
+def _generalized_ok(entities):
+    """已确认的「泛化短形」白名单（显式登记，不入 needle、不报红）。
+
+    ★ 为什么不塞进 `generic_ok`：语义不同（那是通用描述词），而且混在一起
+    会让**放宽变得不可见**。这里由调用方（守卫输出）逐项打印。
+    """
+    return [str(x) for x in ((entities or {}).get("generalized_ok") or [])]
+
+
 def _extract_needles(entities):
     """从 config.yaml::entities 抽出真值表 needle 与 fp_context。返回 (needles, fpctx)。
 
     规则（与历史实现一致，勿改阈值）：
       · 递归走 **dict 的 keys 与 values**、list 的元素；
-      · 跳过顶层 `generic_ok`（通用描述词白名单）与 `fp_context`；
+      · 跳过 `_NEEDLE_SKIP_KEYS`（`generic_ok` 通用描述词白名单 /
+        `fp_context` / `generalized_ok` 已确认的泛化短形）；
       · 长度 >= 2 才收录；
       · 白名单项、以 ①②③ 开头的「排除理由」文案不收录。
 
@@ -156,10 +178,11 @@ def _extract_needles(entities):
       假阳性的根因是中文无词边界，不是长度 → 用 fp_context 逐次豁免解决。
     """
     _ok = set((entities or {}).get("generic_ok") or [])
+    _ok |= set(_generalized_ok(entities))
     _fpctx = (entities or {}).get("fp_context") or {}
     needles = set()
     stack = [v for k, v in (entities or {}).items()
-             if k not in ("generic_ok", "fp_context")]
+             if k not in _NEEDLE_SKIP_KEYS]
     while stack:
         x = stack.pop()
         if isinstance(x, dict):
@@ -572,6 +595,12 @@ def main():
                           % (len(_needles), len(_corpus), len(_hits),
                              ("（fp_context 豁免 %d 处 / %d 条 needle）"
                               % (_exc, len(_exc_n))) if _exc else ""))
+                    # ★ 放宽必须可见：显式登记的泛化短形逐项打印出来，
+                    #   不让它变成一条无人复核的静默豁免。
+                    _gen = _generalized_ok(_ent)
+                    if _gen:
+                        print("       已确认泛化短形 %d 项（显式登记、不入 needle）：%s"
+                              % (len(_gen), "、".join(_gen)))
 
             print("[10] 开局体检 doctor")
             f_empty = _doc.check_inventory({})

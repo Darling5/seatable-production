@@ -67,6 +67,8 @@ _extract_needles = _SMOKE._extract_needles
 _needle_hits = _SMOKE._needle_hits
 _covered_spans = _SMOKE._covered_spans
 _validate_fp_context = _SMOKE._validate_fp_context
+_generalized_ok = _SMOKE._generalized_ok
+_NEEDLE_SKIP_KEYS = _SMOKE._NEEDLE_SKIP_KEYS
 # 形态型判据（2026-10-03 批次 1 新增）
 _FORM_RULES = _SMOKE._FORM_RULES
 _form_violations = _SMOKE._form_violations
@@ -128,6 +130,34 @@ class TestExtractNeedles(unittest.TestCase):
         needles, _ = _extract_needles(ent)
         for n in ("甲乙", "丙丁", "戊己"):
             self.assertIn(n, needles, "2 字主体名 %s 被过滤掉了" % n)
+
+    def test_泛化短形白名单不得被当_needle(self):
+        """★ `generalized_ok` 是**显式登记**的放宽项，不是第二个 generic_ok。
+
+        它必须同时满足两件事：
+          ① 不进 needle 集合 —— 否则仓库里那些已泛化的短形会被自己的守卫报红；
+          ② 仍能被 `_generalized_ok` 取出并打印 —— 放宽必须可见。
+
+        对照 `test_两字主体名必须被收录`：同样的词放在 `self_brand` 里就是 needle，
+        放进 `generalized_ok` 才是豁免 —— 差别只在**键**，所以键名必须语义清楚。
+        """
+        ent = {"generalized_ok": ["甲乙", "丙丁"],
+               "cust_alias": {"戊己": ["戊己"]}}
+        needles, _ = _extract_needles(ent)
+        for n in ("甲乙", "丙丁"):
+            self.assertNotIn(n, needles, "泛化短形 %s 被当成了 needle" % n)
+        self.assertIn("戊己", needles, "同表其它键仍应正常收录")
+        self.assertEqual(_generalized_ok(ent), ["甲乙", "丙丁"])
+        self.assertEqual(_generalized_ok({}), [], "无配置时必须返回空，而不是 None")
+
+    def test_跳过键清单不得被悄悄缩短(self):
+        """三把跳过键各自对应一类放宽，少一个就会出现「报红 / 看不见」的错向。
+
+        `generic_ok` / `fp_context` / `generalized_ok` 三者语义不同，
+        合并或删除都会让某类放宽变得隐式。
+        """
+        for k in ("generic_ok", "fp_context", "generalized_ok"):
+            self.assertIn(k, _NEEDLE_SKIP_KEYS, "跳过键 %s 不见了" % k)
 
 
 class TestNeedleHits(unittest.TestCase):
