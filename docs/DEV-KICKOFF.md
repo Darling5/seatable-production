@@ -406,6 +406,21 @@ grep -rnoE '\bG[0-9]{1,2}\b' --include=*.py .   # 期望：无输出
 > 排产**不重造**：工序/资源/日历/关键路径直接消费 `application/decision_support/`
 > （`PlanningSnapshot` / `resource_feasible`，按 `plan_id` 对接）。本阶段只做**排产之后**的实物执行。
 
+> ★ **本阶段表未列、但已顺延补做的两个不变量（2026-10-03 批次 2）**：
+> **`G24`（质量闸）/ `G25`（库存守恒）** —— 来源是
+> `docs/invariant-coverage.md` §D 的缺口排序（「`L_exec` 剩下的 `G24`/`G25`
+> 与到货验收链直接相邻，接续成本低于财务链」），**不是本文件的四阶段表**。
+> 这里如实记一笔，是为了避免后人把「批次 2 做了什么」误当成本文件的计划口径 ——
+> `merge-plan.md` E9 记录的「三套说法」正是这么来的。
+>
+> 实建落点 `application/exec_plane/`（`quality.py` / `inventory.py`），
+> 沿用本阶段已建的表与适配器；新增实体 `检验单` / `MRB处置` / `库存流水` / `库存结存快照`，
+> 新增 ID 前缀 `INS` / `MRB` / `IVT` / `IVS`（已同步登记进
+> `decision_support/alignment.py::KNOWN_PREFIXES`）。
+> **`G24` 的闸门挂「货物移动」而非 `GR`**（到货验收答「到了没有」，质检答「合不合格」）；
+> **`G25` 的结存必须来自外部快照**（由本层流水反推会退化成 `x = x`）。
+> 未做：外部质检报告导入、PartDB `total_instock` 的拉取适配器。
+
 ### 阶段二（向上）· O2C 财务链最小闭环
 
 | 要接的一段 | 新增实体 | 不变量 |

@@ -60,8 +60,8 @@
 | **G21** | BOM 结构：无环、版本内父件唯一、用量守恒、替代料显式受控 | `L_exec` | `application/exec_plane/bom.py::validate_bom` · `::check_structure` · `::find_cycles`（复用 `application/decision_support/graph.py::DependencyGraph`）· `::explode` · `application/exec_plane/schema.py::KIND_PREFIX`（`ITM`/`BOM`/`BLN`） | `tests/test_exec_plane.py::TestG21BomStructure`（14 例：逐步累加成环 / 自环 / 同父件同版本 / 同版本同子件 / 用量 ≤0 / 损耗率越界 / 替代组无主料·多主料·跨父件 / 行指向不存在 BOM / explode 数学与遇环中止） | 已闭 | —— **批次 1 已落地**（commit `e9ab364`）。四条性质全部落成可执行检查，每条都有「注入反例必须报红」用例。**剩余**：与外部 BOM 源（PLM/Excel）的导入校验未接 |
 | **G22** | 齐套开工：开工 ⟹ 齐套=100% ∨ 显式缺料放行授权 | `L_exec` | `application/exec_plane/work_order.py::check_release_precondition` · `::release` · `::override_verdict` · `::claimed_full_items` · `application/exec_plane/service.py::ExecPlane.release_work_order`（写前强制 `WO_TRANSITIONS`） | `tests/test_exec_plane.py::TestG22KittingRelease`（16 例：判定顺序 / 部分到货报 `partial_not_kitting` 且**与二期同字符串** / 授权 fail-closed 六种失效 / `claim=full` 定性通道 / 原因码逐条可达）· `tests/test_project_brain.py::TestActionLoop::test_partial_arrival_cannot_close_kitting` · `::test_shipped_is_not_arrived` | 已闭 | —— **批次 1 已落地**（commit `e9ab364`）。**补的正是缺的那半边**：`工单` 实体 + `release()` 前置；齐套口径与 `R_PARTIAL_NOT_KITTING` **直接复用二期**，未新立 |
 | **G23** | 付款前置：付款 ⟹ 存在到货验收记录 | `L_exec` | `application/exec_plane/procurement.py::check_payment_precondition` · `::check_payment_amount` · `::can_pay` · `application/exec_plane/service.py::ExecPlane.add_payment`（`enforce=True` 时写前强制） | `tests/test_exec_plane.py::TestG23PaymentPrecondition`（24 例：无 PO / PO 形态非法 / 无 GR / 已发货≠已到货 / 部分到货 / 未验收 / 拒收 / 已取消 / 超付 / **「判不了」第三态可见** / 原因码逐条可达）· `tests/test_project_brain.py::TestActionLoop::test_close_requires_acceptance_evidence` · `::test_close_succeeds_with_full_arrival_and_acceptance` | 已闭 | —— **批次 1 已落地**（commit `e9ab364`）。实现口径按**「存在覆盖该笔付款的有效到货验收记录」**（同 PO ∧ 齐套到货 ∧ 验收通过），是对命题的**收紧而非另立**。**剩余**：金额单调链属 `G17`（阶段二），本批只做**数量**覆盖且「判不了」显式可见 |
-| **G24** | 质量闸：OQC 不合格 ⟹ 不得入库、不得发货 | `L_exec` | **`OQC` 全仓 0 命中**（`质检` 仅见于 `project_brain/schema.py` 的字段名与驾驶舱展示） | 无 | 空白 | 新增 `检验单（IQC/IPQC/OQC）` + `MRB 处置` 实体；入库/发货路径加 `G24` 前置（复用 G10 fail-closed 范式） |
-| **G25** | 库存守恒：`Σ入库 − Σ出库 = 结存` | `L_exec` | **无**（`库存` 仅由 `adapters/partdb.py` **只读**外部 PartDB；`守恒`/`结存` 全仓 0 命中） | 无 | 空白 | 新增 `库存流水（入库/出库）` 实体 + 守恒校验器 + 与 PartDB 快照的对账报告（差异可见、挂原因码） |
+| **G24** | 质量闸：OQC 不合格 ⟹ 不得入库、不得发货 | `L_exec` | `application/exec_plane/quality.py::check_gate` · `application/exec_plane/quality.py::check_inbound` · `application/exec_plane/quality.py::check_outbound` · `::source_types` · `::inspections_of` · `application/exec_plane/service.py::ExecPlane.add_inspection` · `application/exec_plane/service.py::ExecPlane.add_mrb` · `application/exec_plane/service.py::ExecPlane.add_inventory_txn` · `application/exec_plane/schema.py::GATE_SOURCE_TYPES` | `tests/test_exec_plane_quality.py`（57 例：方向↔检验类型唯一对应 / **IPQC 两个方向都不作数** / 9 个原因码逐个可达且无死码 / 「判不了」两条路处置不同 / 旧合格新不合格必须拒绝 / 同刻多条记录结论可复现 / `ref_id` 收窄不得张冠李戴（含「没挂批次仍作数」） / 入库无 IQC 拒绝且**零写入** / 出货只认 OQC 不认 IQC / 返工裁定出不了货 / 让步接收可出货 / 「判不了」随写入结果带出 / 到货验收**不**受质检闸影响） | 已闭 | —— **批次 2 已落地**。三处口径由本批定：①**闸门挂「货物移动」而非 `GR`** —— `G24` 约束的是「不得入库 / 不得发货」这个动作，而到货验收（`G23`）答的是「东西到了没有」，两者合并会让「验收通过」被读成「质量合格」，那正是本不变量要堵的洞；②**方向 → 检验类型只由 `GATE_SOURCE_TYPES` 一处表达**（`in→IQC` / `out→OQC`，`IPQC` 两个方向都不作数）；③**「判不了」不一律拒绝** —— 主判据判不了（没给物品 / 结论取值不在词表）⇒ 拒绝（fail-closed）；附加判据判不了（合格但抽检数没填）⇒ **放行但标注**。理由不是「宽松一点好」：`G24` 只禁止「不合格」时放行，拿「没填抽检数」拒绝实现的是**比命题更严的规则**，而它的坏下场是人随手填个 `1` 把门推开 —— 等于亲手制造假数据；且出货检验本就是**抽检**，「抽检 5 件放行 1000 件」是标准做法，抽检数证明不了覆盖面，就不该当门禁。**剩余**：外部质检报告（PDF/Excel）的导入未接；`IPQC` 已可登记但刻意不参与任何闸门 |
+| **G25** | 库存守恒：`Σ入库 − Σ出库 = 结存` | `L_exec` | `application/exec_plane/inventory.py::aggregate_txns` · `application/exec_plane/inventory.py::check_balance` · `application/exec_plane/service.py::ExecPlane.add_inventory_txn` · `application/exec_plane/service.py::ExecPlane.add_inventory_snapshot` · `application/exec_plane/service.py::ExecPlane.inventory_balance` · `application/exec_plane/schema.py::TXN_DIRECTIONS` | `tests/test_exec_plane_inventory.py`（48 例：**求和算不全必须先判不了**（方向不认识 / 数量没填，且报**原始行**而不是计数） / `0` 是有效数量不是缺数量 / 容差必须收紧（`1e-3` 差异必须报红） / `0.1+0.2` 式浮点误差不算差异 / 无快照不得报守恒 / 「快照缺该物料」≠「整份快照都没有」 / 「快照有、流水没有」是**账实不符**不是判不了 / 确凿差异优先但两档**同时**可见 / 同一物料多条快照取最新 / 快照口径在入口归一） | 已闭 | —— **批次 2 已落地**。三个关键设计：①**结存必须来自外部快照**（`库存结存快照` 表 = PartDB `total_instock` 的本地镜像）—— 若由本层流水反推，`G25` 退化成 `x = x`，一条**永远通过**的不变量（比没有更糟）；②**左边算不全就不许出结论** —— 方向不认识或数量没填时报「判不了」，而不是拿一个**残缺的 `Σ`** 去比出一个看着挺具体、其实毫无意义的差异数；③**原因码按「下一步动作」划分**（比 `G24` 更明确的一条规则）：「快照缺行」与「快照结存为空」下一步都是「去补结存」故**共用一码**，而「缺方向」与「缺数量」要改的不是同一个字段故**分设两码**。**剩余**：与 PartDB 真实 `total_instock` 的**拉取**适配器未接（`add_inventory_snapshot` 入口已把 `total_instock` 归一到 `qty_on_hand`），故当前对账基准需由同步脚本灌入 |
 | **G26** | 指令-回执：下行指令无 `Ack` ⟹ 视为未执行，上层不得据此推进 | 接缝 | **全仓 0 命中**（`Ack` 仅命中 `.venv` 第三方包内 `Ack` 字样） | 无 | 空白 | 定义 `Command/Ack` 契约 + 超时未回执的上抛策略；可复用 `application/runner.py` 的步骤级 fail-closed 语义 |
 | **G27** | 三账可对账：项目账/执行账/财务账 差异可见且挂原因码，不得静默 | 接缝 | **无三账**（`三账` 0 命中）。可复用件：`application/project_brain/context.py::G_UNRESOLVED_CONFLICT` · `application/project_brain/memory.py::find_conflicts` | `tests/test_project_brain.py::TestQueryAndContract::test_conflict_from_sample` | 空白 | 新增「财务账」实体（G16/G17 的前置）并定义三账对齐报告；**冲突可见 + 原因码机制已具备，直接复用** |
 | **G28** | 成本可归集：任一成本条目可追溯到 项目 / 工单 / 采购单 | 接缝 | **无真实成本**。`application/decision_support/scenarios.py::_estimate_cost` 是**合成假设**（`::_SYNTHETIC_COST_NOTE` 明示「不是真实报价」） | `tests/test_decision_support.py::ScenarioCompareTest::test_delta_cost_is_marked_synthetic`（**反向用例**：证明它标了「合成」） | 空白 | 新增 `成本条目` 实体（`project_id` + 工单号 + 采购单号 三选一必填外键）；工单/采购单实体依赖 G21/G22/G23 |
@@ -73,19 +73,21 @@
 ## C. 汇总
 
 > ★ **2026-10-03 批次 1 订正**（commit `e9ab364`）：`G21` 空白→已闭、
-> `G22`/`G23`/`G29` 半闭→已闭。下表的**占比按最大余数法取整**（合计 100%）。
+> `G22`/`G23`/`G29` 半闭→已闭。
+> ★ **2026-10-03 批次 2 订正**：`G24` 空白→已闭、`G25` 空白→已闭。
+> 下表的**占比按最大余数法取整**（合计 100%）。
 
 | 状态 | 数量 | 占比 |
 |---|---|---|
-| 已闭 | 19 | 61% |
-| 半闭 | 2 | 7% |
-| 空白 | 10 | 32% |
+| 已闭 | 21 | 68% |
+| 半闭 | 2 | 6% |
+| 空白 | 8 | 26% |
 | **合计** | **31** | 100% |
 
 > `L_proj`（A 段 14 条）：已闭 **14** / 半闭 0 / 空白 0 —— **控制平面完全闭合**
 > （`G12` 的常量残留已在本批一并移除）。
-> `L_gov` + `L_exec` + 接缝（B 段 17 条）：已闭 **5** / 半闭 2 / 空白 10
-> —— **执行平面已开工**（批次 1 闭掉 `G21`/`G22`/`G23`/`G29`），
+> `L_gov` + `L_exec` + 接缝（B 段 17 条）：已闭 **7** / 半闭 2 / 空白 8
+> —— **执行平面已开工**（批次 1 闭掉 `G21`/`G22`/`G23`/`G29`，批次 2 闭掉 `G24`/`G25`），
 > 财务链（`G14`–`G17`、`G27`）仍全空。
 
 **验收清单**（对应 `DEV-KICKOFF.md` §6.4）：
@@ -93,10 +95,11 @@
 - [x] 至少 5 条能点名到**现成测试用例** —— 实测 **31 条全部**点名到 `file::case`
       （其中 `G1`–`G13`+`G31` 均有专门用例；
       `G18`/`G19`/`G28`/`G30` 亦有；`G21`/`G22`/`G23`/`G29` 已于批次 1 补齐专门用例）
-- [x] 所有「空白」项都写出**具体缺口动作**（现 10 条，均含要新增的实体名与校验挂载点）
+- [x] 所有「空白」项都写出**具体缺口动作**（现 8 条，均含要新增的实体名与校验挂载点）
 - [x] §4 编号冲突已处置完毕（commit `4926fcf`；`.py` 中裸 `G<数字>` 残留为 0）
-- [x] **引用可核对**：本文件 **73 处** `file::symbol` / `file::case` 引用
+- [x] **引用可核对**：本文件 **87 处** `file::symbol` / `file::case` 引用
       已逐条回验 —— 文件全部存在、符号全部在文件中真实出现（**0 处虚构**）
+      （批次 2 由 73 处增至 87 处：`G24`/`G25` 两行新增 14 条）
 - [x] **★ 2026-10-03 批次 1：这条回验已升级为自动守卫**
       （`tests/test_doc_refs.py`）—— 全仓库 `docs/**/*.md` 的每一条
       `` `path::symbol` `` 都必须在 CI 里可核对，且**裸文件名（同名文件不唯一）
@@ -114,28 +117,41 @@
 
 ## D. Step 0 阶段判定（填完后写结论）
 
-- **最大缺口**（★ 2026-10-03 批次 1 后重估）：**`L_exec` 不再空白
-  —— 11 条里 3 条已闭（`G21`/`G22`/`G23`），`L_exec` 实体层已建**
+- **最大缺口**（★ 2026-10-03 批次 2 后重估）：**`L_exec` 已收口
+  —— 11 条里 5 条已闭（`G21`/`G22`/`G23`/`G24`/`G25`），只剩 `G28` 一条空白**
   （`application/exec_plane/`：`Item` / `BOM版本` / `BOM行` / `请购单` / `到货验收记录` /
-  `付款单` / `工单` 共 7 类实体）。
-  现在**最大的缺口转移到 `L_gov` 的财务链**：`G16`（收入确认）/ `G17`（金额单调链）/
+  `付款单` / `工单` / `检验单` / `MRB处置` / `库存流水` / `库存结存快照` 共 11 类实体）。
+  ⇒ **缺口整体转移到 `L_gov` 的财务链**：`G16`（收入确认）/ `G17`（金额单调链）/
   `G27`（三账对账）仍全空，`G14`/`G15`/`G20` 亦空 —— 「收入 / 回款 / 预算 / 三账」
-  无处落地。第二个缺口是 `L_exec` 剩下的 `G24`（质量闸）/ `G25`（库存守恒）——
-  它们与已有的到货验收链**直接相邻**，`GR` 实体已就位，接续成本低于财务链。
-  值得注意的是：**阻碍它们的仍然不是能力，而是实体**——`evidence_ledger`（到货/验收判定）、
-  `graph.py`（成环检测）、`resources.py`（产能冲突）、`G_UNRESOLVED_CONFLICT`（冲突可见）
+  无处落地。
+  ★ 批次 2 给「阻碍它们的不是能力，而是实体」这条判断又加了一个旁证：
+  `G24`/`G25` 的判据本身都只有几十行，真正花时间的是
+  **实体要与既有注册表对齐**（本批先做「接口对表」，当场查出
+  `route`/`action`/ID 前缀三处必须取既有值，并**先跑测试看它报红再补登记**）
+  以及**给每条判定结论定义「判不了」的处置**。前者是接头问题，后者是口径问题 ——
+  两者都不是「判据不会写」。
+  值得注意的是：`evidence_ledger`（到货/验收判定）、`graph.py`（成环检测）、
+  `resources.py`（产能冲突）、`G_UNRESOLVED_CONFLICT`（冲突可见）
   这些**部件都已写好**，缺的是把它们挂上去的**业务实体**。
-  批次 1 的实测又给这条判断加了一个旁证：真正卡住进度的从来不是判据不会写，
-  而是**实体与注册表之间的接头**（本批就撞到 3 处「自造枚举值导致写入静默失效」）。
 - **阶段一（向下·制造执行）优先补的不变量**：`G21` `G22` `G23`
   —— ✅ **已于批次 1（commit `e9ab364`）全部闭合**。
   与 `DEV-KICKOFF.md` §7 阶段一的表格**逐字一致**（该处「不变量」列写的正是这三个）。
+- **阶段一（续）·质量与库存**：`G24` `G25`
+  —— ✅ **已于批次 2 全部闭合**（本批）。
+  ⚠️ **归属要说清（否则又是 E9 那类「三套说法」）**：`DEV-KICKOFF.md` §7 的四阶段
+  **从未列出 `G24`/`G25`**（阶段一只写 `G21 G22 G23`，阶段二 `G16 G17`，
+  阶段三 `G14 G15 G18 G28`，阶段四 `G19 G20 G26 G27 G29 G30`）。
+  本批做这两个的依据是**本文件 §D 的缺口排序**（「`L_exec` 剩下的 `G24`/`G25`
+  与到货验收链直接相邻，接续成本低于财务链」），不是 `DEV-KICKOFF` 的阶段表。
+  故它们是**阶段一的顺延补做**，不是阶段一原定范围；`DEV-KICKOFF.md` §7 已就地加注。
+  实测结果支持这个排序：未新造任何枚举值，只需登记 4 个 ID 前缀与 4 张本地表。
   ⚠️ **`G28` 不在阶段一**：`DEV-KICKOFF.md` §7 把它归**阶段三（成本归集 + 组合与产能）**。
   本节初稿曾写「`G21 G22 G23` + `G28`」并声称「与 DEV-KICKOFF 一致」—— **那是错的**：
   当时是把 `domain-model.md` §8 的口径误当成了 `DEV-KICKOFF` 的口径，正是 `merge-plan.md`
   E9 记录的「三套说法」本身。现已按 `DEV-KICKOFF` §7 收敛（该文档同步加注）。
 - **执行序全景（以 `DEV-KICKOFF.md` §7 为唯一准绳）**：
-  阶段一 `G21 G22 G23`（✅ 已闭）· 阶段二 `G16 G17` · 阶段三 `G14 G15 G18 G28` ·
+  阶段一 `G21 G22 G23`（✅ 已闭；批次 2 顺延补做 `G24`/`G25` —— **不在本表原范围**，
+  见上一段）· 阶段二 `G16 G17` · 阶段三 `G14 G15 G18 G28` ·
   阶段四 `G19 G20 G26 G27 G29 G30`（其中 `G29` 已随批次 1 提前闭合 —— 它是阶段一的**前置**：
   `L_exec` 引用跨层 ID 之前必须先让 ID 形态合法）。
 - **第一个垂直切片（已执行完毕）**：`G23` 付款前置 ——
