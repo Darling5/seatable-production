@@ -200,6 +200,91 @@ def _validate_fp_context(fpctx, needles):
     return bad
 
 
+# ── 形态型去敏判据（2026-10-03 批次 1 新增）────────────────────────────────
+# 真值表那 86 条 needle 全是**字面量型**（具体公司名 / 人名 / 别名），
+# 对「形态型」真实数据完全失明。实测证据（本批次真实踩到）：
+#
+#   新增 `structure-redesign/` 两份文档含
+#     · 一整行真实发货记录（产品型号 + 数量 + 真实顺丰运单号）
+#     · 7 个真实产品型号
+#   而去敏守卫**一路全绿**（真值表 86 条 × 225 文件 → 0 命中）。
+#   ⇒ 「守卫通过」不等于「没有真实数据」—— 两者覆盖的根本不是同一类东西。
+#
+# 设计：字面量型与形态型**并存**，各自独立报红，FAIL 消息标明属哪一种。
+#
+#   · `()`  = **零容忍**：任何命中都报红。
+#   · 非空集合 = 「已登记的既有命中」。这类是**本批次之前就已推上 PUBLIC** 的
+#     数据（PartDB 部件号 / PCB 型号版本码），不属本批次修复范围；登记在此
+#     是为了**让放行可见、可复核**，而**不是**静默跳过 —— 新增的照样报红。
+#
+# 刻意**不含**「长数字串」这条规则：实测语料里有 15 处 ≥12 位独立数字
+# （epoch 毫秒时间戳 + SQLite 字节串），信噪比太差，加了它只会被当噪音忽略。
+_FORM_RULES = (
+    ("快递单号", re.compile(r"\b(?:SF|JD|YT|ZT|YD|EMS)\d{10,}\b"),
+     (),
+     "真实运单号；占位请用 `SF1234567890` 这类明显示例号"),
+    ("产品型号", re.compile(r"\bZD[A-Za-z0-9-][A-Za-z0-9_-]{1,40}\b"),
+     (),
+     "自家产品型号；泛化写作 `⟨型号A⟩`"),
+    ("项目码", re.compile(r"\bZX\d{2}[A-Za-z0-9_.-]*\b"),
+     ("ZX01_ZD_V3.0",),
+     "项目 / PCB 型号版本码；泛化写作 `⟨项目码⟩`"),
+    ("部件号", re.compile(r"(?<![A-Za-z0-9])P0\d{3}(?![0-9])"),
+     ("P0004", "P0058", "P0059", "P0143", "P0166",
+      "P0239", "P0374", "P0400", "P0404", "P0408"),
+     "PartDB 内部部件号"),
+)
+
+# 明显是「示例号」的数字段：全同位（`1111111111`）或顺序串（`1234567890`）。
+# 刻意做成**显式枚举**而不是启发式 —— 放行名单必须一眼可审计。
+_PLACEHOLDER_NUMS = ("1234567890", "123456789012", "0123456789")
+
+
+def _is_placeholder_num(digits):
+    """数字段是否明显是示例号（全同位 / 顺序串）。"""
+    return len(set(digits)) == 1 or digits in _PLACEHOLDER_NUMS
+
+
+def _form_violations(corpus, rules=None):
+    """扫「形态型」真实数据，返回问题串列表（空 = 干净）。
+
+    抽成函数是为了能被 `tests/test_desense_guard.py` 直接单测 ——
+    否则「规则到底会不会报红」只能靠不可重跑的端到端观察
+    （历史上「守卫假绿」正是这么来的）。
+    """
+    bad = []
+    for name, rx, baseline, _hint in (rules or _FORM_RULES):
+        for rel in sorted(corpus):
+            text = corpus[rel]
+            for m in sorted(set(rx.findall(text))):
+                if name == "快递单号" and _is_placeholder_num(m[2:]):
+                    continue
+                if m in baseline:
+                    continue
+                p = text.find(m)
+                ln = text.count("\n", 0, p) + 1
+                a, b = max(0, p - 12), min(len(text), p + len(m) + 12)
+                bad.append("[%s] %s:%d 「%s」← …%s…"
+                           % (name, rel, ln, m, text[a:b].replace("\n", "⏎")))
+    return bad
+
+
+def _baseline_report(corpus, rules=None):
+    """返回 (已用基线项, 失效基线项)。
+
+    ★ 失效项（登记了但语料里已不存在）只**告警不报红**：
+    它放行的是一个不存在的字符串 ⇒ 实际放宽为零，无安全影响，只是不整洁。
+    （真正危险的是反向 —— 基线没登记却命中的新数据，那由 `_form_violations` 报红。）
+    """
+    used, stale = [], []
+    for name, rx, baseline, _hint in (rules or _FORM_RULES):
+        blob = "\n".join(corpus.get(r, "") for r in sorted(corpus))
+        found = set(rx.findall(blob))
+        for b in baseline:
+            (used if b in found else stale).append("%s:%s" % (name, b))
+    return used, stale
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="cockpit_test_")
     data = os.path.join(tmp, "data")
@@ -413,6 +498,17 @@ def main():
                         continue
                     _bad.append("%s→%s" % (_rel, _m))
             check(not _bad, "出现未泛化企业名：%s" % "；".join(_bad[:5]))
+
+            # (2b) 形态型真实数据：运单号 / 产品型号 / 项目码 / 部件号
+            #      （2026-10-03 批次 1 补 —— 起因见 `_FORM_RULES` 上方注释：
+            #       真实发货行与 7 个真实型号曾完整通过字面量型守卫。）
+            _fbad = _form_violations(_corpus)
+            check(not _fbad, "出现形态型真实数据：%s" % "；".join(_fbad[:4]))
+            _fused, _fstale = _baseline_report(_corpus)
+            print("       形态型规则 %d 条 × %d 文件 → %d 命中（已登记既有 %d 项%s）"
+                  % (len(_FORM_RULES), len(_corpus), len(_fbad), len(_fused),
+                     ("；★ 失效基线 %s（已不存在，建议清掉）"
+                      % "、".join(_fstale)) if _fstale else ""))
 
             # (3) 真值表反向覆盖：config.yaml（已 gitignore）里的真实主体名
             #     一个都不该出现在被跟踪文件里。CI 上无此文件 → 自动跳过。

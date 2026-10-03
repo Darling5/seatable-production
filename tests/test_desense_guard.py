@@ -67,6 +67,11 @@ _extract_needles = _SMOKE._extract_needles
 _needle_hits = _SMOKE._needle_hits
 _covered_spans = _SMOKE._covered_spans
 _validate_fp_context = _SMOKE._validate_fp_context
+# 形态型判据（2026-10-03 批次 1 新增）
+_FORM_RULES = _SMOKE._FORM_RULES
+_form_violations = _SMOKE._form_violations
+_baseline_report = _SMOKE._baseline_report
+_is_placeholder_num = _SMOKE._is_placeholder_num
 
 # 中性举例词（避开了真值表所有 needle 的子串）
 W = "联动控制"      # 包裹片段
@@ -244,6 +249,101 @@ class TestValidateFpContext(unittest.TestCase):
                      {"甲乙": []}, {"甲乙": ["不相关"]}):
             self.assertTrue(_validate_fp_context(evil, self.NEEDLES),
                             "反绕过失效，这条配置被放行了：%r" % (evil,))
+
+
+class TestFormRules(unittest.TestCase):
+    """[D] 形态型判据（2026-10-03 批次 1）—— 每条都必须**真的会报红**。
+
+    ★ 反例一律**运行时拼接**，绝不写字面量：
+      本文件自己也在扫描面内，写死一个形态合规的号会被自己的规则报红
+      （「注释与测试文件同样在扫描面内」是本仓库已踩过的坑）。
+    """
+
+    def _scan(self, text):
+        return _form_violations({"t.md": text})
+
+    # ── 运单号 ────────────────────────────────────────────────
+    def test_真实形态运单号必须报红(self):
+        """形态合规且非占位 → 必须报红，否则规则等于没写。"""
+        fake = "SF" + "987" + "654" + "3210"
+        hits = self._scan("顺丰单号 %s 已发出" % fake)
+        self.assertEqual(len(hits), 1, "运单号规则失效：%r" % hits)
+        self.assertIn("快递单号", hits[0])
+
+    def test_占位运单号必须放行(self):
+        """占位号（顺序串 / 全同位）不得报红，否则守卫会被噪音淹没。"""
+        for digits in ("1234567890", "11111111111", "0000000000"):
+            self.assertEqual(self._scan("示例 %s" % ("SF" + digits)), [],
+                             "占位号被误报：%s" % digits)
+
+    def test_占位判定不得过宽(self):
+        """★ 放行名单必须窄 —— 否则规则可被「看起来像占位」的真号绕过。"""
+        for digits in ("0215960839395", "9876543210", "1234567891",
+                       "12345678901"):
+            self.assertFalse(_is_placeholder_num(digits),
+                             "非占位号被当占位放行了：%s" % digits)
+
+    # ── 产品型号 ──────────────────────────────────────────────
+    def test_真实形态型号必须报红(self):
+        for fake in ("ZD" + "-" + "ZTU1",
+                     "ZD" + "aiot" + "1",
+                     "ZD" + "-" + "XD1-UWB-RTK-BDS-BL-4G"):
+            hits = self._scan("产品 %s 已入库" % fake)
+            self.assertTrue(hits, "型号规则失效：%s" % fake)
+            self.assertIn("产品型号", hits[0])
+
+    def test_泛化占位型号必须放行(self):
+        self.assertEqual(self._scan("产品 ⟨型号A⟩ 与 ⟨型号B⟩"), [])
+
+    # ── 基线机制（既有公开数据）──────────────────────────────
+    def test_已登记基线放行(self):
+        self.assertEqual(self._scan("部件号 P0059 无行情"), [])
+
+    def test_未登记的同类必须报红(self):
+        """★ 本机制的核心：放行**逐项**登记，不是按形态整类放行。"""
+        fake = "P" + "0999"
+        hits = self._scan("部件号 %s 无行情" % fake)
+        self.assertEqual(len(hits), 1, "基线退化为整类放行了：%r" % hits)
+        self.assertIn("部件号", hits[0])
+
+    def test_基线失效项被识别(self):
+        """登记了但语料里已不存在的项 → 应被报为「失效」（告警，不报红）。"""
+        used, stale = _baseline_report({"t.md": "只有 P0059 在这里"})
+        self.assertIn("部件号:P0059", used)
+        self.assertIn("部件号:P0408", stale)
+        self.assertIn("项目码:ZX01_ZD_V3.0", stale)
+
+    # ── 规则清单本身 ──────────────────────────────────────────
+    def test_四类规则一条都不能少(self):
+        """★ 防「悄悄删掉一条规则」—— 删了就等于该类数据重新失明。"""
+        names = [r[0] for r in _FORM_RULES]
+        for want in ("快递单号", "产品型号", "项目码", "部件号"):
+            self.assertIn(want, names, "形态型规则「%s」被删掉了" % want)
+
+    def test_零容忍类不得被塞进基线(self):
+        """运单号 / 产品型号是零容忍类：基线必须为空。
+
+        一旦给它们开了基线 = 合法化「继续提交真实型号」——
+        那正是本机制要防的事。
+        """
+        for name, _rx, baseline, _hint in _FORM_RULES:
+            if name in ("快递单号", "产品型号"):
+                self.assertEqual(baseline, (),
+                                 "零容忍类「%s」被开了基线：%r" % (name, baseline))
+
+    def test_长数字串刻意不覆盖(self):
+        """把「不覆盖」固化成断言，防止后人误以为它已被守着。
+
+        实测语料有 15 处 ≥12 位独立数字（epoch 毫秒 + SQLite 字节串），
+        信噪比太差，故**刻意不建**该规则。这里声明该边界，避免误判。
+        """
+        self.assertEqual(self._scan("时间戳 1786757548346 是 epoch 毫秒"), [])
+        self.assertNotIn("长数字", [r[0] for r in _FORM_RULES])
+
+    def test_命中消息带文件与行号(self):
+        fake = "SF" + "987" + "654" + "3210"
+        hits = _form_violations({"a/b.md": "第一行\n第二行 %s" % fake})
+        self.assertIn("a/b.md:2", hits[0], "FAIL 消息缺少「文件:行」，无法定位：%r" % hits)
 
 
 if __name__ == "__main__":
