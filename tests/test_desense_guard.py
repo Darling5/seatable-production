@@ -373,7 +373,7 @@ class TestFormRules(unittest.TestCase):
         """
         for ok in ("http://127.0.0.1:8790/", "http://127.0.0.1/zentao",
                    "http://0.0.0.0:8000/", "http://192.168.1.10:8080/",
-                   "http://10.0.4.49/", "http://172.16.0.1/"):
+                   "http://10.11.12.13/", "http://172.16.0.1/"):
             self.assertEqual(self._scan("本地 %s" % ok), [],
                              "%s 被误报 —— 该规则会退化成噪音" % ok)
 
