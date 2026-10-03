@@ -26,6 +26,8 @@
     bom          `G21` BOM 结构：无环 / 版本内父件唯一 / 用量守恒 / 替代料显式受控
     procurement  `G23` 采购执行链：PR → PO → GR → 付款（付款 ⟹ 有到货验收记录）
     work_order   `G22` 齐套开工：开工 ⟹ 齐套 = 100% ∨ 显式缺料放行授权
+    quality      `G24` 质量闸：OQC 不合格 ⟹ 不得入库、不得发货（分方向：in→IQC / out→OQC）
+    inventory    `G25` 库存守恒：Σ入库 − Σ出库 = 结存（与外部快照对账）
     service      门面：唯一写入口，复用第一期授权闸门 + DataService
 
 ## 三条不许自己另立一套的东西（违反就是双口径漂移的起点）
@@ -43,7 +45,7 @@
 """
 from __future__ import annotations
 
-from . import bom, procurement, schema, work_order
+from . import bom, inventory, procurement, quality, schema, work_order
 from .service import (ExecPlane, R_DUPLICATE, R_ILLEGAL, R_NOT_FOUND,
                       R_PRECONDITION, R_REJECTED, R_STALE)
 from .store import ExecTableStore
@@ -52,5 +54,5 @@ __all__ = [
     "ExecPlane", "ExecTableStore",
     "R_PRECONDITION", "R_DUPLICATE", "R_STALE", "R_ILLEGAL", "R_NOT_FOUND",
     "R_REJECTED",
-    "bom", "procurement", "schema", "work_order",
+    "bom", "inventory", "procurement", "quality", "schema", "work_order",
 ]

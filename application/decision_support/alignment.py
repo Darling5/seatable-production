@@ -81,7 +81,17 @@ KNOWN_PREFIXES = ("PRJ", "PLN", "ACT", "EVD", "DEC", "MEM", "OBS", "FCT",
                   #     抓到它的是 `tests/test_exec_plane.py` 的并集一致性断言，
                   #     不是人记得同步。这正是覆盖矩阵里那句
                   #     「随 G14–G28 逐层建立，每层接入时补跨层 ID 一致性用例」的落地。
-                  "ITM", "BOM", "BLN", "PRQ", "GRN", "PAY", "WKO")
+                  "ITM", "BOM", "BLN", "PRQ", "GRN", "PAY", "WKO",
+                  # ↓ exec_plane 侧批次 2（G24 质量闸 / G25 库存守恒）
+                  #   ★ 这次是**先跑测试、看它报红、再补登记**：
+                  #     `test_前缀并集恒等于跨层登记表` 当场吐出
+                  #     「仅在业务层有：['INS','IVT','MRB']」；同文件的
+                  #     `test_本层新生成_ID_全部跨层合法` 同步报
+                  #     「inspection 生成 INS-20261003-0007 过不了跨层校验」。
+                  #     两个断言**各管一段**：前者管「表全不全」，
+                  #     后者管「真生成的 ID 能不能过」—— 只有前者会漏掉
+                  #     「表登记了但生成路径没走这张表」这类错位。
+                  "INS", "MRB", "IVT", "IVS")
 # 历史前缀（两字母）：与 `contracts.LEGACY_ID_PREFIX` 一一对应
 LEGACY_PREFIXES = ("MO", "PO", "AS")
 

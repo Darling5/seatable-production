@@ -57,6 +57,11 @@ KIND_PREFIX = {
     "goods_receipt": "GRN",            # 到货验收记录（GR）
     "payment": "PAY",                  # 付款单
     "work_order": "WKO",               # 工单（MO / WO）
+    # ── 批次 2（G24 质量闸 / G25 库存守恒）──
+    "inspection": "INS",               # 检验单（IQC / IPQC / OQC）
+    "mrb_disposition": "MRB",          # MRB 处置（材料审查委员会裁定）
+    "inventory_txn": "IVT",            # 库存流水（入库 / 出库逐笔）
+    "inventory_snapshot": "IVS",       # 库存结存快照（外部来源的镜像）
 }
 
 ID_RE = re.compile(r"^(?P<prefix>[A-Z]{3})-(?P<date>\d{8})-(?P<tail>[0-9A-Za-z]{4})$")
@@ -97,6 +102,15 @@ TB_PR = "请购单"
 TB_GR = "到货验收记录"
 TB_PAYMENT = "付款单"
 TB_WORK_ORDER = "工单"
+# ── 批次 2（G24 / G25）──
+TB_INSPECTION = "检验单"
+TB_MRB = "MRB处置"
+TB_INVENTORY_TXN = "库存流水"
+# 结存快照：**外部来源的本地镜像**（当前是 PartDB 的 `total_instock`）。
+# ★ 它是 G25 的**对账基准**，不是本层自己算出来的数 —— 若它由本层流水反推，
+#   那「Σ入库 − Σ出库 = 结存」就退化成恒等式，什么都验不出来。
+#   这正是 `G25` 与「自己跟自己比」的区别，也是这张表必须来自外部的理由。
+TB_INVENTORY_SNAPSHOT = "库存结存快照"
 
 TABLE_FILES = {
     TB_ITEM: "items.jsonl",
@@ -106,6 +120,10 @@ TABLE_FILES = {
     TB_GR: "goods_receipts.jsonl",
     TB_PAYMENT: "payments.jsonl",
     TB_WORK_ORDER: "work_orders.jsonl",
+    TB_INSPECTION: "inspections.jsonl",
+    TB_MRB: "mrb_dispositions.jsonl",
+    TB_INVENTORY_TXN: "inventory_txns.jsonl",
+    TB_INVENTORY_SNAPSHOT: "inventory_snapshots.jsonl",
 }
 TABLE_NAMES = tuple(TABLE_FILES)
 
@@ -235,9 +253,124 @@ WO_TRANSITIONS = {
     WO_CANCELLED: set(),
 }
 
+# ────────────────────────────────────────────────────────────────────
+# G24 质检词表（批次 2）
+#
+# `G24`：OQC 不合格 ⟹ 不得入库、不得发货。判据在 `quality.py`（纯函数），
+# 本段只定词表。
+#
+# ⚠️ 「检验类型」与「闸门方向」是**两件事**，不要合并成一个字段：
+#      · 类型（IQC/IPQC/OQC）答「这是哪一阶段的检验」；
+#      · 方向（inbound/outbound）答「这批货要走哪条路」。
+#    `GATE_SOURCE_TYPES` 才表达二者的对应关系。把 IPQC 也算进入库闸门，
+#    会让「过程检验合格」被当成「来料合格」—— 那正是 G24 要防的事。
+#
+# ⚠️ 检验单与 MRB 处置都是 **append-only**（没有状态迁移表）：
+#    重新检验 = 写一条新记录，MRB 改判 = 写一条新裁定。这样「当时凭什么放行」
+#    永远可回溯 —— 就地改状态会把证据改掉。
+# ────────────────────────────────────────────────────────────────────
+QC_IQC = "IQC"                     # 来料检验（incoming）
+QC_IPQC = "IPQC"                   # 过程检验（in-process）
+QC_OQC = "OQC"                     # 出货检验（outgoing）
+QC_TYPES = (QC_IQC, QC_IPQC, QC_OQC)
+QC_TYPE_CN = {QC_IQC: "来料检验", QC_IPQC: "过程检验", QC_OQC: "出货检验"}
+
+QC_PENDING = "pending"             # 待检
+QC_PASS = "pass"                   # 合格
+QC_FAIL = "fail"                   # 不合格
+QC_CONCESSION = "concession"       # 让步接收（检验环节自己判的）
+QC_VERDICTS = (QC_PENDING, QC_PASS, QC_FAIL, QC_CONCESSION)
+QC_VERDICT_CN = {QC_PENDING: "待检", QC_PASS: "合格",
+                 QC_FAIL: "不合格", QC_CONCESSION: "让步接收"}
+# 能直接放行下游的检验结论
+QC_RELEASING_VERDICTS = (QC_PASS, QC_CONCESSION)
+
+GATE_INBOUND = "inbound"           # 入库闸门
+GATE_OUTBOUND = "outbound"         # 出库 / 发货闸门
+GATE_DIRECTIONS = (GATE_INBOUND, GATE_OUTBOUND)
+GATE_DIRECTION_CN = {GATE_INBOUND: "入库", GATE_OUTBOUND: "出库/发货"}
+# 方向 → 哪种检验才作数（★ 唯一表达这层对应关系的地方）
+GATE_SOURCE_TYPES = {
+    GATE_INBOUND: (QC_IQC,),
+    GATE_OUTBOUND: (QC_OQC,),
+}
+
+MRB_RETURN = "return"
+MRB_REWORK = "rework"
+MRB_SCRAP = "scrap"
+MRB_CONCESSION = "concession"
+MRB_USE_AS_IS = "use_as_is"
+MRB_DECISIONS = (MRB_RETURN, MRB_REWORK, MRB_SCRAP, MRB_CONCESSION, MRB_USE_AS_IS)
+MRB_DECISION_CN = {
+    MRB_RETURN: "退货", MRB_REWORK: "返工", MRB_SCRAP: "报废",
+    MRB_CONCESSION: "让步接收", MRB_USE_AS_IS: "直接使用",
+}
+# ★ 只有这两条能放行下游：`rework` 必须**返工后重新检验**，
+#   拿它当放行依据等于「说好了要返工就直接用」—— 那是 G24 最典型的破口。
+MRB_RELEASING = (MRB_CONCESSION, MRB_USE_AS_IS)
+
+# G24 原因码 —— ★ 每一个都必须**真的会被返回**（逐个用例断言），
+# 否则就是死分支：「`__all__` 里有一个取不到的码」本身就是假指标。
+# 下面 9 个码与 `quality.check_gate` 的分支**一一对应**。
+# 注意「检验不合格」这条路**没有**单独的码：它必然落到
+# `R_MRB_MISSING` / `R_MRB_INVALID` / `R_MRB_NOT_RELEASING` 三者之一
+# （不合格之后的下一步动作才是调用方需要的答案），故不设汇总码。
+R_NO_INSPECTION = "no_inspection"
+R_INSPECTION_PENDING = "inspection_pending"
+R_INSPECTION_TYPE_MISMATCH = "inspection_type_not_applicable"
+R_COVERAGE_UNKNOWN = "inspection_coverage_unknown"
+R_VERDICT_INVALID = "inspection_verdict_invalid"
+R_MRB_MISSING = "mrb_disposition_missing"
+R_MRB_INVALID = "mrb_disposition_invalid"
+R_MRB_NOT_RELEASING = "mrb_disposition_not_releasing"
+R_TARGET_UNKNOWN = "inspection_target_unknown"
+G24_REASON_CN = {
+    R_NO_INSPECTION: "该方向要求的检验尚未登记",
+    R_INSPECTION_PENDING: "检验结论还是「待检」",
+    R_INSPECTION_TYPE_MISMATCH: "有检验记录，但检验类型与闸门方向不对应",
+    R_COVERAGE_UNKNOWN: "检验单没填检验数量，无法确认覆盖面",
+    R_VERDICT_INVALID: "检验结论取值不在词表内",
+    R_MRB_MISSING: "检验不合格，但没有 MRB 裁定",
+    R_MRB_INVALID: "MRB 裁定取值不在词表内",
+    R_MRB_NOT_RELEASING: "MRB 裁定不是放行类（退货/返工/报废）",
+    R_TARGET_UNKNOWN: "没给物品，无法定位检验对象",
+}
+
+# ────────────────────────────────────────────────────────────────────
+# G25 库存流水词表（批次 2）
+#
+# `G25`：`Σ入库 − Σ出库 = 结存`。判据在 `inventory.py`（纯函数）。
+# 「结存」来自**外部快照**（如 PartDB 的 `total_instock`）——
+# 没有快照时是**判不了**（第三态），必须显式可见，不得当成「守恒通过」。
+# ────────────────────────────────────────────────────────────────────
+TXN_IN = "in"                      # 入库
+TXN_OUT = "out"                    # 出库
+TXN_DIRECTIONS = (TXN_IN, TXN_OUT)
+TXN_DIRECTION_CN = {TXN_IN: "入库", TXN_OUT: "出库"}
+
+# ★ 与 G24 同一条纪律：每个码都必须在 `inventory.check_balance` 里
+#   **有且只有一条分支能把它取出来**，否则就是死分支（假指标）。
+R_NO_SNAPSHOT = "no_inventory_snapshot"
+R_UNKNOWN_DIRECTION = "unknown_txn_direction"
+# ⚠️ 「数量没填」与「方向不认识」是**两件事**，故分设两码。
+#    把缺数量折进 `R_UNKNOWN_DIRECTION` 会让返回的提示**说谎**
+#    （明明方向是对的，却说「方向不是 in/out」）—— 说谎的提示比多一个码更糟。
+#    二者都属「求和算不全 ⇒ 判不了」，但**下一步要修的东西不同**。
+R_QTY_UNKNOWN = "txn_qty_unknown"
+R_SNAPSHOT_INCOMPLETE = "snapshot_missing_items"
+R_BALANCE_MISMATCH = "balance_mismatch"
+G25_REASON_CN = {
+    R_NO_SNAPSHOT: "没有任何结存快照，无法对账",
+    R_UNKNOWN_DIRECTION: "流水方向不是 in/out，求和算不全",
+    R_QTY_UNKNOWN: "流水没填数量，求和算不全",
+    R_SNAPSHOT_INCOMPLETE: "部分物料在快照里没有结存，这些物料的守恒判不了",
+    R_BALANCE_MISMATCH: "Σ入库 − Σ出库 与结存不一致",
+}
+
 __all__ = ["CONTRACT_VERSION", "KIND_PREFIX", "ID_RE", "new_id", "validate_id",
            "TB_ITEM", "TB_BOM_VERSION", "TB_BOM_LINE", "TB_PR", "TB_GR",
-           "TB_PAYMENT", "TB_WORK_ORDER", "TABLE_FILES", "TABLE_NAMES",
+           "TB_PAYMENT", "TB_WORK_ORDER", "TB_INSPECTION", "TB_MRB",
+           "TB_INVENTORY_TXN", "TB_INVENTORY_SNAPSHOT", "TABLE_FILES", "TABLE_NAMES",
            "WRITE_ROUTE", "ACTION_APPEND", "ACTION_UPDATE",
            "CLAIM_SHIPPED", "CLAIM_IN_TRANSIT", "CLAIM_ARRIVED", "CLAIM_PARTIAL",
            "CLAIM_FULL", "CLAIM_ACCEPTED", "CLAIM_REJECTED", "ARRIVAL_CLAIMS",
@@ -249,4 +382,20 @@ __all__ = ["CONTRACT_VERSION", "KIND_PREFIX", "ID_RE", "new_id", "validate_id",
            "PR_DRAFT", "PR_SUBMITTED", "PR_APPROVED", "PR_REJECTED",
            "PR_CONVERTED", "PR_CANCELLED", "PR_STATES", "PR_STATE_CN",
            "WO_DRAFT", "WO_RELEASED", "WO_IN_PROGRESS", "WO_DONE", "WO_CANCELLED",
-           "WO_STATES", "WO_STATE_CN", "WO_TRANSITIONS"]
+           "WO_STATES", "WO_STATE_CN", "WO_TRANSITIONS",
+           # 批次 2：G24 质检
+           "QC_IQC", "QC_IPQC", "QC_OQC", "QC_TYPES", "QC_TYPE_CN",
+           "QC_PENDING", "QC_PASS", "QC_FAIL", "QC_CONCESSION",
+           "QC_VERDICTS", "QC_VERDICT_CN", "QC_RELEASING_VERDICTS",
+           "GATE_INBOUND", "GATE_OUTBOUND", "GATE_DIRECTIONS",
+           "GATE_DIRECTION_CN", "GATE_SOURCE_TYPES",
+           "MRB_RETURN", "MRB_REWORK", "MRB_SCRAP", "MRB_CONCESSION",
+           "MRB_USE_AS_IS", "MRB_DECISIONS", "MRB_DECISION_CN", "MRB_RELEASING",
+           "R_NO_INSPECTION", "R_INSPECTION_PENDING",
+           "R_INSPECTION_TYPE_MISMATCH", "R_COVERAGE_UNKNOWN",
+           "R_VERDICT_INVALID", "R_MRB_MISSING", "R_MRB_INVALID",
+           "R_MRB_NOT_RELEASING", "R_TARGET_UNKNOWN", "G24_REASON_CN",
+           # 批次 2：G25 库存守恒
+           "TXN_IN", "TXN_OUT", "TXN_DIRECTIONS", "TXN_DIRECTION_CN",
+           "R_NO_SNAPSHOT", "R_UNKNOWN_DIRECTION", "R_QTY_UNKNOWN",
+           "R_SNAPSHOT_INCOMPLETE", "R_BALANCE_MISMATCH", "G25_REASON_CN"]
