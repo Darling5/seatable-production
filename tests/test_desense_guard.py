@@ -325,6 +325,38 @@ class TestFormRules(unittest.TestCase):
     def test_泛化占位型号必须放行(self):
         self.assertEqual(self._scan("产品 ⟨型号A⟩ 与 ⟨型号B⟩"), [])
 
+    # ── 实例数字 id（2026-10-03 批次 2 新增）──────────────────
+    def test_真实实例_id必须报红(self):
+        """★ 反例**运行时拼接**：本文件自己也在扫描面内。"""
+        fake = "/api/" + "parts/" + "409"
+        hits = self._scan("引用要写成 %s 这种完整 IRI" % fake)
+        self.assertEqual(len(hits), 1, "实例 id 规则失效：%r" % hits)
+        self.assertIn("实例 id", hits[0])
+        self.assertIn("/api/", hits[0])
+
+    def test_占位形态必须放行(self):
+        for ok in ("/api/parts/{id}", "/api/categories/{id}", "/api/projects/{pid}"):
+            self.assertEqual(self._scan("写成 %s 即可" % ok), [],
+                             "占位形态 %s 被误报" % ok)
+
+    def test_裸路径不算实例_id(self):
+        """★ `/api/` 前缀是这条规则能用的**关键**，不是随手加的。
+
+        禅道走裸路径（`/projects/1` —— 而 `1` 是禅道**自带的默认项目**，
+        每个实例都有，不是哪个实例的数据）。实测：不加 `/api/` 前缀时
+        全仓 35 处命中里有 33 处是这种合法噪音，规则会被当噪音忽略掉。
+        这条用例就是这个判断的回归 —— 将来有人「顺手放宽」前缀会当场变红。
+        """
+        for bare in ("/projects/1", "/projects/999", "/part_lots/3", "/categories/38"):
+            self.assertEqual(self._scan("禅道接口 %s" % bare), [],
+                             "裸路径 %s 被误报 —— 该规则会退化成噪音" % bare)
+
+    def test_实例_id规则不得被悄悄放宽(self):
+        """规则本身必须仍要求 `/api/` 前缀（放宽 = 33 处噪音复活）。"""
+        rx = dict((r[0], r[1]) for r in _FORM_RULES)["PartDB 实例 id"]
+        self.assertIn("/api/", rx.pattern,
+                      "规则不再要求 `/api/` 前缀 —— 会把禅道的默认项目 id 误报成泄漏")
+
     # ── 基线机制 ─────────────────────────────────────────────
     # ★ 用**合成规则**测基线机制，不依赖真值表里有没有真实值。
     #   历史原因：这三条原先写死了真实部件号 —— 任务 #151 清空基线后，
@@ -369,20 +401,20 @@ class TestFormRules(unittest.TestCase):
                 % (name, baseline))
 
     # ── 规则清单本身 ──────────────────────────────────────────
-    def test_四类规则一条都不能少(self):
+    def test_五类规则一条都不能少(self):
         """★ 防「悄悄删掉一条规则」—— 删了就等于该类数据重新失明。"""
         names = [r[0] for r in _FORM_RULES]
-        for want in ("快递单号", "产品型号", "项目码", "部件号"):
+        for want in ("快递单号", "产品型号", "项目码", "部件号", "PartDB 实例 id"):
             self.assertIn(want, names, "形态型规则「%s」被删掉了" % want)
 
     def test_零容忍类不得被塞进基线(self):
-        """运单号 / 产品型号是零容忍类：基线必须为空。
+        """运单号 / 产品型号 / 实例 id 是零容忍类：基线必须为空。
 
-        一旦给它们开了基线 = 合法化「继续提交真实型号」——
+        一旦给它们开了基线 = 合法化「继续提交真实型号 / 真实 id」——
         那正是本机制要防的事。
         """
         for name, _rx, baseline, _hint in _FORM_RULES:
-            if name in ("快递单号", "产品型号"):
+            if name in ("快递单号", "产品型号", "PartDB 实例 id"):
                 self.assertEqual(baseline, (),
                                  "零容忍类「%s」被开了基线：%r" % (name, baseline))
 

@@ -21,7 +21,7 @@ agent_created: true
 | 列表响应 | `/parts?page=N` 直接返回 **list**（不是 hydra:member），固定每页 30，需翻到空为止 |
 | 精确搜索 | 用 `?name=<关键词>`（与 Web 端一致）；`?search=` 全局模糊不准 |
 | 库存准确值 | 必须逐个 `GET /parts/{id}`，列表里的 `total_instock` 不可信 |
-| 建料 | `POST /parts`，body 用 IRI 字符串引用关联实体：`{"category": "/api/categories/38"}` |
+| 建料 | `POST /parts`，body 用 IRI 字符串引用关联实体：`{"category": "/api/categories/{id}"}` |
 | **PATCH 内容类型** | 必须 `application/merge-patch+json`，用 `application/json` 会 **415** |
 | 建批次 | `POST /part_lots`，body `{part, amount, storage_location, description}` |
 | 分类/库位列表 | `GET /categories?page=N`、`GET /storage_locations?page=N` |
@@ -30,8 +30,8 @@ agent_created: true
 - **ipn** = `P` + 4 位零填充 part id（3 位 id 补零后形如 `P0xxx`，4 位 id 形如 `Pxxxx`）。建料返回 id 后立即 PATCH 写入（用 merge-patch）。
 - **PartLot.description = 盘点日期**，格式 `MDD`（9月2日 → `902`）或 `MMDD`（11月1日 → `1101`）。
   **有数字 = 已盘点可用；空 = 未确认，不可用于生产计划。**
-- 常用分类 id：成品=33，**半成品=38**（会变，运行时用 `/categories` 按名解析，勿硬编码）。
-- 常用库位 id：小卡纸箱=39、T1号纸箱=9、12号箱=38（同样运行时解析）。
+- 分类 id（成品 / 半成品 等）是**实例内序号、会变**：运行时用 `/categories` 按名解析，**勿硬编码**。
+- 库位 id 同理（小卡纸箱 / T1号纸箱 / 12号箱 等）：运行时按名解析，**勿硬编码**。
 - `supplierpartnr` 不能留空（建采购记录时会 422）；**若用户给了价格/供应商，则必须走「采购信息」模块建 orderdetail + pricedetail，不能只在 description 里写价格**。
 
 ## ⚠️ 与 SeaTable「组装料采购记录」的消歧（2026-09-03 踩过）
@@ -81,10 +81,10 @@ PY="C:/Users/11430/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
 4. **BOM 写入端点是 `POST /project_bom_entries`**（不是 `/projects/{id}/bom`，那个是 GET 专用，POST 返 405）；
    body：`{"project":"/api/projects/{pid}", "part":"/api/parts/{id}", "quantity": N, "mountnames": "C4,C5"}`。
 5. 回读 `/projects/{pid}/bom?page=N` 校验条数、数量、无重复。
-- 常用父项目 id：小卡=2、小卡→4G=4、大卡→4G=17（运行时解析）。
+- 父项目 id 同理（小卡 / 小卡下的 4G / 大卡下的 4G 等）：运行时按 `full_path` 解析，**勿硬编码**。
 
 ## 易错点
 - 半成品/成品**不要**填 footprint、manufacturer、supplier——`P0xxx` 蓝牙信标PCBA主板（半成品样板）这些字段全空。
 - 同一物料若已有 PartLot，新增批次直接 POST /part_lots 即可，不要去 PATCH 覆盖旧批次。
-- **orderdetail / pricedetail 里的 part、supplier、orderdetail 引用必须是完整 IRI 如 `/api/parts/409`，不能写 `/parts/409`（会报 Invalid IRI）。**
+- **orderdetail / pricedetail 里的 part、supplier、orderdetail 引用必须是完整 IRI 如 `/api/parts/{id}`，不能写 `/parts/{id}`（会报 Invalid IRI）。**
 - 电子元件新建才需要追问封装/厂商；半成品/成品不需要。

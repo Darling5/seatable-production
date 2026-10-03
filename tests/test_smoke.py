@@ -258,6 +258,24 @@ _FORM_RULES = (
     ("部件号", re.compile(r"(?<![A-Za-z0-9])P0\d{3}(?![0-9])"),
      (),
      "PartDB 内部部件号；泛化写作 `P0xxx`"),
+    # ★ 2026-10-03 批次 2 新增（任务 #152 后半 + 一次实测扫出的遗漏）。
+    #   「把实例内部的数字 id 写进文档/注释」这一类，字面量型 needle 永远抓不到
+    #   （数字是**实例内序号**，各实例不同，不可能进真值表）。
+    #
+    #   ⚠️ **`/api/` 前缀是这条规则能不能用的关键**，不能省：
+    #     实测不加前缀时有 **35 处**命中，其中 33 处是合法噪音 ——
+    #     `tests/test_zentao_contract.py` 的合成夹具（`/projects/1`、`/projects/999`）
+    #     与 `adapters/zentao.py` 里作为**实测证据**留下的禅道默认项目 id
+    #     （`/projects/1` 是禅道自带的默认项目，每个实例都有，不是哪个实例的数据）。
+    #     加上 `/api/` 后噪音降为 **0** —— 因为 `/api/...` 是本仓库 PartDB 侧的写法，
+    #     禅道走裸路径 `/projects/1`，一个前缀就把两者分开了。
+    #     ⇒ 若将来某后端改用 `/api/...` 且实例 id 本身合法出现在语料里，
+    #       这条要么收窄资源名、要么登记基线，**不要直接把规则删掉**。
+    ("PartDB 实例 id", re.compile(
+        r"/api/(?:parts|projects|categories|storage_locations|suppliers"
+        r"|orderdetails|pricedetails|project_bom_entries|part_lots)/\d{1,6}(?!\d)"),
+     (),
+     "把实例内部的数字 id 写进了文档；占位请写 `/api/parts/{id}`"),
 )
 
 # 明显是「示例号」的数字段：全同位（`1111111111`）或顺序串（`1234567890`）。
