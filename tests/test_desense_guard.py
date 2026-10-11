@@ -496,5 +496,60 @@ class TestFormRules(unittest.TestCase):
         self.assertIn("a/b.md:2", hits[0], "FAIL 消息缺少「文件:行」，无法定位：%r" % hits)
 
 
+class TestStrayFileIgnore(unittest.TestCase):
+    """根目录 `_*` 忽略规则的前提锁（2026-10-11 事故后补）。
+
+    事故：SeaTable「生产计划」原始导出 `_pp.txt` 含真实型号/企业名/手机号，
+    静躺在仓库根目录未被跟踪；一次 `git add -A` 把它扫进了暂存区。
+    去敏守卫当场报红 4 条（这才是它该有的表现）——
+    但**光靠守卫拦不住「已经 add 进去」这一步**，需要在源头加 ignore。
+
+    `.gitignore` 里加的是 `/_*`（**只作用于根目录**）。
+    本类锁死两个前提，防止该规则变成「静默吞掉正经文件」：
+      [1] 根目录不得有已跟踪的 `_*` 文件 —— 否则它会被 ignore 规则掩盖；
+      [2] `_*` 确实只作用于根目录 —— 子目录里的 `__init__.py` 必须仍能被跟踪。
+    """
+
+    ROOT = HERE
+
+    def _tracked(self):
+        out = _SMOKE._tracked_text_files()
+        rels = []
+        for p in out:
+            try:
+                rels.append(os.path.relpath(p, HERE).replace("\\", "/"))
+            except Exception:
+                pass
+        if not rels:                       # 退化：直接用 git（守卫同一来源）
+            import subprocess
+            r = subprocess.run(
+                ["git", "-C", HERE, "-c", "core.quotepath=false",
+                 "ls-files", "-z"], capture_output=True)
+            rels = [x for x in r.stdout.decode("utf-8", "replace").split("\x00") if x]
+        return rels
+
+    def test_根目录不得有已跟踪的下划线文件(self):
+        """★ 前提 [1]：有的话会被 `/_*` 掩盖 —— 必须显式处置，不能默默忽略。"""
+        bad = sorted(f for f in self._tracked()
+                     if "/" not in f and f.startswith("_"))
+        self.assertEqual(
+            bad, [],
+            "根目录出现已跟踪的 `_*` 文件 %r —— 它们会被 .gitignore 的 `/_*` 掩盖。"
+            "若确需入库，请改 `.gitignore` 收窄该规则" % bad)
+
+    def test_子目录的_init_不受影响(self):
+        """★ 前提 [2]：`/_*` 只作用于根目录，`__init__.py` 必须仍被跟踪。"""
+        tracked = self._tracked()
+        sub = [f for f in tracked if f.endswith("__init__.py") and "/" in f]
+        self.assertTrue(sub, "子目录里的 __init__.py 全都不见了 —— 忽略规则写宽了")
+
+    def test_忽略规则确实存在(self):
+        """防「有人顺手删掉这条规则」—— 删了就回到裸奔状态。"""
+        with open(os.path.join(HERE, ".gitignore"), encoding="utf-8") as f:
+            txt = f.read()
+        self.assertIn("/_*", txt.split("\n"),
+                      ".gitignore 里的 `/_*` 规则被删了")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

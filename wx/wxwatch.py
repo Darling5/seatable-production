@@ -34,7 +34,16 @@ OUTBOX = os.path.join(INTAKE_DIR, "notify_outbox.json")
 STATE = os.path.join(INTAKE_DIR, "wxwatch_state.json")
 LOG = os.path.join(INTAKE_DIR, "wxwatch.log")
 
-import wechat_intake as wi  # 复用引擎加载、事件表、配置
+# 复用引擎加载、事件表、配置。
+# ★ 2026-10-11：原为裸 `import wechat_intake as wi` —— 只有「以脚本方式」运行
+#   （`python wx/wxwatch.py watch`，此时 sys.path[0]=wx/）才成立，
+#   `from wx import wxwatch` 会直接 ModuleNotFoundError。
+#   后果是**本模块长期无法被单测**，而「人名读错」的根因之一就藏在这里没人发现。
+#   改成双路兼容：脚本方式与包导入都能用。
+try:
+    import wechat_intake as wi
+except ImportError:                                  # pragma: no cover
+    from wx import wechat_intake as wi
 
 # 高危：立即写发件箱
 HOT_KEYWORDS = [
@@ -184,21 +193,15 @@ def _handle_message(msg, group_names, member_names, st, notify_hot=True):
 
 
 def _member_names(wdb):
-    p = os.path.join(INTAKE_DIR, "member_names.json")
-    if os.path.exists(p):
-        try:
-            return json.load(open(p, encoding="utf-8"))
-        except Exception:
-            pass
-    m = {}
-    try:
-        for g in wdb.get_groups():
-            for mem in g.get("members") or []:
-                if mem.get("username") and mem.get("nick_name"):
-                    m[mem["username"]] = mem["nick_name"]
-    except Exception:
-        pass
-    return m
+    """群成员 username -> 显示名映射。
+
+    ★ 2026-10-11 修：**不再自己按 nick_name 重建**，改为复用
+    `wechat_intake` 的同名实现 —— 两处曾各写一份、都取 `nick_name`，
+    与本模块 `_handle_message` 一起构成「人名读错」的同源缺陷。
+    共用一份实现 + 同一份缓存（口径写在 `wechat_intake._NAMES_FMT`），
+    避免将来只改一处又分叉。
+    """
+    return wi._wx4_member_names(wdb)
 
 
 def cmd_once(minutes):

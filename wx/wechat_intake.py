@@ -186,18 +186,33 @@ def _find_msg_table(con):
 
 
 def _find_contact_map(con):
-    """尽力构建 wxid/群id -> 昵称 映射。"""
+    """尽力构建 wxid/群id -> 显示名 映射。
+
+    ★ 口径与引擎A一致：**有 remark 列就 remark 优先**，退回 nickname。
+      旧版微信（3.x）联系人表同时有 NickName 与 Remark 两列，只取 NickName
+      会把对方随时可改的网名当人名（与 2026-10-11 修的引擎A人名 bug 同类）。
+      没有 remark 列的老库自然退回 nickname，行为不变。
+    """
     tables = [r[0] for r in con.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")]
     mapping = {}
     for t in tables:
         cl = _cols_lower(con, t)
         if "username" in cl and "nickname" in cl:
+            remark_c = cl.get("remark")
+            cols = [_q(cl["username"]), _q(cl["nickname"])]
+            if remark_c:
+                cols.append(_q(remark_c))
             try:
-                for un, nn in con.execute(
-                        "SELECT %s, %s FROM %s" % (_q(cl["username"]), _q(cl["nickname"]), _q(t))):
-                    if un and nn:
-                        mapping[str(un)] = str(nn)
+                for row in con.execute(
+                        "SELECT %s FROM %s" % (", ".join(cols), _q(t))):
+                    un, nn = row[0], row[1]
+                    rk = row[2] if len(row) > 2 else None
+                    if not un:
+                        continue
+                    val = (str(rk).strip() if rk else "") or (str(nn).strip() if nn else "")
+                    if val:
+                        mapping[str(un)] = val
             except Exception:
                 pass
     # Name2Id 表（id -> wxid）也顺便带上
@@ -253,32 +268,116 @@ def _load_wx4():
     return db
 
 
+# ★ 人名取值口径（2026-10-11 修）—— 此前优先「昵称」，导致人名大面积读错。
+#
+# 微信 contact 行有两个显示名字段：
+#   · nick_name = 对方自己设的**微信昵称 / 群昵称**（`黑王子`、`Echo~`、`🔆`、`#`）
+#   · remark    = **我给他设的备注**（`涛哥`、`刘老师`、`何老师-差我13060`）
+#
+# 情报台原先走的是 `nick_name`（见下方 `_member_display` 的注释），于是摘要里
+# 出现的是对方的昵称而不是我方认人的备注 —— 用户反馈「人名没读对」即此。
+# **正方口径：remark 优先。** 依据是 remark 由我方主动维护、语义上是"这个人是谁"，
+# 而 nick_name 由对方随时改、且常是表情/网名。
+#
+# 实测（本机 contact.db，14897 行）：有 remark 的 637 人，其中
+# **564 人 remark ≠ nick_name**；在 68 个关注群、158 名去重成员里，
+# 有 remark 的 41 人中 **33 人（80.5%）两者不同** ⇒ 不改则这批人必然显示错。
+#
+# ⚠️ 缓存必须一并失效：`member_names.json` 是按本函数结果落盘的，
+# 改口径后旧缓存里存的仍是 nick_name；若只改代码不清缓存，
+# **最长 3 天内看起来「改了没用」**。故加 `_NAMES_FMT` 标记，
+# 读到旧格式直接作废重建（见 `_member_names_cache_*`）。
+_NAMES_FMT = "v2-remark-preferred"
+_NAMES_FMT_KEY = "__fmt__"
+
+
+def _name_source():
+    """人名取值口径：`remark`（默认）或 `nickname`。
+
+    配置项 `wechat.sender_name_source`。默认 remark（备注优先）；
+    若某些备注带了随手的附注（如「某某-差我 N 元」）而不想上屏，可切回 `nickname`。
+    """
+    v = str((_wechat_cfg().get("sender_name_source") or "remark")).strip().lower()
+    return "nickname" if v in ("nickname", "nick", "昵称") else "remark"
+
+
+def _member_display(member):
+    """从一条群成员记录取显示名。返回 "" 表示取不到。
+
+    ★ 口径见 `_NAMES_FMT` 上方注释：**remark 优先**，退回 nick_name。
+    """
+    if not isinstance(member, dict):
+        return ""
+    if _name_source() == "remark":
+        nm = (member.get("remark") or "").strip()
+        if nm:
+            return nm
+    return (member.get("nick_name") or "").strip()
+
+
+def _names_cache_read(cache_path, max_age_sec=86400 * 3):
+    """读人名缓存。返回 dict；不可用/格式过期返回 None。
+
+    ★ 格式校验是**必须的**：旧缓存按 nick_name 落盘，改口径后若照常命中，
+    会把已经修好的逻辑又用错名字盖回去（最长 3 天）。
+    """
+    try:
+        if not os.path.exists(cache_path):
+            return None
+        if _now().timestamp() - os.path.getmtime(cache_path) >= max_age_sec:
+            return None
+        with open(cache_path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if not isinstance(d, dict) or d.get(_NAMES_FMT_KEY) != _NAMES_FMT:
+            return None            # 旧格式 / 陌生格式 → 作废，调用方会重建
+        d = dict(d)
+        d.pop(_NAMES_FMT_KEY, None)
+        return d
+    except Exception:
+        return None
+
+
+def _names_cache_write(cache_path, mapping):
+    """写人名缓存（带格式标记），失败静默 —— 缓存不可用不应阻断拉取。"""
+    try:
+        d = os.path.dirname(cache_path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        out = dict(mapping)
+        out[_NAMES_FMT_KEY] = _NAMES_FMT
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 def _wx4_member_names(wdb):
-    """群成员 username -> 昵称映射（来自全部群成员表，群里非好友也能显示昵称）。"""
+    """群成员 username -> 显示名映射（来自全部群成员表，群里非好友也能显示）。
+
+    ★ 显示名口径 = **备注(remark) 优先**，退回昵称，见 `_NAMES_FMT` 上方注释。
+    """
     cache_path = os.path.join(INTAKE_DIR, "member_names.json")
-    if os.path.exists(cache_path):
-        try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                d = json.load(f)
-            if _now().timestamp() - os.path.getmtime(cache_path) < 86400 * 3:
-                return d
-        except Exception:
-            pass
+    cached = _names_cache_read(cache_path)
+    if cached is not None:
+        return cached
     mapping = {}
     try:
         for g in wdb.get_groups():
             for m in g.get("members") or []:
-                if m.get("username") and m.get("nick_name"):
-                    mapping[m["username"]] = m["nick_name"]
+                if not m.get("username"):
+                    continue
+                nm = _member_display(m)
+                if nm:
+                    mapping[m["username"]] = nm
     except Exception:
         pass
-    try:
-        os.makedirs(INTAKE_DIR, exist_ok=True)
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(mapping, f, ensure_ascii=False)
-    except Exception:
-        pass
+    _names_cache_write(cache_path, mapping)
     return mapping
+
+
+def _member_names_path():
+    """人名缓存路径（`wxwatch` 与本模块共用同一份缓存，口径必须一致）。"""
+    return os.path.join(INTAKE_DIR, "member_names.json")
 
 
 def _wx4_pull(wdb, watch, max_hours, bm):
@@ -814,11 +913,38 @@ def _match_focus(text):
     return [cat for cat, kws in FOCUS_RULES if any(k in low for k in kws)]
 
 
+def _self_name():
+    """本人发言在摘要里的显示名。配置项 `wechat.self_name`，默认「我」。"""
+    return str(_wechat_cfg().get("self_name") or "我").strip() or "我"
+
+
+def _is_self(wdb, su):
+    """`su` 是否是**当前登录账号本人**。
+
+    ⚠️ 判定依据只能是「解析出的账号 == 当前登录账号 wxid」。
+    曾经有人按 `real_sender_id == 2` 判本人 —— 那是错的：`Name2Id` 的 rowid
+    由插入顺序决定，本机 id=2 其实是一个群聊（2026-10-11 实测）。
+    本人也**没有备注可用**（微信不允许给自己设备注），所以不特殊处理就会
+    显示成自己的微信昵称（网名）。
+    """
+    if not su:
+        return False
+    try:
+        return su == getattr(wdb, "wxid", "")
+    except Exception:
+        return False
+
+
 def _resolve_sender(wdb, members, su, cache):
-    """wxid -> 可读昵称。别名映射 > 群成员表 > 联系人表 > 退回 wxid。
+    """wxid -> 可读人名。别名映射 > 本人 > 群成员表 > 联系人表 > 退回 wxid。
+
+    ★ 显示名口径 = **备注(remark) 优先**（2026-10-11 修，详见 `_NAMES_FMT` 上方注释）。
+    `members`（`_wx4_member_names` 产出）与 `wdb.get_nickname()` 现在**同一口径** ——
+    后者本就是 `remark or nick_name`，此前两者不一致正是人名读错的根因。
 
     sender_aliases（config.yaml wechat 段）优先级最高：同一人多个账号/多个昵称
     （如企微号显示示例员工、个人号昵称 示例昵称）时，统一聚合到一个名字下。
+    其次是「本人」（见 `_is_self`）—— 本人没有备注，不特殊处理会显示成网名。
     member_names.json 只覆盖 get_groups() 返回的群成员，群里不活跃/非好友的人
     经常查不到，所以必须用 get_nickname 兜底（实测可把 wxid_xxx 解成人名）。
     结果按会话缓存，避免同一发言人反复查库。
@@ -831,6 +957,10 @@ def _resolve_sender(wdb, members, su, cache):
     if alias:
         cache[su] = alias
         return alias
+    if _is_self(wdb, su):
+        name = _self_name()
+        cache[su] = name
+        return name
     name = members.get(su)
     if not name:
         try:

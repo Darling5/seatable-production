@@ -48,11 +48,51 @@ python wx/wechat_intake.py summary --group "群名" --hours 72 --json --out sum.
 `summary` 是一次性回溯（按小时窗口、保留全部消息类型、供人工或 AI 速读）。两者不冲突。
 
 **已踩过的坑（别再改回去）**：
-- 发言人名解析要走「**别名映射 → 群成员表 → `wdb.get_nickname()` 兜底」三级**。
-  别名映射（config.yaml `wechat.sender_aliases`，wxid → 显示名）优先级最高，
+- ★★ **主因：`real_sender_id` 必须查消息分片库自己的 `Name2Id`，不是 `SenderName2Id`**
+  （2026-10-11 修，用户反馈"人名没读对"）。同目录下这两张表**并存**，rowid 空间**毫无关系**：
+  | 表 | 位置 | 结构 | 是不是 `real_sender_id` 的真源 |
+  |---|---|---|---|
+  | `Name2Id` | **消息分片库** `message/message_N.db` | `(user_name PK, is_session)` | **是** |
+  | `SenderName2Id` | `message/message_resource.db` | `(user_name PK, update_time)` | 否，另一张表 |
+  实测（本机 128457 条正文自带发送者账号前缀的群消息，前缀即真值）：
+  `Name2Id[rowid]` **命中 100.0%**（0 不符 / 0 查无）；
+  `SenderName2Id[rowid]` **命中 0%**（117639 不符 / 10818 查无）。
+  ⇒ 旧代码把**每一条**群消息的发言人都安到了不相干的人头上，摘要里出现"对方从没说过的话"。
+  **id 是分片局部的**：同一 sid 在不同分片指不同人 ⇒ 必须在**该条消息所属连接内**解析
+  （`_sender_username(conn, sid)`；`get_messages` / `get_new_messages` / `get_message_row` /
+  导出路径四处都要传 conn）。`tests/test_wx_sender_attribution.py` 锁死。
+- ★ **`real_sender_id == 2` 不是"本人"**：旧代码据此把 id=2 直接返回 `self_nick`、或在
+  `_msg_row_to_dict` 里留空（落到「群友」）。`Name2Id` 的 rowid 由**插入顺序**决定
+  —— 本机 id=2 其实是一个群聊。**本人只能靠「解析出的账号 == `self.wxid`」判定**
+  （`wechat_intake._is_self`），显示名取配置 `wechat.self_name`（默认「我」）。
+  本人**没有备注可用**（微信不允许给自己设备注），昵称又常是网名 ⇒ 不特殊处理就会
+  在摘要里显示成自己的网名。
+- ★ **发言人显示名必须「备注(remark) 优先」，不是昵称**（2026-10-11 修，同一次反馈的第二处）。
+  微信 `contact` 行有**两个**显示名字段，很容易只取错的那个：
+  | 字段 | 是什么 | 谁维护 | 长相 |
+  |---|---|---|---|
+  | `nick_name` | 微信昵称 / **群昵称** | **对方**，随时可改 | `Echo~`、`🔆`、`黑王子`、`#` |
+  | `remark` | **你给他设的备注** | **你**，语义是"这个人是谁" | `涛哥`、`刘老师`、`何老师-差我13060` |
+  实测（本机 `contact.db` 14897 行）：有备注的 637 人中 **564 人备注≠昵称**；
+  68 个关注群 / 158 名去重成员里，有备注的 41 人中 **33 人（80.5%）两者不同**
+  ⇒ 取昵称会把八成有备注的人显示成网名。
+  口径由 `wx/wechat_intake.py::_member_display` 单点给出（`_NAMES_FMT` 上方有完整说明），
+  配置项 `wechat.sender_name_source`（默认 `remark`，可切 `nickname`）。
+  解析链：`sender_aliases` → 群成员表（已按本口径取名）→ `wdb.get_nickname()`（本就是 `remark or nick_name`）。
+- ★ **改本口径必须让缓存失效**（同一 bug 最阴的一半）：`member_names.json` 是按旧口径
+  落盘的，只改代码不清缓存会**最长 3 天看起来"改了没用"**。故缓存文件带 `__fmt__` 标记
+  （`_NAMES_FMT`），读到旧格式直接作废重建。
+- ★ **`wxwatch` 不得自己再实现一份取名**：它曾有独立的 `_member_names`（同样只取 `nick_name`），
+  与 `wechat_intake` 构成同一根因的两个实例。现已委托 `wi._wx4_member_names`；
+  `tests/test_wx_member_names.py::TestNoFork` 锁死这一点。
+- 只用 `member_names.json` 缓存会漏掉非好友/不活跃成员，摘要里显示成一串 `wxid_xxx`
+  ⇒ 必须有 `wdb.get_nickname()` 兜底。
+- 别名映射（config.yaml `wechat.sender_aliases`，wxid → 显示名）优先级最高，
   用于同一人多账号/多昵称的场景（实例：`demo_account: 示例员工`——其昵称 示例昵称，
   企微互通号却显示示例员工且从不发言，两个化身靠别名聚合成一个人）。
-  只用 `member_names.json` 缓存会漏掉非好友/不活跃成员，摘要里显示成一串 `wxid_xxx`。
+  ⚠️ **别用别名去"修"某个 wxid 老被当成发言人**——先确认是不是上面那个查错表的 bug。
+  本机曾出现"`jixu911` 在它从没加入的群里发言"，当时按别名打补丁（`jixu911: Dylan-刘(新智法)`），
+  根因其实是查错表；补丁本身无害，但会掩盖真问题。
 - 微信把发送者账号冗余拼在正文前，分隔符是**换行不是空格**（`"wxid_xxx:\n正文"`，全角冒号也见过），
   必须剥掉，否则每条都显示成「昵称：example_wxid: 正文」。
 - `type == "系统消息"` 和 content 为 `[文本]`（解析失败的空占位）要过滤，否则混进撤回提示等噪声。

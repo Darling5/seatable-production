@@ -1384,7 +1384,8 @@ class WeChatDB:
         return self._run_msg_query(
             user,
             lambda conn, table: [
-                self._msg_row_to_dict(r) for r in conn.execute(
+                self._msg_row_to_dict(r, self._sender_username(conn, r["real_sender_id"]))
+                for r in conn.execute(
                     "SELECT local_id, local_type, real_sender_id, create_time, "
                     "message_content, source, packed_info_data, compress_content, sort_seq "
                     "FROM %s ORDER BY sort_seq DESC LIMIT ? OFFSET ?" % table,
@@ -1395,25 +1396,28 @@ class WeChatDB:
 
     def get_message_row(self, user: str, local_id: int) -> Optional[dict]:
         """按 local_id 读取一条消息的完整原始字段（媒体下载用，含 server_id/packed_info）"""
-        row = self._run_msg_query(
-            user,
-            lambda conn, table: conn.execute(
+        box = {}
+
+        def build(conn, table):
+            row = conn.execute(
                 "SELECT local_id, local_type, server_id, real_sender_id, create_time, "
                 "message_content, source, packed_info_data, compress_content, sort_seq "
                 "FROM %s WHERE local_id=? LIMIT 1" % table,
                 (local_id,),
-            ).fetchone(),
-        )
+            ).fetchone()
+            if row:
+                # ★ 发送者必须用「该消息所属分片」的 Name2Id 解析，且在该连接内完成
+                box["sender"] = self._sender_username(conn, row["real_sender_id"])
+            return row
+
+        row = self._run_msg_query(user, build)
         if not row:
             return None
         sender_id = row["real_sender_id"]
-        sender_username = ""
-        if sender_id and sender_id != 2:
-            sender_index = self._sender_id_index()
-            sender_username = sender_index.get(int(sender_id), "")
-            if not sender_username:
-                # fallback: 尝试从 contact.db 获取昵称
-                sender_username = self.get_nickname(str(sender_id))
+        sender_username = box.get("sender", "")
+        if sender_id and not sender_username:
+            # fallback: 尝试从 contact.db 获取昵称
+            sender_username = self.get_nickname(str(sender_id))
         return {
             "local_id": row["local_id"],
             "local_type": row["local_type"],
@@ -1448,16 +1452,19 @@ class WeChatDB:
         """返回 sort_seq > since_seq 的新消息（升序），供轮询监听使用"""
         rows = self._run_msg_query(
             user,
-            lambda conn, table: conn.execute(
-                "SELECT local_id, local_type, real_sender_id, create_time, "
-                "message_content, source, packed_info_data, compress_content, sort_seq "
-                "FROM %s WHERE sort_seq > ? ORDER BY sort_seq ASC LIMIT ?" % table,
-                (since_seq, limit),
-            ).fetchall(),
+            lambda conn, table: [
+                (r, self._sender_username(conn, r["real_sender_id"]))
+                for r in conn.execute(
+                    "SELECT local_id, local_type, real_sender_id, create_time, "
+                    "message_content, source, packed_info_data, compress_content, sort_seq "
+                    "FROM %s WHERE sort_seq > ? ORDER BY sort_seq ASC LIMIT ?" % table,
+                    (since_seq, limit),
+                ).fetchall()
+            ],
         )
-        return [self._msg_row_to_dict(r) for r in rows] if rows else []
+        return [self._msg_row_to_dict(r, su) for r, su in rows] if rows else []
 
-    def _msg_row_to_dict(self, r) -> dict:
+    def _msg_row_to_dict(self, r, sender_username=None) -> dict:
         content = r["message_content"]
         mtype = WeChatDB._msg_type_name(r["local_type"])
         if isinstance(content, bytes):
@@ -1474,13 +1481,12 @@ class WeChatDB:
                 if cc_text != placeholder:
                     content = cc_text
         sender_id = r["real_sender_id"]
-        sender_username = ""
-        if sender_id and sender_id != 2:
-            sender_index = self._sender_id_index()
-            sender_username = sender_index.get(int(sender_id), "")
-            if not sender_username:
-                # fallback: 尝试从 contact.db 获取昵称
-                sender_username = self.get_nickname(str(sender_id))
+        if sender_username is None:
+            # 未在分片连接内解析过 → 走并集兜底（不带 conn 的旧调用方）
+            sender_username = self._sender_username(None, sender_id)
+        if sender_id and not sender_username:
+            # fallback: 尝试从 contact.db 获取昵称
+            sender_username = self.get_nickname(str(sender_id))
         return {
             "local_id": r["local_id"],
             "type": mtype,
@@ -1822,35 +1828,86 @@ class WeChatDB:
             break
         return idx
 
-    def _sender_id_index(self) -> Dict[int, str]:
-        """消息表 real_sender_id(数字) → 用户名，来自 message_resource.SenderName2Id"""
-        if hasattr(self, '_sender_id_cache') and self._sender_id_cache is not None:
+    @staticmethod
+    def _name2id_from_conn(conn) -> Dict[int, str]:
+        """从**某个消息分片库**读 `Name2Id(rowid -> user_name)`。
+
+        这是 `real_sender_id` 的唯一真源表。
+        """
+        try:
+            rows = conn.execute("SELECT rowid, user_name FROM Name2Id").fetchall()
+        except sqlite3.DatabaseError:
+            return {}
+        out: Dict[int, str] = {}
+        for rid, u in rows:
+            if u:
+                out[int(rid)] = u
+        return out
+
+    def _all_shards_sender_index(self) -> Dict[int, str]:
+        """所有消息分片 Name2Id 的并集（**仅作跨分片兜底**，不是主路径）。"""
+        if getattr(self, '_sender_id_cache', None) is not None:
             return self._sender_id_cache
         idx: Dict[int, str] = {}
-        for rel, path, _ in self._db_files:
-            if os.path.basename(path) != "message_resource.db":
-                continue
-            conn = self._open(rel)
+        for rel in self._message_dbs():
             try:
-                for rid, u in conn.execute(
-                    "SELECT rowid, user_name FROM SenderName2Id"
-                ):
-                    if u:
-                        idx[int(rid)] = u
+                conn = self._open(rel)
+            except Exception:
+                continue
+            try:
+                idx.update(self._name2id_from_conn(conn))
             finally:
                 conn.close()
-            break
         self._sender_id_cache = idx
         return idx
 
+    def _sender_id_index(self, conn=None) -> Dict[int, str]:
+        """消息表 real_sender_id(数字) → 用户名。
+
+        ⚠️ 真源是**该条消息所属分片库自己的 `Name2Id`**，不是
+        `message_resource.db` 里的 `SenderName2Id` —— 后者是另一张表、
+        另一套 rowid 空间，两者毫无关系。历史上本方法误读了后者，
+        导致 100% 的群消息发言人都被安到不相干的人头上（2026-10-11 修）。
+
+        传 `conn`（消息所在分片的连接）时返回「该分片优先 + 跨分片兜底」的
+        合并视图；不传或该分片没有 `Name2Id` 时返回全部分片的并集。
+        热路径（逐条消息）请用 `_sender_username`，它只在漏解时才去建并集。
+        """
+        if conn is not None:
+            own = self._name2id_from_conn(conn)
+            if own:
+                return {**self._all_shards_sender_index(), **own}
+        return self._all_shards_sender_index()
+
+    def _sender_username(self, conn, sender_id) -> str:
+        """real_sender_id → 对方用户名（本分片优先，跨分片兜底）。取不到返回 ""。"""
+        try:
+            sid = int(sender_id)
+        except (TypeError, ValueError):
+            return ""
+        if sid <= 0:
+            return ""
+        u = self._name2id_from_conn(conn).get(sid, "") if conn is not None else ""
+        if u:
+            return u
+        return self._all_shards_sender_index().get(sid, "")
+
     def _resolve_sender(self, sender_id, sender_index, nicks, self_nick) -> str:
-        if sender_id in (2, "2"):
-            return self_nick
+        """real_sender_id → 显示名。
+
+        ⚠️ 曾经把 `sender_id == 2` 当作"本人"——那是错的：`Name2Id` 的
+        rowid 由插入顺序决定，本机 id=2 其实是一个群聊。**本人必须靠
+        「解析出的 username == self.wxid」判定**，不能靠魔法数字。
+        """
+        u = ""
         if isinstance(sender_id, int):
-            u = sender_index.get(sender_id)
-            if u:
-                return nicks.get(u, u)
-        u = str(sender_id)
+            u = sender_index.get(sender_id, "")
+        elif sender_id in sender_index:
+            u = sender_index.get(sender_id, "")
+        if not u:
+            u = str(sender_id)
+        if u and u == self.wxid:
+            return self_nick
         return nicks.get(u, u)
 
     @staticmethod
@@ -1943,7 +2000,8 @@ class WeChatDB:
         idx = self._build_md5_index()
         nicks = self._nickname_index()
         self_info = self.get_self_info()
-        sender_index = self._sender_id_index()
+        # sender_index 不再在此处一次性构建：real_sender_id 是**分片局部** id，
+        # 必须按每个会话所在的连接解析（见下方 per-chat 的 _sender_id_index(conn)）
         target_md5s = None
         if users:
             target_md5s = {
@@ -1977,27 +2035,31 @@ class WeChatDB:
                 rows = []
                 for conn, table in buckets[md5]:
                     try:
-                        rows += conn.execute(
+                        # ★ 连 conn 一起留着：real_sender_id 必须用**它所属分片**的
+                        #   Name2Id 解析，跨分片 rowid 空间不同（见 _sender_id_index）
+                        rows += [(conn, r) for r in conn.execute(
                             "SELECT local_id, local_type, server_id, real_sender_id, "
                             "create_time, message_content, packed_info_data, sort_seq "
                             "FROM %s" % table
-                        ).fetchall()
+                        ).fetchall()]
                     except sqlite3.DatabaseError:
                         continue
                 if not rows:
                     continue
-                rows.sort(key=lambda r: (r["sort_seq"], r["local_id"]))
+                rows.sort(key=lambda cr: (cr[1]["sort_seq"], cr[1]["local_id"]))
                 if limit_per_chat:
                     rows = rows[-limit_per_chat:]
                 msgs = [
                     dict(
                         self._export_row(r, MSG_TYPE_NAMES),
                         sender_name=self._resolve_sender(
-                            r["real_sender_id"], sender_index, nicks,
+                            r["real_sender_id"],
+                            self._sender_id_index(conn),
+                            nicks,
                             self_info.get("nick_name", "我"),
                         ),
                     )
-                    for r in rows
+                    for conn, r in rows
                 ]
                 total += len(msgs)
                 chat_info.append({
