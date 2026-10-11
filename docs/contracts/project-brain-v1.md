@@ -72,6 +72,31 @@ ID 生成与校验：`application/project_brain/ids.py`（`new_id` / `validate_i
 
 解析不出来一律返回 `None`，**绝不猜测**。
 
+#### 1.2.1 上述铁律**有且只有**一个例外，例外本身必须留痕
+
+消息时间**整条缺失**（`parse_message_time` 返回 `None`）时，
+`occurred_at` 只能退化为采集时刻 —— 这是**降级**，不是等价替换，
+所以必须写进 `occurred_at_source`：
+
+| `occurred_at_source` | 含义 | `occurred_at` 能不能当基准 |
+|---|---|---|
+| `message_time`（`SRC_MESSAGE_TIME`） | 正常：用的是消息自带时间 | 能，这就是铁律要求的基准 |
+| `fallback_capture_time`（`SRC_FALLBACK_CAPTURE_TIME`） | **降级**：消息时间缺失，退化为采集时刻 | **不能** —— 该行的期限不可信 |
+
+取值域：`application/project_brain/schema.py::TIME_SOURCES`。
+
+降级行会**同时**做两件事，缺一不可：
+
+- 在 `actions[]` / 记忆投影里带出 `occurred_at_source`（**逐行可见**）；
+- 汇成一处 `missing_info`（`code = time_basis_fallback`）+ 一条 `caveats`
+  （**汇总是为了让不看单行的人也能看见**）。
+
+> 为什么要留痕而不是闷声退化：降级的行**长得和正常行一模一样** ——
+> 一样有 `occurred_at`、一样能算期限，只是基准错了。
+> 这种错在账面上完全看不出来，正是铁律要防的那一类。
+> 记下来之后，「今天到期的 N 项」里有几项基准可疑是可数的，而不是靠运气发现
+> （实现：`context._time_fallback_rows()`；反证见 `tests/test_project_brain.TestTimeBasisFallback`）。
+
 ---
 
 ## 2. 记忆的五种类型
@@ -88,6 +113,18 @@ ID 生成与校验：`application/project_brain/ids.py`（`new_id` / `validate_i
 
 记忆生命周期 `status`：`active` → `confirmed`（观察已升格为事实）/ `superseded`（已被纠正）。
 状态变化只追加新版本，旧版本与原始文本永远留在事件流里。
+
+两个**指向"接任者"的指针**，分属两种不同的命运，不许混用：
+
+| 情形 | `status` | 指针 | 含义 |
+|---|---|---|---|
+| 被**纠正**（合同 §5） | `superseded` | `superseded_by = 新 memory_id` | 这条记录**已作废**，权威版本是那条新的 |
+| 观察**核实升格** | `confirmed` | `verified_fact_id = 新 fact_id` | 这条记录**仍然有效**，只是权威版本换成了那条事实 |
+
+> ⚠️ 升格路径曾经也写 `superseded_by`，于是出现一行自相矛盾的状态：
+> `status=confirmed`（读它的人说「还活着」）+ `superseded_by` 非空
+> （读它的人说「已经死了」）—— 同一行，两个答案。
+> 现在改名 `verified_fact_id`：**同一个字段名只能有一个意思**。
 
 ### 2.1 去重
 
@@ -115,6 +152,11 @@ ID 生成与校验：`application/project_brain/ids.py`（`new_id` / `validate_i
 1. 新建一条同 `kind`、同 `aspect_key` 的记忆（记录新值）；
 2. 把旧记录标成 `superseded`，写 `superseded_by = 新 memory_id`；
 3. **旧记录的业务字段一个都不改**，原值仍在事件流中可回溯。
+
+> 第 2 步的载荷由 `memory.supersede(old_row, new_id)` **唯一产出**，
+> 且它拒绝空 `new_id`：「被取代但不知道被谁取代」不是一种状态，是断链。
+> （此前该函数形参不用、`superseded_by` 恒为空串，而 `correct_memory`
+> 在旁边自己手写了一份正确载荷 —— 同一份契约两处实现，迟早漂移。）
 
 ---
 
@@ -308,7 +350,8 @@ ctx = get_project_context("PRJ-20260926-0001", "SNP-...")  # 读快照，可复�
   "source_freshness": [                         // 来源时效（只统计真从外部读回的原始记录）
     {"source_system": "email", "source_base": "", "source_table": "供应商邮件",
      "records": 2, "age_hours": 92.7, "oldest_age_hours": 92.7,
-     "stale": true, "stale_after_hours": 24}
+     "stale": true, "stale_oldest": true, "stale_source": true,
+     "stale_after_hours": 24}
   ],
 
   "facts":         [ /* 已核实事实 */ ],
@@ -327,7 +370,7 @@ ctx = get_project_context("PRJ-20260926-0001", "SNP-...")  # 读快照，可复�
   "conflicts":     [ /* 冲突：[{conflict_id, aspect_key, values, members, resolved}] */ ],
 
   "counts": {"actions_open": 2, "actions_closed": 1, "blockers": 0,
-             "conflicts": 1, "gaps": 10},
+             "conflicts": 1, "gaps": 11},
 
   "answers": {           // 五个问题，每条结论都带证据 + 数据截至时间
     "status":    {"answer": "...", "items": [...], "evidence_ids": [...],
@@ -344,7 +387,25 @@ ctx = get_project_context("PRJ-20260926-0001", "SNP-...")  # 读快照，可复�
 `as_of` 是「这条结论依赖的最新一条证据/记忆的采集时间」，
 不是「我们什么时候跑的脚本」—— 前者才有信息量。
 
-### 6.2 信息缺口原因码
+### 6.2 来源时效桶的三个字段：两个测量，一个结论
+
+| 字段 | 是什么 | 谁可以用它下结论 |
+|---|---|---|
+| `stale` | 诊断：这个来源**还在动**吗（看**最新**一条） | **不可以** |
+| `stale_oldest` | 测量：它里面**最老**的一条有多老 | **不可以** |
+| `stale_source` | ★ **判据结论**：这个来源算不算落后（保守：看最老一条） | **只有它可以** |
+
+判据只在 `is_stale_source()` 里定义一次，结论由产出方算好盖章；
+下游（`alignment` / `ports` / CLI）**只读 `stale_source`，不许自己挑字段**。
+
+> ⚠️ 这条规矩是**实测出来的**，不是设计洁癖：`B6` 把判据从「最新一条」改成
+> 「最老一条」之后，两处下游仍在按 `stale` 挑字段，于是同一份上下文
+> 一边在 `missing_info` 里说「来源过期」、一边在提示层说「没有过期的来源」。
+> 样例里**本来就有这样一个桶**（`seatable/发货清单`：最新 20.07h 未过阈值、
+> 最老 43.07h 已过）—— 自相矛盾当时就写在契约样例里。
+> 守卫：`tests/test_project_brain.py::TestStaleVerdictIsSingleSource`。
+
+### 6.3 信息缺口原因码
 
 | code | 含义 |
 |---|---|
@@ -355,6 +416,16 @@ ctx = get_project_context("PRJ-20260926-0001", "SNP-...")  # 读快照，可复�
 | `fact_no_evidence` | 事实缺少证据引用 |
 | `stale_source` | 来源数据超过时效阈值（默认 24h）未更新 |
 | `unresolved_conflict` | 存在未解决的来源冲突 |
+| `source_unreadable` | 来源表**读不到**（存储故障 / 表名不对 / 无读权限 / 适配器抛错） |
+| `time_basis_fallback` | 记录的时间**基准降级**：消息时间缺失，`occurred_at` 退化为采集时刻 |
+
+> ⚠️ `source_unreadable` 是 2026-10-11 补的，起因是一处**把故障洗成健康**的写法：
+> 读表的 `try/except` 直接 `return []`，于是「读不到」和「表里没有数据」在上下文里
+> 长得一模一样 —— 存储挂了的时候，`missing_info` 会回答「没有发现信息缺口」、
+> `source_freshness` 会回答 `[]`（＝所有来源都新鲜）。现在：
+> **失败的每一张表都进 `missing_info`**，并进 `answers[*].caveats`；
+> 只要有一张表读不到，`answers.gaps` 就不允许再说「没有发现信息缺口」。
+> 明细另见内部字段 `__source_unreadable`（双下划线开头 ⇒ 不进契约、不落业务列）。
 
 ---
 

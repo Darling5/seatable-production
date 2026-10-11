@@ -10,6 +10,9 @@
 >   本表按 **13 条**登记（计数漂移见 `merge-plan.md` E1，同批修正）。
 > - `G14–G30` ← `docs/domain-model.md` §5
 > - `G31` ← 本批新增（见 `merge-plan.md` Q2；案件完整性，2026-10-02 已实现但从未登记）
+> - `G32`/`G33` ← **2026-10-03 批次 3 新增登记**：二者都是「实现早已存在、却从未
+>   登记为不变量」的契约保证（读不到 ≠ 空 / 时间基准降级必须留痕）。登记它们不是
+>   补文档，而是**承认它们是判据** —— 没登记的判据没有守卫，改动它不会有任何东西变红
 >
 > 填写规则（硬性，违反即返工）：
 > 1. **实现点 / 测试** 必须写**可核对的具体路径与符号**（`application/gates.py::Gate.check`），
@@ -46,7 +49,7 @@
 
 ---
 
-## B. 治理平面 / 执行平面 / 接缝 —— G14–G30
+## B. 治理平面 / 执行平面 / 接缝 —— G14–G33
 
 | 不变量 | 命题 | 层 | 实现点 `file::symbol` | 测试 `file::case` | 状态 | 缺口动作 |
 |---|---|---|---|---|---|---|
@@ -66,7 +69,9 @@
 | **G27** | 三账可对账：项目账/执行账/财务账 差异可见且挂原因码，不得静默 | 接缝 | **无三账**（`三账` 0 命中）。可复用件：`application/project_brain/context.py::G_UNRESOLVED_CONFLICT` · `application/project_brain/memory.py::find_conflicts` | `tests/test_project_brain.py::TestQueryAndContract::test_conflict_from_sample` | 空白 | 新增「财务账」实体（G16/G17 的前置）并定义三账对齐报告；**冲突可见 + 原因码机制已具备，直接复用** |
 | **G28** | 成本可归集：任一成本条目可追溯到 项目 / 工单 / 采购单 | 接缝 | **无真实成本**。`application/decision_support/scenarios.py::_estimate_cost` 是**合成假设**（`::_SYNTHETIC_COST_NOTE` 明示「不是真实报价」） | `tests/test_decision_support.py::ScenarioCompareTest::test_delta_cost_is_marked_synthetic`（**反向用例**：证明它标了「合成」） | 空白 | 新增 `成本条目` 实体（`project_id` + 工单号 + 采购单号 三选一必填外键）；工单/采购单实体依赖 G21/G22/G23 |
 | **G29** | 跨层 ID 一致：三层引用同一 `project_id`；计划域用 `plan_id`；不引入新名称映射 | 接缝 | `application/decision_support/alignment.py::make_unified` · `::UNIFIED_FIELDS` · `::is_valid_id` · `::is_canonical_id` · `::LEGACY_ID_RE` · `application/project_brain/ids.py::validate_id` · `application/contracts.py::is_canonical_object_id` · `application/exec_plane/schema.py::KIND_PREFIX` | `tests/test_cross_layer_ids.py`（16 例：**三张前缀表并集恒等于 `KNOWN_PREFIXES`** / 各层生成的 ID 全部跨层合法 / 前缀表与生成函数表不得脱节 / 历史形态只读兼容）· `tests/test_exec_plane.py::TestNoSelfInventedEnums`（13 例）· `tests/test_project_brain.py::UnifiedFieldsRegressionTest::test_plan_id_propagates_message_to_memory_action_evidence` · `::test_plan_id_passes_own_validator` · `::test_memory_projections_carry_all_eight` | 已闭 | —— **批次 1 已落地**（commit `e9ab364`）。**修的是一个实测出来的真缺口**：`L_exec` 一接入就发现 `contracts` 12 类业务对象里 **11 类被跨层校验拒绝**（`MO`/`PO`/`AS` 只有 2 字母；`CTR`/`CUS`/`LED`/`OPP`/`QUO`/`REQ`/`SHP`/`SOL` 未登记）——即「三层引用同一 ID」在真正接入前**一直是纸面约定**。已收口：前缀一律 3 字母、旧前缀只读兼容、两处严格/宽松判定分离、三张表并集由测试强制。**剩余**：`L_gov` 层尚不存在，其前缀登记待该层建立时按同一断言补 |
-| **G30** | 上行新鲜度：上层结论须带 `as_of`；来源过期须标注 | 接缝 | `application/decision_support/ports.py::freshness_caveats` · `application/project_brain/context.py::G_STALE_SOURCE`（+`GAP_CN`）· `cockpit/cockpit.py::SOURCE_SPEC` · `application/decision_support/backtest.py::filter_as_of` | `tests/test_decision_support.py::PortsContractTest::test_stale_source_becomes_caveat` · `::test_analyze_carries_context_caveats` · `tests/test_project_brain.py::UnifiedFieldsRegressionTest::test_data_as_of_is_capture_cutoff_not_now` · `tests/test_source_health.py`（27 例） | 已闭 | ⚠️ **口径风险**：同一命题有 **3 处独立判据**（decision_support ports / project_brain context / cockpit `SOURCE_SPEC`），当前一致但无「单一实现」约束。**动作**：加一条交叉一致性测试（防 E12 那类双口径漂移复发） |
+| **G30** | 上行新鲜度：上层结论须带 `as_of`；来源过期须标注 | 接缝 | `application/decision_support/ports.py::freshness_caveats` · `application/decision_support/alignment.py::read_context` · `application/project_brain/context.py::is_stale_source` · `::stale_gap` · `::source_freshness` · `cockpit/cockpit.py::SOURCE_SPEC` · `application/decision_support/backtest.py::filter_as_of` | `tests/test_decision_support.py::PortsContractTest::test_stale_source_becomes_caveat` · `::test_analyze_carries_context_caveats` · `tests/test_project_brain.py::TestStaleVerdictIsSingleSource`（5 例：判据结论＝判据函数 / `stale` 不是判据 / 缺口层·alignment·ports **三层同源**（过期与全新鲜**两侧**都测）/ CLI 不许再按 `stale` 分支）· `::TestCaveatsAsOfAndFreshness::test_stale_gap_follows_the_conservative_judgement` · `::test_freshness_reports_both_judgements` · `::UnifiedFieldsRegressionTest::test_data_as_of_is_capture_cutoff_not_now` · `tests/test_source_health.py`（27 例） | 已闭 | —— **批次 3 已闭到端**（原注只断言了 `data_as_of` 半边，「来源过期须标注」半边是纸面的）。**实测抓到的真缺口**：`B6` 把判据从「最新一条」改成「最老一条」（保守）后，**两处下游没跟上** —— `alignment.py` 的 `stale_sources` 与 `project_brain.py` 的 `sources` 子命令仍按 `stale` 挑字段 ⇒ 同一份 ProjectContext 一边在缺口清单里说「来源过期」、一边在提示层说「没有过期的来源」。样例里**本来就有一个这样的桶**（`seatable/发货清单`：最新 20.07h 未过 24h 阈值、最老 43.07h 已过），即这个自相矛盾**当时就写在契约样例里**。已收口：判据结论由**产出方**算好盖章（`source_freshness[].stale_source`，实现 `is_stale_source`），下游只读结论不挑字段。**剩余**：`cockpit/cockpit.py::SOURCE_SPEC` 是**第三处独立判据**，但它的输入是 `data/` 产物文件（不是 ProjectContext），与上两处**不同源不同尺度**，暂不合并 —— 已由 `tests/test_source_health.py` 单独守 |
+| **G32** | 读不到 ≠ 空：任一来源读表失败必须变成**可见的信息缺口**（`source_unreadable`），不得被吞成「这张表没数据」 | 接缝 | `application/project_brain/context.py::_Reader.rows` · `::_Reader.gaps` · `::SourceUnreadableError` · `::G_SOURCE_UNREADABLE` · `application/project_brain/context.py::source_freshness`（独立调用且无账本时**抛异常**而非静默返回空） | `tests/test_project_brain.py::TestUnreadableIsNotEmptiness`（含 `_FlakyAdapter`：先好后坏 / 一直坏）· `::TestQueryAndContract` | 已闭 | —— **批次 3 新增登记**（实现随 `B2` 落地，此前未登记）。**为什么必须是不变量**：`answer_gaps` 的出口文案是「没有发现信息缺口」——「读不到」被洗成「没有」之后，那句话**会为真**，于是**任何**越权/断连/改名都会以一个「一切正常」的结论收场。**边界**：只有**真抛异常**才算读不到；返回 `[]` 是「确实没有」，两者不许合并 |
+| **G33** | 时间基准降级必须留痕：`occurred_at` 退化为采集时刻时，必须写 `occurred_at_source` **且**汇成缺口（`time_basis_fallback`） | 接缝 | `application/project_brain/schema.py::TIME_SOURCES` · `::SRC_MESSAGE_TIME` · `::SRC_FALLBACK_CAPTURE_TIME` · `application/project_brain/service.py::ProjectBrain._ingest_one`（`mtime is None` 时才降级并记来源）· `application/project_brain/memory.py::build_memory_row` · `application/project_brain/context.py::_time_fallback_rows` · `::G_TIME_FALLBACK` | `tests/test_project_brain.py::TestTimeBasisFallback`（3 例，注入 `_FrozenNow` 冻结时钟，使「漂移了多少」可断言） | 已闭 | —— **批次 3 新增登记**（实现随 `B7` 落地，此前未登记）。**为什么必须是不变量**：§1.2 的铁律是「相对日期一律以消息时间为基准，严禁用 `now()`」；**唯一的例外**是消息时间整条缺失时不得不退化 —— 而降级行**长得和正常行一模一样**（一样有 `occurred_at`、一样能算期限，只是基准错了），这种错在账面上完全看不出来，正是铁律要防的那一类。故例外本身必须留痕：`occurred_at_source` 逐行可见 + 汇总成缺口（汇总是为了让**不看单行的人**也能看见）。**口径**：`data_as_of` 只认 `captured_at`，与 `occurred_at` 无关（见 `G30`） |
 
 ---
 
@@ -75,31 +80,37 @@
 > ★ **2026-10-03 批次 1 订正**（commit `e9ab364`）：`G21` 空白→已闭、
 > `G22`/`G23`/`G29` 半闭→已闭。
 > ★ **2026-10-03 批次 2 订正**：`G24` 空白→已闭、`G25` 空白→已闭。
+> ★ **2026-10-03 批次 3 订正**：新增 `G32`/`G33` 两条登记（合计 31→33）；
+> `G30` 补全「来源过期须标注」的那半边（原注只断言了 `data_as_of`），并修掉
+> 一处**实测存在的接缝漂移**（详见 `G30` 行）。
 > 下表的**占比按最大余数法取整**（合计 100%）。
 
 | 状态 | 数量 | 占比 |
 |---|---|---|
-| 已闭 | 21 | 68% |
+| 已闭 | 23 | 70% |
 | 半闭 | 2 | 6% |
-| 空白 | 8 | 26% |
-| **合计** | **31** | 100% |
+| 空白 | 8 | 24% |
+| **合计** | **33** | 100% |
 
 > `L_proj`（A 段 14 条）：已闭 **14** / 半闭 0 / 空白 0 —— **控制平面完全闭合**
 > （`G12` 的常量残留已在本批一并移除）。
-> `L_gov` + `L_exec` + 接缝（B 段 17 条）：已闭 **7** / 半闭 2 / 空白 8
-> —— **执行平面已开工**（批次 1 闭掉 `G21`/`G22`/`G23`/`G29`，批次 2 闭掉 `G24`/`G25`），
+> `L_gov` + `L_exec` + 接缝（B 段 19 条）：已闭 **9** / 半闭 2 / 空白 8
+> —— **执行平面已开工**（批次 1 闭掉 `G21`/`G22`/`G23`/`G29`，批次 2 闭掉 `G24`/`G25`，
+> 批次 3 补登 `G32`/`G33` 并闭合 `G30`），
 > 财务链（`G14`–`G17`、`G27`）仍全空。
 
 **验收清单**（对应 `DEV-KICKOFF.md` §6.4）：
-- [x] 31 行齐，无空行
-- [x] 至少 5 条能点名到**现成测试用例** —— 实测 **31 条全部**点名到 `file::case`
+- [x] 33 行齐，无空行
+- [x] 至少 5 条能点名到**现成测试用例** —— 实测 **33 条全部**点名到 `file::case`
       （其中 `G1`–`G13`+`G31` 均有专门用例；
-      `G18`/`G19`/`G28`/`G30` 亦有；`G21`/`G22`/`G23`/`G29` 已于批次 1 补齐专门用例）
+      `G18`/`G19`/`G28`/`G30`/`G32`/`G33` 亦有；`G21`/`G22`/`G23`/`G29` 已于批次 1 补齐专门用例）
 - [x] 所有「空白」项都写出**具体缺口动作**（现 8 条，均含要新增的实体名与校验挂载点）
 - [x] §4 编号冲突已处置完毕（commit `4926fcf`；`.py` 中裸 `G<数字>` 残留为 0）
-- [x] **引用可核对**：本文件 **87 处** `file::symbol` / `file::case` 引用
+- [x] **引用可核对**：本文件 **102 处** `file::symbol` / `file::case` 引用
       已逐条回验 —— 文件全部存在、符号全部在文件中真实出现（**0 处虚构**）
-      （批次 2 由 73 处增至 87 处：`G24`/`G25` 两行新增 14 条）
+      （批次 2 由 73 处增至 87 处：`G24`/`G25` 两行新增 14 条；
+      批次 3 增至 102 处：`G30` 补测与 `G32`/`G33` 两条登记共新增 15 条 ——
+      计数用 `tests/test_doc_refs.py` 的同一正则抽出，**不是估的**）
 - [x] **★ 2026-10-03 批次 1：这条回验已升级为自动守卫**
       （`tests/test_doc_refs.py`）—— 全仓库 `docs/**/*.md` 的每一条
       `` `path::symbol` `` 都必须在 CI 里可核对，且**裸文件名（同名文件不唯一）
