@@ -15,7 +15,9 @@
       "age_hours": 140.32,
       "oldest_age_hours": 140.32,
       "stale": true,
-      "stale_after_hours": 24
+      "stale_after_hours": 24,
+      "stale_oldest": true,
+      "stale_source": true
     },
     {
       "source_system": "wechat",
@@ -25,7 +27,9 @@
       "age_hours": 48.07,
       "oldest_age_hours": 50.4,
       "stale": true,
-      "stale_after_hours": 24
+      "stale_after_hours": 24,
+      "stale_oldest": true,
+      "stale_source": true
     },
     {
       "source_system": "wechat",
@@ -35,7 +39,9 @@
       "age_hours": 25.39,
       "oldest_age_hours": 25.39,
       "stale": true,
-      "stale_after_hours": 24
+      "stale_after_hours": 24,
+      "stale_oldest": true,
+      "stale_source": true
     },
     {
       "source_system": "wechat",
@@ -45,7 +51,9 @@
       "age_hours": 2.35,
       "oldest_age_hours": 2.35,
       "stale": false,
-      "stale_after_hours": 24
+      "stale_after_hours": 24,
+      "stale_oldest": false,
+      "stale_source": false
     }
   ],
   "facts": [],
@@ -75,7 +83,10 @@
       "source_base": "",
       "source_table": "群聊·A批物料",
       "source_row_id": "",
-      "source_message_id": "msg-2001"
+      "source_message_id": "msg-2001",
+      "status": "active",
+      "corrects_id": "",
+      "occurred_at_source": "message_time"
     },
     {
       "memory_id": "OBS-20260926-6b4e",
@@ -102,7 +113,10 @@
       "source_base": "",
       "source_table": "群聊·A批物料",
       "source_row_id": "",
-      "source_message_id": "msg-2002"
+      "source_message_id": "msg-2002",
+      "status": "active",
+      "corrects_id": "",
+      "occurred_at_source": "message_time"
     },
     {
       "memory_id": "OBS-20260926-b066",
@@ -129,7 +143,10 @@
       "source_base": "",
       "source_table": "供应商邮件",
       "source_row_id": "",
-      "source_message_id": "msg-2004"
+      "source_message_id": "msg-2004",
+      "status": "active",
+      "corrects_id": "",
+      "occurred_at_source": "message_time"
     }
   ],
   "commitments": [],
@@ -159,7 +176,10 @@
       "source_base": "",
       "source_table": "群聊·项目决策",
       "source_row_id": "",
-      "source_message_id": "msg-2005"
+      "source_message_id": "msg-2005",
+      "status": "active",
+      "corrects_id": "",
+      "occurred_at_source": "message_time"
     }
   ],
   "predictions": [
@@ -188,7 +208,10 @@
       "source_base": "",
       "source_table": "群聊·生产",
       "source_row_id": "",
-      "source_message_id": "msg-2003"
+      "source_message_id": "msg-2003",
+      "status": "active",
+      "corrects_id": "",
+      "occurred_at_source": "message_time"
     }
   ],
   "actions": [
@@ -218,7 +241,9 @@
       "evidence_ids": [
         "EVD-20260926-2905"
       ],
-      "as_of": "2026-09-26T11:29:11"
+      "as_of": "2026-09-24T09:05:00",
+      "row_updated_at": "2026-09-26T11:29:11",
+      "occurred_at_source": "message_time"
     }
   ],
   "action_events": [
@@ -313,21 +338,21 @@
       "code": "stale_source",
       "message": "来源数据超过时效阈值未更新",
       "ref": "email//供应商邮件",
-      "subject": "供应商邮件（140.3 小时未更新）",
+      "subject": "供应商邮件（最老一条 140.3 小时未更新，共 1 条；最新一条 140.3 小时）",
       "as_of": "2026-09-26T11:29:11"
     },
     {
       "code": "stale_source",
       "message": "来源数据超过时效阈值未更新",
       "ref": "wechat//群聊·A批物料",
-      "subject": "群聊·A批物料（48.1 小时未更新）",
+      "subject": "群聊·A批物料（最老一条 50.4 小时未更新，共 3 条；最新一条 48.1 小时）",
       "as_of": "2026-09-26T11:29:11"
     },
     {
       "code": "stale_source",
       "message": "来源数据超过时效阈值未更新",
       "ref": "wechat//群聊·生产",
-      "subject": "群聊·生产（25.4 小时未更新）",
+      "subject": "群聊·生产（最老一条 25.4 小时未更新，共 1 条；最新一条 25.4 小时）",
       "as_of": "2026-09-26T11:29:11"
     }
   ],
@@ -423,7 +448,9 @@
           "evidence_ids": [
             "EVD-20260926-2905"
           ],
-          "as_of": "2026-09-26T11:29:11"
+          "as_of": "2026-09-24T09:05:00",
+          "row_updated_at": "2026-09-26T11:29:11",
+          "occurred_at_source": "message_time"
         }
       ],
       "evidence_ids": [
@@ -440,45 +467,20 @@
       "items": [],
       "evidence_ids": [],
       "as_of": "2026-09-26 09:08:00",
-      "caveats": []
+      "caveats": [
+        "其中 3 条为**未核实观察**，不得当作事实使用",
+        "存在 1 处来源冲突，结论可能随后续核实变化"
+      ]
     },
     "today": {
-      "answer": "今日重点 1 项：A 批物料到场并检验（采购-王，None）",
-      "items": [
-        {
-          "action_id": "ACT-20260926-9751",
-          "project_id": "PRJ-20260928-0001",
-          "plan_id": "PLN-20260928-A001",
-          "evidence_id": "",
-          "decision_id": "",
-          "run_id": "RUN-20260928-0001",
-          "snapshot_id": "",
-          "version": 3,
-          "title": "A 批物料到场并检验",
-          "kind": "delivery",
-          "kind_cn": "到货",
-          "status": "ready",
-          "status_cn": "待执行",
-          "owner": "采购-王",
-          "due_date": "2026-09-30",
-          "due_date_original": "2026-09-30",
-          "overdue_days": 0,
-          "carry_over_count": 0,
-          "acceptance_criteria": "A 批物料全部到场、检验合格并办理入库",
-          "blocked_reason": "",
-          "blocked_owner": "",
-          "blocked_since": "",
-          "evidence_ids": [
-            "EVD-20260926-2905"
-          ],
-          "as_of": "2026-09-26T11:29:11"
-        }
-      ],
-      "evidence_ids": [
-        "EVD-20260926-2905"
-      ],
-      "as_of": "2026-09-26T11:29:11",
-      "caveats": []
+      "answer": "今天没有到期或被阻塞的事项。",
+      "items": [],
+      "evidence_ids": [],
+      "as_of": "2026-09-26 09:08:00",
+      "caveats": [
+        "其中 3 条为**未核实观察**，不得当作事实使用",
+        "存在 1 处来源冲突，结论可能随后续核实变化"
+      ]
     },
     "decisions": {
       "answer": "共 1 条决策：测试台优先给 A 批使用，B 批让位（老板，理由是 A 批交期更紧；B 批材料到得晚，先让它等）",
@@ -508,12 +510,18 @@
           "source_base": "",
           "source_table": "群聊·项目决策",
           "source_row_id": "",
-          "source_message_id": "msg-2005"
+          "source_message_id": "msg-2005",
+          "status": "active",
+          "corrects_id": "",
+          "occurred_at_source": "message_time"
         }
       ],
       "evidence_ids": [],
       "as_of": "2026-09-26 09:08:00",
-      "caveats": []
+      "caveats": [
+        "其中 3 条为**未核实观察**，不得当作事实使用",
+        "存在 1 处来源冲突，结论可能随后续核实变化"
+      ]
     },
     "gaps": {
       "answer": "共 4 处信息缺口：来源数据超过时效阈值未更新×3；存在未解决的来源冲突×1",
@@ -529,27 +537,30 @@
           "code": "stale_source",
           "message": "来源数据超过时效阈值未更新",
           "ref": "email//供应商邮件",
-          "subject": "供应商邮件（140.3 小时未更新）",
+          "subject": "供应商邮件（最老一条 140.3 小时未更新，共 1 条；最新一条 140.3 小时）",
           "as_of": "2026-09-26T11:29:11"
         },
         {
           "code": "stale_source",
           "message": "来源数据超过时效阈值未更新",
           "ref": "wechat//群聊·A批物料",
-          "subject": "群聊·A批物料（48.1 小时未更新）",
+          "subject": "群聊·A批物料（最老一条 50.4 小时未更新，共 3 条；最新一条 48.1 小时）",
           "as_of": "2026-09-26T11:29:11"
         },
         {
           "code": "stale_source",
           "message": "来源数据超过时效阈值未更新",
           "ref": "wechat//群聊·生产",
-          "subject": "群聊·生产（25.4 小时未更新）",
+          "subject": "群聊·生产（最老一条 25.4 小时未更新，共 1 条；最新一条 25.4 小时）",
           "as_of": "2026-09-26T11:29:11"
         }
       ],
       "evidence_ids": [],
       "as_of": "2026-09-26 09:08:00",
-      "caveats": []
+      "caveats": [
+        "其中 3 条为**未核实观察**，不得当作事实使用",
+        "存在 1 处来源冲突，结论可能随后续核实变化"
+      ]
     }
   },
   "_note": "合成 mock：由 docs/contracts/examples/alignment-p2-scenario.json 经**真实**二期 ProjectBrain 回放后导出的 ProjectContext，不是手写的。二期分支合并后请改用 application.project_brain.get_project_context 真实读取；本文件仅在二期模块不可用时兜底，读法完全一致。"

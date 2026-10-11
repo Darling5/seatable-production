@@ -15,7 +15,9 @@
       "age_hours": 93.32,
       "oldest_age_hours": 93.32,
       "stale": true,
-      "stale_after_hours": 24
+      "stale_after_hours": 24,
+      "stale_oldest": true,
+      "stale_source": true
     },
     {
       "source_system": "seatable",
@@ -25,7 +27,9 @@
       "age_hours": 20.07,
       "oldest_age_hours": 43.07,
       "stale": false,
-      "stale_after_hours": 24
+      "stale_after_hours": 24,
+      "stale_oldest": true,
+      "stale_source": true
     },
     {
       "source_system": "wechat",
@@ -35,7 +39,9 @@
       "age_hours": 290.24,
       "oldest_age_hours": 290.24,
       "stale": true,
-      "stale_after_hours": 24
+      "stale_after_hours": 24,
+      "stale_oldest": true,
+      "stale_source": true
     },
     {
       "source_system": "wechat",
@@ -45,7 +51,9 @@
       "age_hours": 114.37,
       "oldest_age_hours": 114.74,
       "stale": true,
-      "stale_after_hours": 24
+      "stale_after_hours": 24,
+      "stale_oldest": true,
+      "stale_source": true
     },
     {
       "source_system": "wechat",
@@ -55,7 +63,9 @@
       "age_hours": 51.4,
       "oldest_age_hours": 51.4,
       "stale": true,
-      "stale_after_hours": 24
+      "stale_after_hours": 24,
+      "stale_oldest": true,
+      "stale_source": true
     },
     {
       "source_system": "wechat",
@@ -65,7 +75,9 @@
       "age_hours": 48.24,
       "oldest_age_hours": 49.99,
       "stale": true,
-      "stale_after_hours": 24
+      "stale_after_hours": 24,
+      "stale_oldest": true,
+      "stale_source": true
     },
     {
       "source_system": "wechat",
@@ -75,7 +87,9 @@
       "age_hours": 73.15,
       "oldest_age_hours": 73.15,
       "stale": true,
-      "stale_after_hours": 24
+      "stale_after_hours": 24,
+      "stale_oldest": true,
+      "stale_source": true
     }
   ],
   "facts": [
@@ -104,7 +118,10 @@
       "source_base": "",
       "source_table": "供应商邮件",
       "source_row_id": "",
-      "source_message_id": "msg-1002"
+      "source_message_id": "msg-1002",
+      "status": "active",
+      "corrects_id": "OBS-20260926-ca13",
+      "occurred_at_source": "message_time"
     }
   ],
   "observations": [
@@ -133,7 +150,40 @@
       "source_base": "",
       "source_table": "群聊·供应商",
       "source_row_id": "",
-      "source_message_id": "msg-1001"
+      "source_message_id": "msg-1001",
+      "status": "active",
+      "corrects_id": "",
+      "occurred_at_source": "message_time"
+    },
+    {
+      "memory_id": "OBS-20260926-ca13",
+      "kind": "observation",
+      "kind_cn": "观察",
+      "text": "采购转述：410 块标签已发出，顺丰单号 SF1234567890",
+      "rationale": "",
+      "actor": "采购-王",
+      "value": "已发货",
+      "aspect_key": "shipment_status",
+      "due_date": "",
+      "confidence": "",
+      "status": "confirmed",
+      "corrects_id": "",
+      "project_id": "PRJ-20260926-0001",
+      "plan_id": "PLN-20260926-0001",
+      "action_id": "",
+      "evidence_id": "",
+      "decision_id": "",
+      "run_id": "",
+      "snapshot_id": "",
+      "version": 1,
+      "occurred_at": "",
+      "captured_at": "2026-09-22 14:15:00",
+      "source_system": "email",
+      "source_base": "",
+      "source_table": "供应商邮件",
+      "source_row_id": "",
+      "source_message_id": "msg-1002",
+      "occurred_at_source": "message_time"
     },
     {
       "memory_id": "OBS-20260926-bcb5",
@@ -160,7 +210,10 @@
       "source_base": "",
       "source_table": "群聊·现场",
       "source_row_id": "",
-      "source_message_id": "msg-1006"
+      "source_message_id": "msg-1006",
+      "status": "active",
+      "corrects_id": "",
+      "occurred_at_source": "message_time"
     },
     {
       "memory_id": "OBS-20260926-64a2",
@@ -187,7 +240,10 @@
       "source_base": "",
       "source_table": "群聊·设计",
       "source_row_id": "",
-      "source_message_id": "msg-1007"
+      "source_message_id": "msg-1007",
+      "status": "active",
+      "corrects_id": "",
+      "occurred_at_source": "message_time"
     },
     {
       "memory_id": "OBS-20260926-ea77",
@@ -214,7 +270,10 @@
       "source_base": "",
       "source_table": "群聊·设计",
       "source_row_id": "",
-      "source_message_id": "msg-1008"
+      "source_message_id": "msg-1008",
+      "status": "active",
+      "corrects_id": "",
+      "occurred_at_source": "message_time"
     }
   ],
   "commitments": [
@@ -243,7 +302,10 @@
       "source_base": "",
       "source_table": "群聊·现场",
       "source_row_id": "",
-      "source_message_id": "msg-1005"
+      "source_message_id": "msg-1005",
+      "status": "active",
+      "corrects_id": "",
+      "occurred_at_source": "message_time"
     }
   ],
   "decisions": [
@@ -272,7 +334,10 @@
       "source_base": "",
       "source_table": "群聊·项目决策",
       "source_row_id": "",
-      "source_message_id": "msg-1003"
+      "source_message_id": "msg-1003",
+      "status": "active",
+      "corrects_id": "",
+      "occurred_at_source": "message_time"
     }
   ],
   "predictions": [
@@ -301,7 +366,10 @@
       "source_base": "",
       "source_table": "群聊·生产",
       "source_row_id": "",
-      "source_message_id": "msg-1004"
+      "source_message_id": "msg-1004",
+      "status": "active",
+      "corrects_id": "",
+      "occurred_at_source": "message_time"
     }
   ],
   "actions": [
@@ -329,7 +397,9 @@
       "blocked_owner": "",
       "blocked_since": "",
       "evidence_ids": [],
-      "as_of": "2026-09-26T11:34:15"
+      "as_of": "2026-09-26T11:34:15",
+      "row_updated_at": "2026-09-26T11:34:15",
+      "occurred_at_source": "message_time"
     },
     {
       "action_id": "ACT-20260926-8f2d",
@@ -360,7 +430,9 @@
         "EVD-20260926-627a",
         "EVD-20260926-ebbf"
       ],
-      "as_of": "2026-09-26T11:34:15"
+      "as_of": "2026-09-25T15:30:00",
+      "row_updated_at": "2026-09-26T11:34:15",
+      "occurred_at_source": "message_time"
     },
     {
       "action_id": "ACT-20260926-efe2",
@@ -386,7 +458,9 @@
       "blocked_owner": "",
       "blocked_since": "",
       "evidence_ids": [],
-      "as_of": "2026-09-26T11:34:15"
+      "as_of": "2026-09-26T11:34:15",
+      "row_updated_at": "2026-09-26T11:34:15",
+      "occurred_at_source": "message_time"
     }
   ],
   "action_events": [
@@ -757,42 +831,49 @@
       "code": "stale_source",
       "message": "来源数据超过时效阈值未更新",
       "ref": "email//供应商邮件",
-      "subject": "供应商邮件（93.3 小时未更新）",
+      "subject": "供应商邮件（最老一条 93.3 小时未更新，共 2 条；最新一条 93.3 小时）",
+      "as_of": "2026-09-26T11:34:15"
+    },
+    {
+      "code": "stale_source",
+      "message": "来源数据超过时效阈值未更新",
+      "ref": "seatable/production/发货清单",
+      "subject": "发货清单（最老一条 43.1 小时未更新，共 3 条；最新一条 20.1 小时）",
       "as_of": "2026-09-26T11:34:15"
     },
     {
       "code": "stale_source",
       "message": "来源数据超过时效阈值未更新",
       "ref": "wechat//群聊·供应商",
-      "subject": "群聊·供应商（290.2 小时未更新）",
+      "subject": "群聊·供应商（最老一条 290.2 小时未更新，共 1 条；最新一条 290.2 小时）",
       "as_of": "2026-09-26T11:34:15"
     },
     {
       "code": "stale_source",
       "message": "来源数据超过时效阈值未更新",
       "ref": "wechat//群聊·现场",
-      "subject": "群聊·现场（114.4 小时未更新）",
+      "subject": "群聊·现场（最老一条 114.7 小时未更新，共 2 条；最新一条 114.4 小时）",
       "as_of": "2026-09-26T11:34:15"
     },
     {
       "code": "stale_source",
       "message": "来源数据超过时效阈值未更新",
       "ref": "wechat//群聊·生产",
-      "subject": "群聊·生产（51.4 小时未更新）",
+      "subject": "群聊·生产（最老一条 51.4 小时未更新，共 1 条；最新一条 51.4 小时）",
       "as_of": "2026-09-26T11:34:15"
     },
     {
       "code": "stale_source",
       "message": "来源数据超过时效阈值未更新",
       "ref": "wechat//群聊·设计",
-      "subject": "群聊·设计（48.2 小时未更新）",
+      "subject": "群聊·设计（最老一条 50.0 小时未更新，共 2 条；最新一条 48.2 小时）",
       "as_of": "2026-09-26T11:34:15"
     },
     {
       "code": "stale_source",
       "message": "来源数据超过时效阈值未更新",
       "ref": "wechat//群聊·项目决策",
-      "subject": "群聊·项目决策（73.2 小时未更新）",
+      "subject": "群聊·项目决策（最老一条 73.2 小时未更新，共 1 条；最新一条 73.2 小时）",
       "as_of": "2026-09-26T11:34:15"
     }
   ],
@@ -856,7 +937,7 @@
     "actions_closed": 1,
     "blockers": 0,
     "conflicts": 1,
-    "gaps": 10
+    "gaps": 11
   },
   "answers": {
     "status": {
@@ -886,7 +967,9 @@
           "blocked_owner": "",
           "blocked_since": "",
           "evidence_ids": [],
-          "as_of": "2026-09-26T11:34:15"
+          "as_of": "2026-09-26T11:34:15",
+          "row_updated_at": "2026-09-26T11:34:15",
+          "occurred_at_source": "message_time"
         },
         {
           "action_id": "ACT-20260926-8f2d",
@@ -917,7 +1000,9 @@
             "EVD-20260926-627a",
             "EVD-20260926-ebbf"
           ],
-          "as_of": "2026-09-26T11:34:15"
+          "as_of": "2026-09-25T15:30:00",
+          "row_updated_at": "2026-09-26T11:34:15",
+          "occurred_at_source": "message_time"
         },
         {
           "action_id": "ACT-20260926-efe2",
@@ -943,7 +1028,9 @@
           "blocked_owner": "",
           "blocked_since": "",
           "evidence_ids": [],
-          "as_of": "2026-09-26T11:34:15"
+          "as_of": "2026-09-26T11:34:15",
+          "row_updated_at": "2026-09-26T11:34:15",
+          "occurred_at_source": "message_time"
         }
       ],
       "evidence_ids": [
@@ -955,6 +1042,7 @@
       "as_of": "2026-09-26T11:34:15",
       "caveats": [
         "其中 4 条为**未核实观察**，不得当作事实使用",
+        "另有 1 条观察已核实并升格为事实（见 facts，用 corrects_id 可回溯到原观察）",
         "存在 1 处来源冲突，结论可能随后续核实变化"
       ]
     },
@@ -963,7 +1051,11 @@
       "items": [],
       "evidence_ids": [],
       "as_of": "2026-09-26T11:34:15",
-      "caveats": []
+      "caveats": [
+        "其中 4 条为**未核实观察**，不得当作事实使用",
+        "另有 1 条观察已核实并升格为事实（见 facts，用 corrects_id 可回溯到原观察）",
+        "存在 1 处来源冲突，结论可能随后续核实变化"
+      ]
     },
     "today": {
       "answer": "今日重点 1 项：补充电子围栏图纸（未指派，已逾期 2 天（原期限 2026-09-24））",
@@ -983,7 +1075,11 @@
       ],
       "evidence_ids": [],
       "as_of": "2026-09-26T11:34:15",
-      "caveats": []
+      "caveats": [
+        "其中 4 条为**未核实观察**，不得当作事实使用",
+        "另有 1 条观察已核实并升格为事实（见 facts，用 corrects_id 可回溯到原观察）",
+        "存在 1 处来源冲突，结论可能随后续核实变化"
+      ]
     },
     "decisions": {
       "answer": "共 1 条决策：尾程改用 DHL 空运加急，超出的运费由我方承担（老板，理由是 客户要求 9/30 前必须开箱验收，海运赶不上）",
@@ -1013,15 +1109,22 @@
           "source_base": "",
           "source_table": "群聊·项目决策",
           "source_row_id": "",
-          "source_message_id": "msg-1003"
+          "source_message_id": "msg-1003",
+          "status": "active",
+          "corrects_id": "",
+          "occurred_at_source": "message_time"
         }
       ],
       "evidence_ids": [],
       "as_of": "2026-09-23 10:25:00",
-      "caveats": []
+      "caveats": [
+        "其中 4 条为**未核实观察**，不得当作事实使用",
+        "另有 1 条观察已核实并升格为事实（见 facts，用 corrects_id 可回溯到原观察）",
+        "存在 1 处来源冲突，结论可能随后续核实变化"
+      ]
     },
     "gaps": {
-      "answer": "共 10 处信息缺口：行动没有任何证据支撑×2；行动没有负责人 —— 没人认领就不会有人做×1；来源数据超过时效阈值未更新×6；存在未解决的来源冲突×1",
+      "answer": "共 11 处信息缺口：行动没有任何证据支撑×2；行动没有负责人 —— 没人认领就不会有人做×1；来源数据超过时效阈值未更新×7；存在未解决的来源冲突×1",
       "items": [
         {
           "code": "action_no_owner",
@@ -1055,48 +1158,59 @@
           "code": "stale_source",
           "message": "来源数据超过时效阈值未更新",
           "ref": "email//供应商邮件",
-          "subject": "供应商邮件（93.3 小时未更新）",
+          "subject": "供应商邮件（最老一条 93.3 小时未更新，共 2 条；最新一条 93.3 小时）",
+          "as_of": "2026-09-26T11:34:15"
+        },
+        {
+          "code": "stale_source",
+          "message": "来源数据超过时效阈值未更新",
+          "ref": "seatable/production/发货清单",
+          "subject": "发货清单（最老一条 43.1 小时未更新，共 3 条；最新一条 20.1 小时）",
           "as_of": "2026-09-26T11:34:15"
         },
         {
           "code": "stale_source",
           "message": "来源数据超过时效阈值未更新",
           "ref": "wechat//群聊·供应商",
-          "subject": "群聊·供应商（290.2 小时未更新）",
+          "subject": "群聊·供应商（最老一条 290.2 小时未更新，共 1 条；最新一条 290.2 小时）",
           "as_of": "2026-09-26T11:34:15"
         },
         {
           "code": "stale_source",
           "message": "来源数据超过时效阈值未更新",
           "ref": "wechat//群聊·现场",
-          "subject": "群聊·现场（114.4 小时未更新）",
+          "subject": "群聊·现场（最老一条 114.7 小时未更新，共 2 条；最新一条 114.4 小时）",
           "as_of": "2026-09-26T11:34:15"
         },
         {
           "code": "stale_source",
           "message": "来源数据超过时效阈值未更新",
           "ref": "wechat//群聊·生产",
-          "subject": "群聊·生产（51.4 小时未更新）",
+          "subject": "群聊·生产（最老一条 51.4 小时未更新，共 1 条；最新一条 51.4 小时）",
           "as_of": "2026-09-26T11:34:15"
         },
         {
           "code": "stale_source",
           "message": "来源数据超过时效阈值未更新",
           "ref": "wechat//群聊·设计",
-          "subject": "群聊·设计（48.2 小时未更新）",
+          "subject": "群聊·设计（最老一条 50.0 小时未更新，共 2 条；最新一条 48.2 小时）",
           "as_of": "2026-09-26T11:34:15"
         },
         {
           "code": "stale_source",
           "message": "来源数据超过时效阈值未更新",
           "ref": "wechat//群聊·项目决策",
-          "subject": "群聊·项目决策（73.2 小时未更新）",
+          "subject": "群聊·项目决策（最老一条 73.2 小时未更新，共 1 条；最新一条 73.2 小时）",
           "as_of": "2026-09-26T11:34:15"
         }
       ],
       "evidence_ids": [],
       "as_of": "2026-09-26T11:34:15",
-      "caveats": []
+      "caveats": [
+        "其中 4 条为**未核实观察**，不得当作事实使用",
+        "另有 1 条观察已核实并升格为事实（见 facts，用 corrects_id 可回溯到原观察）",
+        "存在 1 处来源冲突，结论可能随后续核实变化"
+      ]
     }
   },
   "_sample_note": "合成样例：由 docs/contracts/examples/project-brain-sample.json 回放生成，全部为虚构数据。第三期可直接按此结构读取；evidence_id / memory_id / action_id 每次回放都不同，字段结构恒定。"

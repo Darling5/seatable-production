@@ -152,10 +152,15 @@ def cmd_context(args) -> int:
             print("  ! %s" % c)
     print("\n来源时效：")
     for f in ctx.get("source_freshness", []):
+        # 判据结论只认 `stale_source`（上游算好的保守判据）。这里曾经读 `stale`
+        # （最新一条），于是 CLI 会一边显示「没过期」、一边在缺口清单里
+        # 列出同一条来源 —— 同一份上下文两个答案。
+        mark = ""
+        if f.get("stale_source"):
+            mark = "  ← 已过期（最老一条 %.1f 小时）" % (f.get("oldest_age_hours") or 0)
         print("  %-10s %-10s %-10s %s 条  %.1f 小时%s"
               % (f["source_system"], f["source_base"], f["source_table"],
-                 f["records"], f["age_hours"] or 0,
-                 "  ← 已过期" if f["stale"] else ""))
+                 f["records"], f["age_hours"] or 0, mark))
     return 0
 
 

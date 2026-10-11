@@ -183,7 +183,17 @@ class ProjectBrain:
         mid = str(msg.get("message_id") or "")
         text = str(msg.get("text") or "")
         mtime_raw = msg.get("message_time") or msg.get("occurred_at") or ""
-        mtime = TP.parse_message_time(mtime_raw) or _dt.datetime.now()
+        # ⚠️ 取不到消息时间时**降级 + 留痕**，不许静默兜底。
+        # timeparse 立过铁律：不偷偷用当前时间 —— 因为「下周五」按采集时刻
+        # 解析会让期限整体漂移，而且漂移量随采集延迟变化（8/3 说的话在 9/27
+        # 被采集，解析结果差着三十天），这种错在账面上完全看不出来。
+        # 但整条消息直接拒收会把采集链路卡死，所以这里允许降级，
+        # 条件是把基准来源记进每一行，由上下文转成一处 G_TIME_FALLBACK 缺口。
+        mtime = TP.parse_message_time(mtime_raw)
+        time_source = S.SRC_MESSAGE_TIME
+        if mtime is None:
+            mtime = _dt.datetime.now()
+            time_source = S.SRC_FALLBACK_CAPTURE_TIME
         captured = str(msg.get("captured_at") or _dt.datetime.now().isoformat(timespec="seconds"))
         rid = message_row_id(mid, text, str(mtime_raw))
         out = {"message_row_id": rid, "message_id": mid, "duplicate": False,
@@ -211,6 +221,7 @@ class ProjectBrain:
             "text": text,
             "sender": str(msg.get("sender") or ""),
             "occurred_at": mtime.isoformat(timespec="seconds"),
+            "occurred_at_source": time_source,
             "captured_at": captured,
             "dedupe_key": rid,
             **src,
@@ -231,13 +242,15 @@ class ProjectBrain:
 
         for item in (msg.get("items") or []):
             self._ingest_item(dict(item), msg=msg, mtime=mtime, captured=captured,
+                              time_source=time_source,
                               mid=src["source_message_id"], mode=mode, grant=grant,
                               actor=actor, run_id=run_id, snapshot_id=snapshot_id,
                               out=out)
         return out
 
     def _ingest_item(self, item: dict, *, msg: dict, mtime: _dt.datetime,
-                     captured: str, mid: str, mode: str, grant, actor: str,
+                     captured: str, time_source: str, mid: str, mode: str,
+                     grant, actor: str,
                      run_id: str, snapshot_id: str, out: dict) -> None:
         kind = str(item.get("kind") or S.KIND_OBSERVATION)
         project_id = str(msg.get("project_id") or "")
@@ -258,7 +271,8 @@ class ProjectBrain:
             action_id=str(item.get("action_id") or ""),
             evidence_id=str(item.get("evidence_id") or ""),
             run_id=run_id, snapshot_id=snapshot_id,
-            occurred_at=occurred, captured_at=captured,
+            occurred_at=occurred, occurred_at_source=time_source,
+            captured_at=captured,
             source_system=str(msg.get("source_system") or ""),
             source_base=str(msg.get("source_base") or ""),
             source_table=str(msg.get("source_table") or ""),
@@ -287,12 +301,14 @@ class ProjectBrain:
         act_spec = item.get("action")
         if act_spec:
             self._propose_action_from(act_spec, msg=msg, mtime=mtime,
-                                      captured=captured, mid=mid, memory_id=row["memory_id"],
+                                      captured=captured, time_source=time_source,
+                                      mid=mid, memory_id=row["memory_id"],
                                       mode=mode, grant=grant, actor=actor,
                                       run_id=run_id, snapshot_id=snapshot_id, out=out)
 
     def _propose_action_from(self, spec: dict, *, msg: dict, mtime: _dt.datetime,
-                             captured: str, mid: str, memory_id: str, mode: str,
+                             captured: str, time_source: str, mid: str,
+                             memory_id: str, mode: str,
                              grant, actor: str, run_id: str, snapshot_id: str,
                              out: dict) -> None:
         project_id = str(msg.get("project_id") or "")
@@ -318,6 +334,8 @@ class ProjectBrain:
             status=S.ST_CANDIDATE)
         row["created_from"] = memory_id
         row["created_at"] = captured
+        # due 是拿 mtime 解析出来的，基准降级了就必须跟着留痕
+        row["occurred_at_source"] = time_source
         res = self._write(S.TB_ACTION, row, action=S.ACTION_APPEND, mode=mode,
                           grant=grant, actor=actor,
                           reason="[%s] 建立候选行动" % AUTH_CLASS_ACTION,
@@ -382,8 +400,15 @@ class ProjectBrain:
             return {"status": res.status, "message": res.message,
                     "fact_id": fact["memory_id"]}
 
-        self._patch_memory(observation_id, {"status": "confirmed",
-                                            "superseded_by": fact["memory_id"]},
+        # ⚠️ 这里写的是 `verified_fact_id` 而不是 `superseded_by`：
+        # 这条观察刚被标成 `confirmed`（合同 §3：观察已升格为事实），
+        # 它**没有**被取代 —— 它是活的、只是权威版本换成了那条事实。
+        # 一个 status=confirmed 的行如果同时挂着 `superseded_by`，
+        # 读 status 的人说「它还活着」、读 superseded_by 的人说「它已经死了」，
+        # 同一行两种答案。合同 §5 只规定「纠正」才写 `superseded_by`，
+        # 这里按合同给这条指针一个不会歧义的名字。
+        self._patch_memory(observation_id, {"status": S.MS_CONFIRMED,
+                                            "verified_fact_id": fact["memory_id"]},
                            mode=mode, grant=grant, actor=actor,
                            reason="[%s] 观察已核实，转事实" % AUTH_CLASS_FACT)
         return {"status": "written", "message": "已升级为事实", "fact_id": fact["memory_id"]}
@@ -426,8 +451,9 @@ class ProjectBrain:
         if mode != C.MODE_APPLY or res.status not in ("written",):
             return {"status": res.status, "message": res.message,
                     "memory_id": row["memory_id"]}
-        self._patch_memory(memory_id, {"status": "superseded",
-                                       "superseded_by": row["memory_id"]},
+        # 载荷由 `memory.supersede()` 统一产出 —— 合同 §5 只在这里实现一次，
+        # 免得「帮助函数」和调用点各写一份、然后悄悄漂移。
+        self._patch_memory(memory_id, MEM.supersede(old, row["memory_id"]),
                            mode=mode, grant=grant, actor=actor,
                            reason="[%s] 已被 %s 纠正" % (AUTH_CLASS_FACT, row["memory_id"]))
         return {"status": "written", "message": "已追加纠正，旧记录保留为 superseded",
@@ -522,8 +548,12 @@ class ProjectBrain:
         if act is None:
             return {"status": R_NOT_FOUND, "message": "找不到行动 %s" % action_id}
         cur = str(act.get("status") or "")
-        ev = [e for e in self._rows_of(S.TB_EVIDENCE, action_id)
-              if str(e.get("action_id") or "") == action_id]
+        # 用 `evidence_of_action` 过滤，而不是拿一个「传了 key 但根本不用」的
+        # 通用读表函数 + 在调用点再 filter 一遍。旧写法（`_rows_of(table, key)`
+        # 忽略第二个形参、又由调用方重做同一份过滤）有两个毛病：
+        # 读全表再在内存里筛，和「我以为 SQL 会帮我把 WHERE 加上」的错觉；
+        # 更糟的是**签名在说谎** —— 它长得像带条件查询，实际是全表扫描。
+        ev = self.evidence_of_action(action_id)
 
         # ① 先判「这一步走不走得通」——非法迁移不必再看业务规则
         if not ACT.can_transition(cur, to_state):
@@ -784,9 +814,6 @@ class ProjectBrain:
                     idem_key="evt:%s" % row["event_id"], row_id=row["event_id"],
                     verify_fields=("action_id", "from_state", "to_state"))
 
-    def _rows_of(self, table: str, _key: str = "") -> list[dict]:
-        return self.store.list_rows(table)
-
     def _find_by(self, table: str, field: str, value: str) -> Optional[dict]:
         for r in self.store.list_rows(table):
             if str(r.get(field) or "") == str(value):
@@ -794,6 +821,14 @@ class ProjectBrain:
         return None
 
     def evidence_of_action(self, action_id: str) -> list[dict]:
+        """某条行动名下的**全部**证据（按 ``action_id`` 过滤）。
+
+        调用点：``transition()`` 关闭前的四条硬规则校验 —— 它以前用的是
+        ``_rows_of(S.TB_EVIDENCE, action_id)``，而那个函数的第二个形参
+        ``_key`` **从来没被用过**，等于全表读回来再由调用方重筛一遍。
+        两个函数干同一件事、其中一个全是死代码，纯粹是谁先被写出来谁中奖。
+        现在只留这一个，名字说实话。
+        """
         return [e for e in self.store.list_rows(S.TB_EVIDENCE)
                 if str(e.get("action_id") or "") == str(action_id)]
 

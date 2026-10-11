@@ -425,7 +425,13 @@ def read_context(ctx: dict) -> dict:
         "unresolved_conflicts": [c for c in conflicts if not c.get("resolved")],
         "missing_info": list(ctx.get("missing_info") or []),
         "source_freshness": freshness,
-        "stale_sources": [s for s in freshness if s.get("stale")],
+        # ⚠️ 只认 `stale_source`（上游算好的**判据结论**），**不许**自己按 `stale` 过滤。
+        # 曾经这里写的是 `s.get("stale")`（最新一条），而 `build_context` 按最老一条
+        # 产缺口 —— 于是一条「刚来过一条新消息、但 8 条记录四天没动」的来源，
+        # 在同一份上下文里同时得到「过期」（missing_info 里）和「不过期」
+        # （这里过滤出来是空的）两个答案。挑字段这件事只能做一次（上游做），
+        # 下游读结论：`tests/test_project_brain.py::TestStaleVerdictIsSingleSource`。
+        "stale_sources": [s for s in freshness if s.get("stale_source")],
         "n_observations_unverified": len(memories["observations"]),
         "time_format_notes": time_notes,
         "answers": dict(ctx.get("answers") or {}),

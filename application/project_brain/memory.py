@@ -65,8 +65,30 @@ def dedupe_key(kind: str, *, source_message_id: str = "",
 
 
 def is_active(row: Mapping[str, Any]) -> bool:
-    """记忆是否仍生效（未被纠正/未被合并）。"""
-    return str(row.get("status") or "active") == "active"
+    """这条记忆是否**仍然有效**（还在参与结论）。
+
+    ``status`` 三态：``active`` / ``confirmed`` / ``superseded``。
+    有效的是**前两个**：
+
+      · ``confirmed`` —— 「观察已核实，升格为事实」。它比 ``active`` **更**可靠，
+        不是更不可靠；
+      · ``superseded`` —— 已被纠正/取代。**只有这一个**算「死」。
+
+    ⚠️ 旧实现是 ``status == "active"``，等于把 ``confirmed`` 和 ``superseded``
+    归成一类（都当死）。后果：核实动作反而让一条记忆**从所有出口消失** ——
+    它不在 ``observations``（不是 active 了），也不在 ``facts``（它的 kind
+    还是 observation），整个「核实」在上下文里表现为**这条记忆凭空不见了**。
+    实测：合成场景里核实过的「采购转述：410 块标签已发出」在上下文里查无此条。
+
+    未知取值一律当**无效**（fail-closed）：拿不准的状态不许参与结论。
+    """
+    status = str(row.get("status") or S.MS_ACTIVE)
+    return status in (S.MS_ACTIVE, S.MS_CONFIRMED)
+
+
+def is_verified(row: Mapping[str, Any]) -> bool:
+    """已核实（观察升格为事实后的状态）。"""
+    return str(row.get("status") or "") == S.MS_CONFIRMED
 
 
 def build_memory_row(
@@ -81,6 +103,7 @@ def build_memory_row(
     run_id: str = "",
     snapshot_id: str = "",
     occurred_at: str = "",
+    occurred_at_source: str = S.SRC_MESSAGE_TIME,
     captured_at: str = "",
     source_system: str = "",
     source_base: str = "",
@@ -118,8 +141,13 @@ def build_memory_row(
         "kind": kind,
         "kind_cn": S.MEMORY_KIND_CN[kind],
         "text": str(text or "").strip(),
-        # ── 时间：发生 ≠ 采集 ──
+        # ── 时间：发生 ≠ 采集 ≠ 解析基准 ──
         "occurred_at": occurred_at or "",
+        # 这条记录的 `occurred_at` 是拿哪个时刻当基准解析出来的
+        # （见 schema.TIME_SOURCES）：正常是消息时间，消息时间缺失时
+        # 退化为采集时刻 —— 退化了就必须留痕，否则「期限漂了多少」
+        # 在账面上永远看不出来。
+        "occurred_at_source": occurred_at_source or S.SRC_MESSAGE_TIME,
         "captured_at": captured_at or now.isoformat(timespec="seconds"),
         # ── 来源溯源（保留系统/Base/表/行 ID）──
         "source_system": source_system,
@@ -203,13 +231,36 @@ def find_conflicts(rows: Iterable[Mapping[str, Any]]) -> list[dict]:
     return out
 
 
-def supersede(old_row: Mapping[str, Any]) -> dict:
-    """把被纠正的旧记忆标为 superseded 的**更新载荷**（不改历史，只追加新版本）。"""
+def supersede(old_row: Mapping[str, Any], new_id: str) -> dict:
+    """被纠正的旧记忆的**更新载荷**（不改历史，只追加新版本）。
+
+    合同第 5 节把这条链写死了：纠正后旧记录标 ``superseded``，
+    并且 **``superseded_by`` 必须等于新记录的 memory_id**。
+
+    ⚠️ 这个函数以前长这样::
+
+        def supersede(old_row):            # 形参根本没用
+            return {"status": "superseded", "superseded_by": ""}
+
+    两处都不对：``old_row`` 拿进来就丢，``superseded_by`` 恒为空串 ——
+    于是「谁取代了它」在契约层**永远查不到**，一条 superseded 记录成了
+    断链的死胡同（而 ``service.correct_memory`` 自己在旁边手写了一份
+    正确的载荷，两边就这么各写各的）。现在这里成为**唯一实现**：
+    空 ``new_id`` 直接拒绝，因为「被取代但不知道被谁取代」不是一种状态，
+    是一处数据损坏。
+    """
+    old_id = str(old_row.get("memory_id") or "")
+    new_id = str(new_id or "").strip()
+    if not new_id:
+        raise ValueError("supersede 需要新记录的 memory_id："
+                         "superseded 的行必须指向取代它的那条（合同 §5）")
+    if old_id and old_id == new_id:
+        raise ValueError("supersede 的新旧 memory_id 不能是同一条（%s）" % old_id)
     return {
-        "status": "superseded",
-        "superseded_by": "",
+        "status": S.MS_SUPERSEDED,
+        "superseded_by": new_id,
     }
 
 
-__all__ = ["normalize_text", "dedupe_key", "is_active", "build_memory_row",
-           "find_conflicts", "supersede", "S"]
+__all__ = ["normalize_text", "dedupe_key", "is_active", "is_verified",
+           "build_memory_row", "find_conflicts", "supersede", "S"]
